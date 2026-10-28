@@ -586,12 +586,12 @@ export const AbpVerificationStudio: React.FC = () => {
 
                     {/* LATEST ASSESSMENT RESULT */}
                     {activeRun.latestAssessment && (
-                      <div className={`assessment-result ${activeRun.latestAssessment.isCorrect ? 'correct' : 'incorrect'}`} style={{ marginTop: '1rem' }}>
+                      <div className={`assessment-result ${activeRun.latestAssessment.isCorrect === null ? 'deferred' : activeRun.latestAssessment.isCorrect ? 'correct' : 'incorrect'}`} style={{ marginTop: '1rem' }}>
                         <h4>Authoritative Assessment Result:</h4>
                         <p>
-                          <strong>Verdict:</strong> {activeRun.latestAssessment.isCorrect ? '✅ CORRECT' : '❌ INCORRECT'}
+                          <strong>Verdict:</strong> {activeRun.latestAssessment.isCorrect === null ? '⏳ DEFERRED (PENDING RUN COMPLETION)' : activeRun.latestAssessment.isCorrect ? '✅ CORRECT' : '❌ INCORRECT'}
                         </p>
-                        <p><strong>Score:</strong> {activeRun.latestAssessment.score} / 1.0</p>
+                        <p><strong>Score:</strong> {activeRun.latestAssessment.score === null ? 'Deferred' : `${activeRun.latestAssessment.score} / 1.0`}</p>
                         <p><strong>Evaluator:</strong> {activeRun.latestAssessment.evaluatorId}</p>
                         <p>
                           <strong>Attempt Support Provenance:</strong>{' '}

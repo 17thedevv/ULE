@@ -694,7 +694,9 @@ export class RuntimeService {
     const isDeferred =
       (pinnedBlock.config as { feedbackPolicy?: string })?.feedbackPolicy ===
       'DEFERRED';
-    const shouldRedactDeferred = isDeferred && run.status !== 'CLOSED';
+    const isCompleted =
+      run.status === 'CLOSED' && run.closeReason === 'COMPLETED';
+    const shouldRedactDeferred = isDeferred && !isCompleted;
 
     return {
       run: this.toRunDto(run, pinnedBlock, latestAttempt, latestAssessment, deliveredHint),
@@ -762,7 +764,9 @@ export class RuntimeService {
     const isDeferred =
       (pinnedBlock.config as { feedbackPolicy?: string })?.feedbackPolicy ===
       'DEFERRED';
-    const shouldRedactDeferred = isDeferred && run.status !== 'CLOSED';
+    const isCompleted =
+      run.status === 'CLOSED' && run.closeReason === 'COMPLETED';
+    const shouldRedactDeferred = isDeferred && !isCompleted;
 
     return {
       id: run.id,

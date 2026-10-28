@@ -775,7 +775,7 @@ describe('Phase 1B Final Integrity Hardening — Real PostgreSQL Concurrency & I
       expect(hintEvents).toHaveLength(1);
     });
 
-    it('DEFERRED FEEDBACK TEST: DEFERRED policy hides correctness and score until run is CLOSED, preserving internal DB records', async () => {
+    it('DEFERRED FEEDBACK TEST: deferred feedback is released only on FINISH (COMPLETED) and withheld on ABANDON, preserving internal DB records', async () => {
       // 1. Create a draft block with DEFERRED feedback policy
       const draftRes = await request(app.getHttpServer())
         .get(`/api/v1/courses/${courseId}/draft`)
@@ -813,65 +813,131 @@ describe('Phase 1B Final Integrity Hardening — Real PostgreSQL Concurrency & I
         .set('Cookie', authorCookie)
         .expect(HttpStatus.CREATED);
 
-      // 3. Start run for deferred block
-      const dRunRes = await request(app.getHttpServer())
+      // ======================================================================
+      // PART A: ABANDON GATE — Deferred feedback must NEVER be released on abandon
+      // ======================================================================
+
+      // A3. Start run for deferred block
+      const abandonRunRes = await request(app.getHttpServer())
         .post('/api/v1/runs')
         .set('Cookie', authorCookie)
         .send({
           courseVersionId: vRes.body.id,
           blockInstanceId: deferredBlockId,
-          idempotencyKey: `deferred_run_${Date.now()}`,
+          idempotencyKey: `abandon_run_${Date.now()}`,
         })
         .expect(HttpStatus.CREATED);
 
-      const dRunId = dRunRes.body.id;
+      const abandonRunId = abandonRunRes.body.id;
 
-      // 4. Submit response while run is ACTIVE
-      const subRes = await request(app.getHttpServer())
-        .post(`/api/v1/runs/${dRunId}/commands`)
+      // A4. Submit response while run is ACTIVE
+      const abandonSubRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${abandonRunId}/commands`)
         .set('Cookie', authorCookie)
         .send({
           command: 'SUBMIT_RESPONSE',
           payload: { selectedOptionId: 'opt_4' },
-          idempotencyKey: `deferred_sub_${Date.now()}`,
+          idempotencyKey: `abandon_sub_${Date.now()}`,
         })
         .expect(HttpStatus.OK);
 
-      // Learner-facing result MUST NOT disclose correctness or score!
-      expect(subRes.body.latestAssessment.isCorrect).toBeNull();
-      expect(subRes.body.latestAssessment.score).toBeNull();
-      expect(subRes.body.latestAssessment.feedback.deferred).toBe(true);
+      // Redacted while ACTIVE
+      expect(abandonSubRes.body.latestAssessment.isCorrect).toBeNull();
+      expect(abandonSubRes.body.latestAssessment.score).toBeNull();
+      expect(abandonSubRes.body.latestAssessment.feedback.deferred).toBe(true);
 
-      // 5. GET /runs/:id/results while ACTIVE: must NOT disclose deferred evaluation
-      const resultsBeforeClose = await request(app.getHttpServer())
-        .get(`/api/v1/runs/${dRunId}/results`)
+      // A5. Abandon the run: status becomes CLOSED with closeReason ABANDONED
+      const abandonRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${abandonRunId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'ABANDON',
+          idempotencyKey: `abandon_cmd_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      expect(abandonRes.body.status).toBe('CLOSED');
+      expect(abandonRes.body.closeReason).toBe('ABANDONED');
+
+      // Abandoned run command response MUST NOT disclose deferred results!
+      expect(abandonRes.body.latestAssessment.isCorrect).toBeNull();
+      expect(abandonRes.body.latestAssessment.score).toBeNull();
+      expect(abandonRes.body.latestAssessment.feedback.deferred).toBe(true);
+
+      // A6. Reading the abandoned run later via GET /runs/:id must STILL withhold deferred feedback
+      const getAbandonedRun = await request(app.getHttpServer())
+        .get(`/api/v1/runs/${abandonRunId}`)
         .set('Cookie', authorCookie)
         .expect(HttpStatus.OK);
 
-      expect(resultsBeforeClose.body.assessments[0].isCorrect).toBeNull();
-      expect(resultsBeforeClose.body.assessments[0].score).toBeNull();
-      expect(resultsBeforeClose.body.assessments[0].feedback.deferred).toBe(true);
+      expect(getAbandonedRun.body.status).toBe('CLOSED');
+      expect(getAbandonedRun.body.closeReason).toBe('ABANDONED');
+      expect(getAbandonedRun.body.latestAssessment.isCorrect).toBeNull();
+      expect(getAbandonedRun.body.latestAssessment.score).toBeNull();
+      expect(getAbandonedRun.body.latestAssessment.feedback.deferred).toBe(true);
 
-      const attemptEvent = resultsBeforeClose.body.events.find(
+      // A7. Reading results via GET /runs/:id/results on abandoned run must STILL withhold deferred feedback
+      const resultsAbandoned = await request(app.getHttpServer())
+        .get(`/api/v1/runs/${abandonRunId}/results`)
+        .set('Cookie', authorCookie)
+        .expect(HttpStatus.OK);
+
+      expect(resultsAbandoned.body.run.latestAssessment.isCorrect).toBeNull();
+      expect(resultsAbandoned.body.assessments[0].isCorrect).toBeNull();
+      expect(resultsAbandoned.body.assessments[0].score).toBeNull();
+      expect(resultsAbandoned.body.assessments[0].feedback.deferred).toBe(true);
+      const abandonAttemptEvent = resultsAbandoned.body.events.find(
         (e: any) => e.eventType === 'ATTEMPT_SUBMITTED',
       );
-      expect(attemptEvent.payload.isCorrect).toBeNull();
+      expect(abandonAttemptEvent.payload.isCorrect).toBeNull();
 
-      // 6. Direct database inspection: internal record in PostgreSQL remains complete and intact!
-      const dbAssessment = await prisma.assessmentResult.findFirst({
-        where: { runId: dRunId },
+      // A8. Direct database inspection: internal evaluation record in PostgreSQL remains complete & intact!
+      const dbAbandonedAssessment = await prisma.assessmentResult.findFirst({
+        where: { runId: abandonRunId },
       });
-      expect(dbAssessment).not.toBeNull();
-      expect(dbAssessment!.isCorrect).toBe(true);
-      expect(dbAssessment!.score).toBe(1.0);
+      expect(dbAbandonedAssessment).not.toBeNull();
+      expect(dbAbandonedAssessment!.isCorrect).toBe(true);
+      expect(dbAbandonedAssessment!.score).toBe(1.0);
 
-      // 7. Finish run (Authorized Release Point)
+      // ======================================================================
+      // PART B: FINISH GATE — Deferred feedback IS released on COMPLETED
+      // ======================================================================
+
+      // B1. Start second run on the same deferred block
+      const finishRunRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', authorCookie)
+        .send({
+          courseVersionId: vRes.body.id,
+          blockInstanceId: deferredBlockId,
+          idempotencyKey: `finish_run_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      const finishRunId = finishRunRes.body.id;
+
+      // B2. Submit response while ACTIVE
+      const finishSubRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${finishRunId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_4' },
+          idempotencyKey: `finish_sub_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      expect(finishSubRes.body.latestAssessment.isCorrect).toBeNull();
+      expect(finishSubRes.body.latestAssessment.score).toBeNull();
+      expect(finishSubRes.body.latestAssessment.feedback.deferred).toBe(true);
+
+      // B3. Finish run (Authorized Release Point): status becomes CLOSED with closeReason COMPLETED
       const finishRes = await request(app.getHttpServer())
-        .post(`/api/v1/runs/${dRunId}/commands`)
+        .post(`/api/v1/runs/${finishRunId}/commands`)
         .set('Cookie', authorCookie)
         .send({
           command: 'FINISH',
-          idempotencyKey: `finish_deferred_${Date.now()}`,
+          idempotencyKey: `finish_cmd_${Date.now()}`,
         })
         .expect(HttpStatus.OK);
 
@@ -883,15 +949,33 @@ describe('Phase 1B Final Integrity Hardening — Real PostgreSQL Concurrency & I
       expect(finishRes.body.latestAssessment.score).toBe(1.0);
       expect(finishRes.body.latestAssessment.feedback.released).toBe(true);
 
-      // 8. GET /runs/:id/results after close: all assessments are released
-      const resultsAfterClose = await request(app.getHttpServer())
-        .get(`/api/v1/runs/${dRunId}/results`)
+      // B4. Reading completed run via GET /runs/:id: assessments are released
+      const getCompletedRun = await request(app.getHttpServer())
+        .get(`/api/v1/runs/${finishRunId}`)
         .set('Cookie', authorCookie)
         .expect(HttpStatus.OK);
 
-      expect(resultsAfterClose.body.assessments[0].isCorrect).toBe(true);
-      expect(resultsAfterClose.body.assessments[0].score).toBe(1.0);
-      expect(resultsAfterClose.body.assessments[0].feedback.released).toBe(true);
+      expect(getCompletedRun.body.latestAssessment.isCorrect).toBe(true);
+      expect(getCompletedRun.body.latestAssessment.score).toBe(1.0);
+      expect(getCompletedRun.body.latestAssessment.feedback.released).toBe(true);
+
+      // B5. GET /runs/:id/results after completion: all assessments and events are released
+      const resultsCompleted = await request(app.getHttpServer())
+        .get(`/api/v1/runs/${finishRunId}/results`)
+        .set('Cookie', authorCookie)
+        .expect(HttpStatus.OK);
+
+      expect(resultsCompleted.body.assessments[0].isCorrect).toBe(true);
+      expect(resultsCompleted.body.assessments[0].score).toBe(1.0);
+      expect(resultsCompleted.body.assessments[0].feedback.released).toBe(true);
+
+      // B6. Direct DB inspection confirms PostgreSQL record is intact
+      const dbCompletedAssessment = await prisma.assessmentResult.findFirst({
+        where: { runId: finishRunId },
+      });
+      expect(dbCompletedAssessment).not.toBeNull();
+      expect(dbCompletedAssessment!.isCorrect).toBe(true);
+      expect(dbCompletedAssessment!.score).toBe(1.0);
     });
   });
 });
