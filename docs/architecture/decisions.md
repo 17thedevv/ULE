@@ -44,3 +44,20 @@
 - **Context**: Premature distributed architectures introduce network partitions, distributed transactions, and operational complexity.
 - **Decision**: All domain modules reside within a single NestJS backend application. No microservices, Kafka, Redis, or Kubernetes in Phase 0.
 - **Consequences**: Direct in-process communication, simplified testing and deployment, with clear internal module boundaries that can be extracted later if necessary.
+
+## ADR-007: Authoritative Authentication via Better Auth
+
+- **Status**: Accepted (Verified in Phase 1A)
+- **Context**: ULE requires secure identity, session management across separate frontend/backend origins, and seamless integration with PostgreSQL and the Express adapter.
+- **Decision**: Adopt Better Auth (`better-auth@1.7.14`) sharing the NestJS singleton `PrismaService` via `better-auth/adapters/prisma` and mounted under `/api/v1/auth/*` via `toNodeHandler`. Support both HTTP-only session cookies and `Authorization: Bearer <token>` (via `bearer` plugin).
+- **Consequences**: Server-side session verification in `AuthGuard`, no client-supplied `ownerId` trust, strict CORS origin matching without wildcards. MCP OAuth client flows remain separate and unverified until external client integration in future phases.
+
+## ADR-008: Course Core, Authoritative Ownership & Immutable Versioning
+
+- **Status**: Accepted (Phase 1A)
+- **Context**: Course authoring requires clear relational separation between stable course identity, editable working drafts, and immutable historical snapshots.
+- **Decision**: Model three distinct relational entities:
+  - `Course`: Stable aggregate root, authoritative `ownerId` (FK to `users`), `visibility: PRIVATE` by default.
+  - `CourseDraft`: 1-to-1 editable state per course, with optimistic concurrency control (`revision` integer).
+  - `CourseVersion`: Immutable historical snapshot created atomically in a transaction from validated drafts, enforcing unique `(courseId, versionNumber)` and monotonically increasing version numbers.
+- **Consequences**: Strong isolation between authors (User A vs User B) with consistent 404 responses on private resources; zero client-facing ability to set `visibility: PUBLIC` or `status: PUBLISHED` without future editorial review workflows.

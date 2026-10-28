@@ -1,4 +1,5 @@
 import React from 'react';
+import { AuthCourseStudio } from './components/AuthCourseStudio';
 import { HealthStatus } from './components/HealthStatus';
 import { getApiBaseUrl } from './services/api';
 
@@ -13,19 +14,26 @@ export const App: React.FC = () => {
             <span className="logo-badge">ULE</span>
             <div>
               <h1>Universal Learning Engine</h1>
-              <p className="subtitle">Phase 0: Bootstrap & Architecture Foundation</p>
+              <p className="subtitle">
+                Phase 1A: Course Core, Ownership &amp; Versioning
+              </p>
             </div>
           </div>
           <div className="header-meta">
             <span className="tag">React + Vite</span>
             <span className="tag">NestJS</span>
-            <span className="tag">PostgreSQL + Prisma</span>
+            <span className="tag">Better Auth</span>
+            <span className="tag">Prisma 7</span>
           </div>
         </div>
       </header>
 
       <main className="main-content">
         <div className="grid">
+          <div className="column">
+            <AuthCourseStudio />
+          </div>
+
           <div className="column">
             <HealthStatus />
 
@@ -45,43 +53,39 @@ export const App: React.FC = () => {
                   Mobile clients, and MCP tools identically.
                 </li>
                 <li>
-                  <strong>Prisma ORM:</strong> PostgreSQL migrations and data access are managed
-                  authoritatively within the NestJS API.
+                  <strong>Immutability &amp; Ownership:</strong> Courses are private by default;
+                  version snapshots are immutable; public publication is disabled without editorial review.
                 </li>
               </ul>
             </section>
-          </div>
 
-          <div className="column">
             <section className="card">
               <h2>Developer Resources</h2>
               <div className="resource-list">
                 <a
                   href={`${apiUrl}/docs`}
                   target="_blank"
-                  rel="noreferrer"
-                  className="resource-item"
+                  rel="noopener noreferrer"
+                  className="resource-link"
                 >
-                  <div className="resource-title">OpenAPI (Swagger) Documentation</div>
-                  <div className="resource-desc">
-                    Explore and test canonical endpoints at <code>{apiUrl}/docs</code>
+                  <span className="resource-icon">📚</span>
+                  <div>
+                    <strong>OpenAPI Documentation (Swagger)</strong>
+                    <p className="resource-desc">Explore canonical /api/v1 endpoints</p>
                   </div>
                 </a>
-
-                <div className="resource-item">
-                  <div className="resource-title">Shared Contracts Package</div>
-                  <div className="resource-desc">
-                    Type definitions and schemas exported via <code>@ule/contracts</code>
+                <a
+                  href={`${apiUrl}/api/v1/health`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="resource-link"
+                >
+                  <span className="resource-icon">🩺</span>
+                  <div>
+                    <strong>Direct Health Check</strong>
+                    <p className="resource-desc">Live readiness &amp; liveness JSON endpoint</p>
                   </div>
-                </div>
-
-                <div className="resource-item">
-                  <div className="resource-title">Authentication Feasibility Spike</div>
-                  <div className="resource-desc">
-                    Better Auth + NestJS + MCP review located in{' '}
-                    <code>docs/technical-spikes/better-auth-nestjs-mcp.md</code>
-                  </div>
-                </div>
+                </a>
               </div>
             </section>
           </div>
@@ -89,7 +93,7 @@ export const App: React.FC = () => {
       </main>
 
       <footer className="footer">
-        <p>ULE Engine &copy; 2026. Licensed under GNU General Public License v3.0.</p>
+        <p>Universal Learning Engine (ULE) &bull; Phase 1A Implementation</p>
       </footer>
     </div>
   );
