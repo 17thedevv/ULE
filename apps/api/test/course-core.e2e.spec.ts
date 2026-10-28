@@ -45,6 +45,7 @@ describe('Course Core, Ownership & Versioning (e2e)', () => {
 
   const mockPrismaService: any = {
     $transaction: jest.fn(async (cb) => cb(mockPrismaService)),
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 'mock-course' }]),
     course: {
       create: jest.fn(async ({ data }) => {
         const course = {
@@ -83,6 +84,24 @@ describe('Course Core, Ownership & Versioning (e2e)', () => {
       }),
       findUnique: jest.fn(async ({ where }) => {
         return draftsTable.find((d) => d.courseId === where.courseId) || null;
+      }),
+      findUniqueOrThrow: jest.fn(async ({ where }) => {
+        const draft = draftsTable.find((d) => d.courseId === where.courseId);
+        if (!draft) throw new Error('Not found');
+        return draft;
+      }),
+      updateMany: jest.fn(async ({ where, data }) => {
+        const draft = draftsTable.find((d) => d.courseId === where.courseId);
+        if (!draft) return { count: 0 };
+        if (where.revision !== undefined && draft.revision !== where.revision) {
+          return { count: 0 };
+        }
+        if (data.title !== undefined) draft.title = data.title;
+        if (data.description !== undefined) draft.description = data.description;
+        if (data.summary !== undefined) draft.summary = data.summary;
+        if (data.revision?.increment) draft.revision += 1;
+        draft.updatedAt = new Date();
+        return { count: 1 };
       }),
       update: jest.fn(async ({ where, data }) => {
         const draft = draftsTable.find((d) => d.courseId === where.courseId);
@@ -364,6 +383,7 @@ describe('Course Core, Ownership & Versioning (e2e)', () => {
         .set('Authorization', 'Bearer token_user_b')
         .send({
           title: 'Tampered by User B',
+          expectedRevision: 1,
         })
         .expect(HttpStatus.NOT_FOUND);
     });
@@ -446,6 +466,16 @@ describe('Course Core, Ownership & Versioning (e2e)', () => {
       });
     });
 
+    it('User A receives 400 Bad Request when expectedRevision is omitted', async () => {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/courses/${courseId}/draft`)
+        .set('Authorization', 'Bearer token_user_a')
+        .send({
+          title: 'Missing revision field',
+        })
+        .expect(HttpStatus.BAD_REQUEST);
+    });
+
     it('Later draft edits do NOT change Version 1 snapshot (Immutability)', async () => {
       // 1. Edit draft further to revision 3
       await request(app.getHttpServer())
@@ -453,6 +483,7 @@ describe('Course Core, Ownership & Versioning (e2e)', () => {
         .set('Authorization', 'Bearer token_user_a')
         .send({
           title: 'Machine Learning: Quantum Neural Edition',
+          expectedRevision: 2,
         })
         .expect(HttpStatus.OK);
 

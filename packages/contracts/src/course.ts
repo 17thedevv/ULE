@@ -48,5 +48,5 @@ export interface UpdateCourseDraftRequest {
   title?: string;
   description?: string;
   summary?: string;
-  expectedRevision?: number;
+  expectedRevision: number;
 }

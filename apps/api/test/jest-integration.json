@@ -17,9 +17,7 @@
       }
     ]
   },
-  "transformIgnorePatterns": [
-    "node_modules[\\\\/](?!(\\.pnpm[\\\\/].*(better|jose)|.*(better|jose)))"
-  ],
+  "transformIgnorePatterns": [],
   "testEnvironment": "node",
   "moduleNameMapper": {
     "^@ule/contracts$": "<rootDir>/../../packages/contracts/src/index.ts"

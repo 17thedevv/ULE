@@ -14,6 +14,7 @@ describe('CoursesService (Unit Tests)', () => {
   beforeEach(() => {
     prismaMock = {
       $transaction: jest.fn(async (cb) => cb(prismaMock)),
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'c-1' }]),
       course: {
         create: jest.fn(),
         findMany: jest.fn(),
@@ -22,7 +23,9 @@ describe('CoursesService (Unit Tests)', () => {
       courseDraft: {
         create: jest.fn(),
         findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn(),
       },
       courseVersion: {
         create: jest.fn(),
@@ -100,12 +103,56 @@ describe('CoursesService (Unit Tests)', () => {
       });
 
       await expect(
-        service.updateDraft('c-1', 'user-b', { title: 'Hacked' }),
+        service.updateDraft('c-1', 'user-b', {
+          title: 'Hacked',
+          expectedRevision: 1,
+        }),
       ).rejects.toThrow(NotFoundException);
     });
   });
 
-  describe('Optimistic Concurrency Control', () => {
+  describe('Atomic Optimistic Concurrency Control', () => {
+    it('updates draft atomically when expectedRevision matches and increments revision', async () => {
+      const now = new Date();
+      prismaMock.course.findUnique.mockResolvedValue({
+        id: 'c-1',
+        ownerId: 'user-a',
+        visibility: 'PRIVATE',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      prismaMock.courseDraft.updateMany.mockResolvedValue({ count: 1 });
+      prismaMock.courseDraft.findUniqueOrThrow.mockResolvedValue({
+        id: 'd-1',
+        courseId: 'c-1',
+        title: 'Calculus Updated',
+        description: null,
+        summary: null,
+        revision: 2,
+        sourceVersionId: null,
+        updatedAt: now,
+      });
+
+      const updated = await service.updateDraft('c-1', 'user-a', {
+        title: 'Calculus Updated',
+        expectedRevision: 1,
+      });
+
+      expect(prismaMock.courseDraft.updateMany).toHaveBeenCalledWith({
+        where: {
+          courseId: 'c-1',
+          revision: 1,
+        },
+        data: {
+          title: 'Calculus Updated',
+          revision: { increment: 1 },
+        },
+      });
+      expect(updated.revision).toBe(2);
+      expect(updated.title).toBe('Calculus Updated');
+    });
+
     it('throws ConflictException if expectedRevision does not match current revision', async () => {
       const now = new Date();
       prismaMock.course.findUnique.mockResolvedValue({
@@ -116,6 +163,8 @@ describe('CoursesService (Unit Tests)', () => {
         updatedAt: now,
       });
 
+      // updateMany matched 0 rows because expectedRevision was 2 but database revision was 3
+      prismaMock.courseDraft.updateMany.mockResolvedValue({ count: 0 });
       prismaMock.courseDraft.findUnique.mockResolvedValue({
         id: 'd-1',
         courseId: 'c-1',
@@ -138,7 +187,7 @@ describe('CoursesService (Unit Tests)', () => {
   });
 
   describe('Version Immutability & Ordering', () => {
-    it('creates version 1 from draft and assigns versionNumber monotonically', async () => {
+    it('creates version 1 from draft and assigns versionNumber monotonically under row lock', async () => {
       const now = new Date();
       prismaMock.course.findUnique.mockResolvedValue({
         id: 'c-1',
@@ -181,6 +230,7 @@ describe('CoursesService (Unit Tests)', () => {
 
       const version = await service.createVersion('c-1', 'user-a');
 
+      expect(prismaMock.$queryRaw).toHaveBeenCalled();
       expect(version.versionNumber).toBe(1);
       expect(version.draftRevision).toBe(2);
       expect(prismaMock.courseDraft.update).toHaveBeenCalledWith({

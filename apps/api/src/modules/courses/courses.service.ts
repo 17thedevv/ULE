@@ -98,7 +98,8 @@ export class CoursesService {
   }
 
   /**
-   * Modifies permitted draft fields with optimistic concurrency control.
+   * Modifies permitted draft fields with atomic optimistic concurrency control.
+   * Compares expectedRevision and mutates atomically in PostgreSQL.
    */
   async updateDraft(
     courseId: string,
@@ -107,43 +108,49 @@ export class CoursesService {
   ): Promise<CourseDraftDto> {
     await this.getCourse(courseId, userId);
 
-    const draft = await this.prisma.courseDraft.findUnique({
-      where: { courseId },
+    return this.prisma.$transaction(async (tx) => {
+      // Perform atomic conditional update matching exact expectedRevision
+      const updateResult = await tx.courseDraft.updateMany({
+        where: {
+          courseId,
+          revision: dto.expectedRevision,
+        },
+        data: {
+          ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
+          ...(dto.description !== undefined
+            ? { description: dto.description.trim() }
+            : {}),
+          ...(dto.summary !== undefined ? { summary: dto.summary.trim() } : {}),
+          revision: { increment: 1 },
+        },
+      });
+
+      if (updateResult.count === 0) {
+        const existing = await tx.courseDraft.findUnique({
+          where: { courseId },
+        });
+
+        if (!existing) {
+          throw new NotFoundException(`Draft for course '${courseId}' not found.`);
+        }
+
+        throw new ConflictException(
+          `Draft revision conflict. Expected revision ${dto.expectedRevision}, but current revision is ${existing.revision}. Please reload before updating.`,
+        );
+      }
+
+      const updated = await tx.courseDraft.findUniqueOrThrow({
+        where: { courseId },
+      });
+
+      return this.toDraftDto(updated);
     });
-
-    if (!draft) {
-      throw new NotFoundException(`Draft for course '${courseId}' not found.`);
-    }
-
-    if (
-      dto.expectedRevision !== undefined &&
-      draft.revision !== dto.expectedRevision
-    ) {
-      throw new ConflictException(
-        `Draft revision mismatch. Expected revision ${dto.expectedRevision}, but current revision is ${draft.revision}. Please reload before updating.`,
-      );
-    }
-
-    const updated = await this.prisma.courseDraft.update({
-      where: { courseId },
-      data: {
-        title: dto.title !== undefined ? dto.title.trim() : draft.title,
-        description:
-          dto.description !== undefined
-            ? dto.description.trim()
-            : draft.description,
-        summary:
-          dto.summary !== undefined ? dto.summary.trim() : draft.summary,
-        revision: { increment: 1 },
-      },
-    });
-
-    return this.toDraftDto(updated);
   }
 
   /**
    * Creates an immutable version snapshot from the validated current draft.
-   * Monotonically increases versionNumber, unique per course.
+   * Employs PostgreSQL row-level locking on the parent course to serialize version allocation,
+   * guaranteeing monotonic version numbering without gaps, duplicate versions, or exposed 500 errors.
    */
   async createVersion(
     courseId: string,
@@ -151,65 +158,81 @@ export class CoursesService {
   ): Promise<CourseVersionDto> {
     await this.getCourse(courseId, userId);
 
-    return this.prisma.$transaction(async (tx) => {
-      const draft = await tx.courseDraft.findUnique({
-        where: { courseId },
-      });
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // Acquire exclusive row-level lock on the parent Course row in PostgreSQL.
+        // This serializes version snapshot requests for this course, preventing races.
+        await tx.$queryRaw`SELECT id FROM courses WHERE id = ${courseId} FOR UPDATE`;
 
-      if (!draft) {
-        throw new NotFoundException(
-          `Draft for course '${courseId}' not found.`,
-        );
-      }
+        const draft = await tx.courseDraft.findUnique({
+          where: { courseId },
+        });
 
-      if (!draft.title || draft.title.trim().length < 3) {
-        throw new BadRequestException(
-          'Cannot create version: draft title must be at least 3 characters.',
-        );
-      }
+        if (!draft) {
+          throw new NotFoundException(
+            `Draft for course '${courseId}' not found.`,
+          );
+        }
 
-      const latestVersion = await tx.courseVersion.findFirst({
-        where: { courseId },
-        orderBy: { versionNumber: 'desc' },
-      });
+        if (!draft.title || draft.title.trim().length < 3) {
+          throw new BadRequestException(
+            'Cannot create version: draft title must be at least 3 characters.',
+          );
+        }
 
-      const nextVersionNumber = (latestVersion?.versionNumber ?? 0) + 1;
+        const latestVersion = await tx.courseVersion.findFirst({
+          where: { courseId },
+          orderBy: { versionNumber: 'desc' },
+        });
 
-      const snapshotData = {
-        courseId,
-        versionNumber: nextVersionNumber,
-        title: draft.title,
-        description: draft.description,
-        summary: draft.summary,
-        schemaVersion: '1.0.0',
-        draftRevision: draft.revision,
-        createdById: userId,
-        createdAt: new Date().toISOString(),
-      };
+        const nextVersionNumber = (latestVersion?.versionNumber ?? 0) + 1;
 
-      const version = await tx.courseVersion.create({
-        data: {
+        const snapshotData = {
           courseId,
           versionNumber: nextVersionNumber,
           title: draft.title,
           description: draft.description,
           summary: draft.summary,
-          snapshot: snapshotData as unknown as Prisma.InputJsonValue,
           schemaVersion: '1.0.0',
           draftRevision: draft.revision,
           createdById: userId,
-        },
-      });
+          createdAt: new Date().toISOString(),
+        };
 
-      await tx.courseDraft.update({
-        where: { courseId },
-        data: {
-          sourceVersionId: version.id,
-        },
-      });
+        const version = await tx.courseVersion.create({
+          data: {
+            courseId,
+            versionNumber: nextVersionNumber,
+            title: draft.title,
+            description: draft.description,
+            summary: draft.summary,
+            snapshot: snapshotData as unknown as Prisma.InputJsonValue,
+            schemaVersion: '1.0.0',
+            draftRevision: draft.revision,
+            createdById: userId,
+          },
+        });
 
-      return this.toVersionDto(version);
-    });
+        await tx.courseDraft.update({
+          where: { courseId },
+          data: {
+            sourceVersionId: version.id,
+          },
+        });
+
+        return this.toVersionDto(version);
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          'Concurrent version creation conflict. A version was allocated concurrently; please retry.',
+        );
+      }
+      throw error;
+    }
   }
 
   /**

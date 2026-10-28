@@ -12,9 +12,12 @@ function createAuthOptions(
   prisma: PrismaService,
   configService: ConfigService,
 ) {
-  const secret =
-    configService.get<string>('BETTER_AUTH_SECRET') ||
-    'development-secret-for-ule-phase-1a-32-chars-long';
+  const secret = configService.get<string>('BETTER_AUTH_SECRET');
+  if (!secret || secret.length < 32) {
+    throw new Error(
+      '[AuthService] BETTER_AUTH_SECRET is required and must be at least 32 characters long.',
+    );
+  }
   const port = configService.get<number>('PORT', 3000);
   const baseURL =
     configService.get<string>('BETTER_AUTH_URL') ||

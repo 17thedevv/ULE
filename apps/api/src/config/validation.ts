@@ -6,6 +6,7 @@ import {
   IsString,
   Matches,
   Min,
+  MinLength,
   validateSync,
 } from 'class-validator';
 
@@ -47,9 +48,13 @@ export class EnvironmentVariables {
   })
   DATABASE_URL!: string;
 
-  @IsString()
-  @IsOptional()
-  BETTER_AUTH_SECRET?: string;
+  @IsString({
+    message: 'BETTER_AUTH_SECRET must be configured as a non-empty string.',
+  })
+  @MinLength(32, {
+    message: 'BETTER_AUTH_SECRET must be at least 32 characters long.',
+  })
+  BETTER_AUTH_SECRET!: string;
 
   @IsString()
   @IsOptional()

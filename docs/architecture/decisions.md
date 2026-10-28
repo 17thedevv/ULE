@@ -47,17 +47,17 @@
 
 ## ADR-007: Authoritative Authentication via Better Auth
 
-- **Status**: Accepted (Verified in Phase 1A)
+- **Status**: Accepted (Runtime Integration & Session Lifecycle Verified in Phase 1A)
 - **Context**: ULE requires secure identity, session management across separate frontend/backend origins, and seamless integration with PostgreSQL and the Express adapter.
-- **Decision**: Adopt Better Auth (`better-auth@1.7.14`) sharing the NestJS singleton `PrismaService` via `better-auth/adapters/prisma` and mounted under `/api/v1/auth/*` via `toNodeHandler`. Support both HTTP-only session cookies and `Authorization: Bearer <token>` (via `bearer` plugin).
-- **Consequences**: Server-side session verification in `AuthGuard`, no client-supplied `ownerId` trust, strict CORS origin matching without wildcards. MCP OAuth client flows remain separate and unverified until external client integration in future phases.
+- **Decision**: Adopt Better Auth (`better-auth@1.7.14`) sharing the NestJS singleton `PrismaService` via `better-auth/adapters/prisma` and mounted under `/api/v1/auth/*` via `toNodeHandler`. Support both HTTP-only session cookies and `Authorization: Bearer <token>` (via `bearer` plugin). Remove hardcoded fallback secrets: mandate strong secrets (`BETTER_AUTH_SECRET` >= 32 characters) validated at application startup with credential redaction in configuration logs and errors.
+- **Consequences**: Server-side session verification in `AuthGuard`, no client-supplied `ownerId` trust, strict CORS origin matching without wildcards. Real Better Auth registration, sign-in, session cookie reuse, `/api/v1/me`, sign-out, session invalidation, and two-user isolation verified via real HTTP tests against PostgreSQL in `test/auth-and-concurrency.integration.spec.ts` (distinguished from mocked controller tests in `test/course-core.e2e.spec.ts`). External MCP OAuth client flows remain explicitly unverified pending future MCP spikes.
 
-## ADR-008: Course Core, Authoritative Ownership & Immutable Versioning
+## ADR-008: Course Core Relational Model, Atomic Optimistic Locking & Concurrency-Safe Versioning
 
-- **Status**: Accepted (Phase 1A)
-- **Context**: Course authoring requires clear relational separation between stable course identity, editable working drafts, and immutable historical snapshots.
-- **Decision**: Model three distinct relational entities:
+- **Status**: Accepted (Phase 1A Hardened)
+- **Context**: Course authoring requires clear relational separation between stable course identity, editable working drafts, and immutable historical snapshots, with strict protection against concurrent edit collisions and duplicate version allocation.
+- **Decision**: Model three distinct relational entities using UUID v4 identifiers (RFC 4122 generated via Prisma `@default(uuid())`):
   - `Course`: Stable aggregate root, authoritative `ownerId` (FK to `users`), `visibility: PRIVATE` by default.
-  - `CourseDraft`: 1-to-1 editable state per course, with optimistic concurrency control (`revision` integer).
-  - `CourseVersion`: Immutable historical snapshot created atomically in a transaction from validated drafts, enforcing unique `(courseId, versionNumber)` and monotonically increasing version numbers.
-- **Consequences**: Strong isolation between authors (User A vs User B) with consistent 404 responses on private resources; zero client-facing ability to set `visibility: PUBLIC` or `status: PUBLISHED` without future editorial review workflows.
+  - `CourseDraft`: 1-to-1 editable state per course with mandatory `expectedRevision`. Draft updates use atomic conditional updates in PostgreSQL (`updateMany` on `courseId` and `revision: expectedRevision` with atomic `revision: { increment: 1 }`), returning HTTP 409 Conflict on stale revisions.
+  - `CourseVersion`: Immutable historical snapshot created atomically in a transaction. Employs PostgreSQL row-level locking on the parent course row (`SELECT id FROM courses WHERE id = $1 FOR UPDATE`) to serialize snapshot requests per course, guaranteeing monotonic version numbering without races, duplicates, or exposed 500 errors, backed by database unique constraint `@@unique([courseId, versionNumber])` and graceful 409 Conflict mapping (`P2002`).
+- **Consequences**: Strong isolation between authors (User A vs User B) with consistent 404 responses on private resources; zero client-facing ability to set `visibility: PUBLIC` or `status: PUBLISHED` without future editorial review workflows. Real concurrent draft edits and concurrent version allocations verified in `test/auth-and-concurrency.integration.spec.ts`.

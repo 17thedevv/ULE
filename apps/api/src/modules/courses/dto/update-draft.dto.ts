@@ -1,5 +1,13 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsOptional, IsString, Length, Min } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsDefined,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Length,
+  Min,
+} from 'class-validator';
 
 export class UpdateCourseDraftDto {
   @ApiPropertyOptional({
@@ -30,13 +38,16 @@ export class UpdateCourseDraftDto {
   @Length(0, 500)
   summary?: string;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'Optional expected revision number for optimistic concurrency control.',
+      'Authoritative expected revision number for atomic optimistic concurrency control.',
     example: 1,
   })
-  @IsInt()
-  @Min(1)
-  @IsOptional()
-  expectedRevision?: number;
+  @IsDefined({
+    message: 'expectedRevision is required for optimistic concurrency control.',
+  })
+  @IsNotEmpty({ message: 'expectedRevision must not be empty.' })
+  @IsInt({ message: 'expectedRevision must be an integer.' })
+  @Min(1, { message: 'expectedRevision must be at least 1.' })
+  expectedRevision!: number;
 }
