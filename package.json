@@ -1,0 +1,35 @@
+{
+  "name": "ule",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Universal Learning Engine (ULE) Monorepo",
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @ule/api --filter @ule/web dev",
+    "dev:api": "pnpm --filter @ule/api dev",
+    "dev:web": "pnpm --filter @ule/web dev",
+    "build": "pnpm --filter @ule/contracts build && pnpm --filter @ule/api build && pnpm --filter @ule/web build",
+    "typecheck": "pnpm --recursive run typecheck",
+    "lint": "eslint .",
+    "test": "pnpm --recursive run test",
+    "test:api": "pnpm --filter @ule/api test",
+    "test:web": "pnpm --filter @ule/web test",
+    "test:integration": "pnpm --filter @ule/api test:integration",
+    "prisma:generate": "pnpm --filter @ule/api prisma:generate",
+    "prisma:migrate": "pnpm --filter @ule/api prisma:migrate",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "eslint": "^9.20.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "globals": "^15.14.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.0"
+  }
+}

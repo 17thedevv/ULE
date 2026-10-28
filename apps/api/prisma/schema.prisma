@@ -1,0 +1,23 @@
+// Prisma schema for ULE (Universal Learning Engine)
+// Phase 0: Foundation & Infrastructure Bootstrap
+
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// Provisional model introduced strictly to validate Prisma migrations and PostgreSQL
+/// connectivity in Phase 0.
+///
+/// NOTE: Full course, activity block, and learner progression models will be introduced
+/// in Phase 1 (Course Core & Activity Block Runtime). This table is intentional and provisional.
+model ProvisionalMigrationProbe {
+  id        String   @id @default(uuid())
+  probedAt  DateTime @default(now())
+  probeNote String   @default("Phase 0 bootstrap migration validation probe")
+
+  @@map("provisional_migration_probes")
+}
