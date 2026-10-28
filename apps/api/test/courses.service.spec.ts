@@ -14,7 +14,7 @@ describe('CoursesService (Unit Tests)', () => {
   beforeEach(() => {
     prismaMock = {
       $transaction: jest.fn(async (cb) => cb(prismaMock)),
-      $queryRaw: jest.fn().mockResolvedValue([{ id: 'c-1' }]),
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'c-1', ownerId: 'user-a' }]),
       course: {
         create: jest.fn(),
         findMany: jest.fn(),
@@ -95,16 +95,19 @@ describe('CoursesService (Unit Tests)', () => {
   describe('Draft Concurrency & Revisions', () => {
     it('updates draft title and increments revision when expectedRevision matches', async () => {
       const now = new Date();
-      prismaMock.course.findUnique.mockResolvedValue({
-        id: 'c-1',
-        ownerId: 'user-a',
-        visibility: 'PRIVATE',
-        createdAt: now,
+      prismaMock.$queryRaw.mockResolvedValue([{ id: 'c-1', ownerId: 'user-a' }]);
+      prismaMock.courseDraft.findUnique.mockResolvedValue({
+        id: 'd-1',
+        courseId: 'c-1',
+        title: 'Old Title',
+        description: null,
+        summary: null,
+        revision: 1,
+        sourceVersionId: null,
         updatedAt: now,
       });
 
-      prismaMock.courseDraft.updateMany.mockResolvedValue({ count: 1 });
-      prismaMock.courseDraft.findUniqueOrThrow.mockResolvedValue({
+      prismaMock.courseDraft.update.mockResolvedValue({
         id: 'd-1',
         courseId: 'c-1',
         title: 'New Title',
@@ -120,11 +123,8 @@ describe('CoursesService (Unit Tests)', () => {
         expectedRevision: 1,
       });
 
-      expect(prismaMock.courseDraft.updateMany).toHaveBeenCalledWith({
-        where: {
-          courseId: 'c-1',
-          revision: 1,
-        },
+      expect(prismaMock.courseDraft.update).toHaveBeenCalledWith({
+        where: { id: 'd-1' },
         data: {
           title: 'New Title',
           revision: { increment: 1 },
@@ -135,15 +135,7 @@ describe('CoursesService (Unit Tests)', () => {
     });
 
     it('rejects stale draft update with 409 ConflictException when revision does not match', async () => {
-      prismaMock.course.findUnique.mockResolvedValue({
-        id: 'c-1',
-        ownerId: 'user-a',
-        visibility: 'PRIVATE',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      prismaMock.courseDraft.updateMany.mockResolvedValue({ count: 0 });
+      prismaMock.$queryRaw.mockResolvedValue([{ id: 'c-1', ownerId: 'user-a' }]);
       prismaMock.courseDraft.findUnique.mockResolvedValue({
         id: 'd-1',
         courseId: 'c-1',

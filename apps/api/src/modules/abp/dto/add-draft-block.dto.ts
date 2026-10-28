@@ -50,12 +50,12 @@ export class AddDraftBlockDto {
   @IsOptional()
   orderIndex?: number;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     example: 1,
     description: 'Expected draft revision for optimistic concurrency control',
   })
   @IsInt()
   @Min(1)
-  @IsOptional()
-  expectedRevision?: number;
+  @IsNotEmpty()
+  expectedRevision!: number;
 }

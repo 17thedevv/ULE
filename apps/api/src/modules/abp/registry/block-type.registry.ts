@@ -15,7 +15,8 @@ import { VideoBlockDefinition } from './types/video.block';
 
 @Injectable()
 export class BlockTypeRegistry {
-  private readonly types = new Map<string, IBlockTypeDefinition>();
+  private readonly versionedTypes = new Map<string, IBlockTypeDefinition>();
+  private readonly latestTypes = new Map<string, IBlockTypeDefinition>();
 
   constructor() {
     this.register(new VideoBlockDefinition());
@@ -24,25 +25,56 @@ export class BlockTypeRegistry {
   }
 
   register(definition: IBlockTypeDefinition): void {
-    this.types.set(definition.manifest.id, definition);
+    const key = `${definition.manifest.id}@${definition.manifest.version}`;
+    this.versionedTypes.set(key, definition);
+    this.latestTypes.set(definition.manifest.id, definition);
   }
 
   listManifests(): ABTypeManifest[] {
-    return Array.from(this.types.values()).map((def) => def.manifest);
+    return Array.from(this.latestTypes.values()).map((def) => def.manifest);
   }
 
-  getDefinition(typeId: string): IBlockTypeDefinition {
-    const def = this.types.get(typeId);
+  listTypeIds(): string[] {
+    return Array.from(this.latestTypes.keys());
+  }
+
+  getSupportedVersions(typeId: string): string[] {
+    return Array.from(this.versionedTypes.entries())
+      .filter(([k]) => k.startsWith(`${typeId}@`))
+      .map(([, def]) => def.manifest.version);
+  }
+
+  hasType(typeId: string, typeVersion?: string): boolean {
+    if (typeVersion) {
+      return this.versionedTypes.has(`${typeId}@${typeVersion}`);
+    }
+    return this.latestTypes.has(typeId);
+  }
+
+  getDefinition(typeId: string, typeVersion?: string): IBlockTypeDefinition {
+    if (typeVersion) {
+      const def = this.versionedTypes.get(`${typeId}@${typeVersion}`);
+      if (!def) {
+        const supported = this.getSupportedVersions(typeId);
+        if (supported.length === 0) {
+          throw new NotFoundException(
+            `Block type '${typeId}' is not registered. Supported types: ${this.listTypeIds().join(', ')}`,
+          );
+        }
+        throw new BadRequestException(
+          `Block type '${typeId}' version '${typeVersion}' is not supported. Supported versions: ${supported.join(', ')}`,
+        );
+      }
+      return def;
+    }
+
+    const def = this.latestTypes.get(typeId);
     if (!def) {
       throw new NotFoundException(
-        `Block type '${typeId}' is not registered. Supported types: ${Array.from(this.types.keys()).join(', ')}`,
+        `Block type '${typeId}' is not registered. Supported types: ${this.listTypeIds().join(', ')}`,
       );
     }
     return def;
-  }
-
-  hasType(typeId: string): boolean {
-    return this.types.has(typeId);
   }
 
   validateConfig(
@@ -50,16 +82,18 @@ export class BlockTypeRegistry {
     config: unknown,
     blockId?: string,
     title?: string,
+    typeVersion?: string,
   ): BlockValidationResultDto {
-    const def = this.getDefinition(typeId);
+    const def = this.getDefinition(typeId, typeVersion);
     return def.validateConfig(config, blockId, title);
   }
 
   sanitizeForLearner(
     typeId: string,
     config: Record<string, unknown>,
+    typeVersion?: string,
   ): Record<string, unknown> {
-    const def = this.getDefinition(typeId);
+    const def = this.getDefinition(typeId, typeVersion);
     return def.sanitizeForLearner(config);
   }
 
@@ -67,12 +101,13 @@ export class BlockTypeRegistry {
     typeId: string,
     config: Record<string, unknown>,
     context: EvaluatorContext,
+    typeVersion?: string,
   ): Promise<EvaluatedOutcome> {
-    const def = this.getDefinition(typeId);
+    const def = this.getDefinition(typeId, typeVersion);
 
     if (!def.manifest.capabilities.evaluatable || !def.evaluateResponse) {
       throw new BadRequestException(
-        `Block type '${typeId}' is not evaluatable or does not support response evaluation.`,
+        `Block type '${typeId}' version '${def.manifest.version}' is not evaluatable or does not support response evaluation.`,
       );
     }
 

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -10,6 +11,7 @@ import {
   AssessmentResultDto,
   BlockInstanceSnapshot,
   RunCloseReason,
+  RunCommandType,
   RunResultsDto,
   RunStatus,
 } from '@ule/contracts';
@@ -35,6 +37,8 @@ export class RuntimeService {
 
   /**
    * Starts a new Activity Block Run against a pinned immutable CourseVersion.
+   * Concurrently safe and idempotent: replaying with the same idempotencyKey returns
+   * the existing run without duplicate rows, while mismatched parameters return 409 Conflict.
    */
   async startRun(userId: string, dto: StartRunDto): Promise<ABRunDto> {
     // 1. Authorize course version access and retrieve pinned snapshot
@@ -62,59 +66,90 @@ export class RuntimeService {
     }
 
     // 2. Extensibility guard: Coding block execution is strictly unsupported in Phase 1B
-    const def = this.registry.getDefinition(pinnedBlock.blockTypeId);
+    const def = this.registry.getDefinition(pinnedBlock.blockTypeId, pinnedBlock.typeVersion);
     if (!def.manifest.capabilities.runtimeExecutionSupported) {
       throw new BadRequestException(
         `Block type '${pinnedBlock.blockTypeId}' runtime execution is unsupported until an appropriately isolated execution capability is available.`,
       );
     }
 
-    // 3. Idempotency check: if an idempotency key was supplied and an event with it exists
-    if (dto.idempotencyKey) {
-      const existingEvent = await this.prisma.aBEvent.findFirst({
-        where: {
-          idempotencyKey: dto.idempotencyKey,
-          run: { userId, courseVersionId: version.id, blockInstanceId: pinnedBlock.id },
-        },
-        include: { run: true },
-      });
+    // 3. Sequential idempotency check
+    const existingRun = await this.prisma.aBRun.findUnique({
+      where: { idempotencyKey: dto.idempotencyKey },
+      include: { courseVersion: true },
+    });
 
-      if (existingEvent) {
-        return this.getRun(existingEvent.run.id, userId);
+    if (existingRun) {
+      if (
+        existingRun.userId === userId &&
+        existingRun.courseVersionId === version.id &&
+        existingRun.blockInstanceId === pinnedBlock.id
+      ) {
+        return this.getRun(existingRun.id, userId);
       }
+      throw new ConflictException(
+        `Idempotency key '${dto.idempotencyKey}' was already used for a different run request.`,
+      );
     }
 
-    // 4. Create Run and record initial RUN_STARTED event atomically
-    return this.prisma.$transaction(async (tx) => {
-      const now = new Date();
-      const run = await tx.aBRun.create({
-        data: {
-          userId,
-          courseVersionId: version.id,
-          blockInstanceId: pinnedBlock.id,
-          blockTypeId: pinnedBlock.blockTypeId,
-          typeVersion: pinnedBlock.typeVersion,
-          status: 'ACTIVE',
-          startedAt: now,
-        },
-      });
-
-      await tx.aBEvent.create({
-        data: {
-          runId: run.id,
-          eventType: 'RUN_STARTED',
-          idempotencyKey: dto.idempotencyKey ?? null,
-          payload: {
+    // 4. Create Run atomically, handling concurrent insertion races via unique constraint catch
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const now = new Date();
+        const run = await tx.aBRun.create({
+          data: {
+            userId,
             courseVersionId: version.id,
             blockInstanceId: pinnedBlock.id,
             blockTypeId: pinnedBlock.blockTypeId,
+            typeVersion: pinnedBlock.typeVersion,
+            status: 'ACTIVE',
+            startedAt: now,
+            idempotencyKey: dto.idempotencyKey,
           },
-          serverTimestamp: now,
-        },
-      });
+        });
 
-      return this.toRunDto(run, pinnedBlock);
-    });
+        await tx.aBEvent.create({
+          data: {
+            runId: run.id,
+            eventType: 'RUN_STARTED',
+            idempotencyKey: dto.idempotencyKey,
+            payload: {
+              courseVersionId: version.id,
+              blockInstanceId: pinnedBlock.id,
+              blockTypeId: pinnedBlock.blockTypeId,
+            },
+            serverTimestamp: now,
+          },
+        });
+
+        return this.toRunDto(run, pinnedBlock);
+      });
+    } catch (err: unknown) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const racedRun = await this.prisma.aBRun.findUnique({
+          where: { idempotencyKey: dto.idempotencyKey },
+          include: { courseVersion: true },
+        });
+
+        if (
+          racedRun &&
+          racedRun.userId === userId &&
+          racedRun.courseVersionId === version.id &&
+          racedRun.blockInstanceId === pinnedBlock.id
+        ) {
+          return this.getRun(racedRun.id, userId);
+        }
+
+        throw new ConflictException(
+          `Idempotency key '${dto.idempotencyKey}' was already used for a different run request.`,
+        );
+      }
+      throw err;
+    }
   }
 
   /**
@@ -144,27 +179,41 @@ export class RuntimeService {
   }
 
   /**
-   * Executes a host lifecycle command on a run (START, SUSPEND, RESUME, SUBMIT_RESPONSE, FINISH, ABANDON, FAIL).
+   * Executes a host lifecycle command on a run under an exclusive row-level lock.
+   * State transitions, monotonic attempt ordering, and idempotency deduplication are atomic.
    */
   async executeCommand(
     runId: string,
     userId: string,
     dto: ExecuteRunCommandDto,
   ): Promise<ABRunDto> {
-    const run = await this.prisma.aBRun.findUnique({
-      where: { id: runId },
-      include: { courseVersion: true },
-    });
-
-    if (!run || run.userId !== userId) {
-      throw new NotFoundException(`Run '${runId}' not found.`);
+    // 1. FAIL is reserved for trusted runtime authority; reject from client command surface
+    if ((dto.command as string) === 'FAIL') {
+      throw new BadRequestException(
+        "The 'FAIL' command is reserved for trusted runtime authority and cannot be issued by clients.",
+      );
     }
 
-    const pinnedBlock = this.extractPinnedBlock(run.courseVersion, run.blockInstanceId);
+    // 2. Execute under exclusive row lock on the ab_runs record
+    return this.prisma.$transaction(async (tx) => {
+      const lockedRuns = await tx.$queryRaw<{ id: string; userId: string; status: RunStatus }[]>`
+        SELECT id, "userId" AS "userId", status FROM ab_runs WHERE id = ${runId} FOR UPDATE
+      `;
 
-    // Idempotency check: if an event with this idempotency key already exists on this run
-    if (dto.idempotencyKey) {
-      const existingEvent = await this.prisma.aBEvent.findUnique({
+      if (!lockedRuns || lockedRuns.length === 0 || lockedRuns[0].userId !== userId) {
+        throw new NotFoundException(`Run '${runId}' not found.`);
+      }
+
+      const run = await tx.aBRun.findUniqueOrThrow({
+        where: { id: runId },
+        include: { courseVersion: true },
+      });
+
+      const pinnedBlock = this.extractPinnedBlock(run.courseVersion, run.blockInstanceId);
+      const def = this.registry.getDefinition(pinnedBlock.blockTypeId, pinnedBlock.typeVersion);
+
+      // 3. Concurrent Idempotency Check under the row-level lock
+      const existingEvent = await tx.aBEvent.findUnique({
         where: {
           runId_idempotencyKey: {
             runId: run.id,
@@ -174,26 +223,39 @@ export class RuntimeService {
       });
 
       if (existingEvent) {
-        // Return existing state without duplicate mutation
-        return this.getRun(runId, userId);
-      }
-    }
-
-    const now = new Date();
-
-    switch (dto.command) {
-      case 'START': {
-        if (run.status === 'ACTIVE') {
-          return this.getRun(runId, userId);
-        }
-        if (run.status !== 'CREATED') {
-          throw new BadRequestException(
-            `Cannot start run from '${run.status}' status. Only CREATED runs can be started.`,
+        const expectedEventType = this.mapCommandToEventType(dto.command);
+        if (existingEvent.eventType !== expectedEventType) {
+          throw new ConflictException(
+            `Idempotency key '${dto.idempotencyKey}' was already used on this run for command '${existingEvent.eventType}', cannot replay for '${dto.command}'.`,
           );
         }
 
-        const updated = await this.prisma.$transaction(async (tx) => {
-          const r = await tx.aBRun.update({
+        const latestAttempt = await tx.aBAttempt.findFirst({
+          where: { runId: run.id },
+          orderBy: { attemptNumber: 'desc' },
+        });
+        const latestAssessment = await tx.assessmentResult.findFirst({
+          where: { runId: run.id },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        return this.toRunDto(run, pinnedBlock, latestAttempt, latestAssessment);
+      }
+
+      const now = new Date();
+
+      switch (dto.command) {
+        case 'START': {
+          if (run.status === 'ACTIVE') {
+            return this.toRunDto(run, pinnedBlock);
+          }
+          if (run.status !== 'CREATED') {
+            throw new BadRequestException(
+              `Cannot start run from '${run.status}' status. Only CREATED runs can be started.`,
+            );
+          }
+
+          const updated = await tx.aBRun.update({
             where: { id: run.id },
             data: { status: 'ACTIVE', startedAt: now },
           });
@@ -202,26 +264,22 @@ export class RuntimeService {
             data: {
               runId: run.id,
               eventType: 'RUN_STARTED',
-              idempotencyKey: dto.idempotencyKey ?? null,
+              idempotencyKey: dto.idempotencyKey,
               serverTimestamp: now,
             },
           });
 
-          return r;
-        });
-
-        return this.toRunDto(updated, pinnedBlock);
-      }
-
-      case 'SUSPEND': {
-        if (run.status !== 'ACTIVE') {
-          throw new BadRequestException(
-            `Cannot suspend run in '${run.status}' status. Only ACTIVE runs can be suspended.`,
-          );
+          return this.toRunDto(updated, pinnedBlock);
         }
 
-        const updated = await this.prisma.$transaction(async (tx) => {
-          const r = await tx.aBRun.update({
+        case 'SUSPEND': {
+          if (run.status !== 'ACTIVE') {
+            throw new BadRequestException(
+              `Cannot suspend run in '${run.status}' status. Only ACTIVE runs can be suspended.`,
+            );
+          }
+
+          const updated = await tx.aBRun.update({
             where: { id: run.id },
             data: { status: 'SUSPENDED' },
           });
@@ -230,26 +288,25 @@ export class RuntimeService {
             data: {
               runId: run.id,
               eventType: 'RUN_SUSPENDED',
-              idempotencyKey: dto.idempotencyKey ?? null,
+              idempotencyKey: dto.idempotencyKey,
               serverTimestamp: now,
             },
           });
 
-          return r;
-        });
-
-        return this.toRunDto(updated, pinnedBlock);
-      }
-
-      case 'RESUME': {
-        if (run.status !== 'SUSPENDED') {
-          throw new BadRequestException(
-            `Cannot resume run in '${run.status}' status. Only SUSPENDED runs can be resumed.`,
-          );
+          return this.toRunDto(updated, pinnedBlock);
         }
 
-        const updated = await this.prisma.$transaction(async (tx) => {
-          const r = await tx.aBRun.update({
+        case 'RESUME': {
+          if (run.status === 'ACTIVE') {
+            return this.toRunDto(run, pinnedBlock);
+          }
+          if (run.status !== 'SUSPENDED') {
+            throw new BadRequestException(
+              `Cannot resume run in '${run.status}' status. Only SUSPENDED runs can be resumed.`,
+            );
+          }
+
+          const updated = await tx.aBRun.update({
             where: { id: run.id },
             data: { status: 'ACTIVE' },
           });
@@ -258,62 +315,133 @@ export class RuntimeService {
             data: {
               runId: run.id,
               eventType: 'RUN_RESUMED',
-              idempotencyKey: dto.idempotencyKey ?? null,
+              idempotencyKey: dto.idempotencyKey,
               serverTimestamp: now,
             },
           });
 
-          return r;
-        });
-
-        return this.toRunDto(updated, pinnedBlock);
-      }
-
-      case 'SUBMIT_RESPONSE': {
-        if (run.status !== 'ACTIVE') {
-          throw new BadRequestException(
-            `Cannot submit response when run is in '${run.status}' status. Run must be ACTIVE.`,
-          );
+          return this.toRunDto(updated, pinnedBlock);
         }
 
-        const def = this.registry.getDefinition(pinnedBlock.blockTypeId);
-        if (!def.manifest.capabilities.submittable || !def.manifest.capabilities.evaluatable) {
-          throw new BadRequestException(
-            `Block type '${pinnedBlock.blockTypeId}' does not accept response submissions or server evaluation.`,
-          );
-        }
+        case 'REQUEST_HINT': {
+          if (run.status !== 'ACTIVE') {
+            throw new BadRequestException(
+              `Cannot request hint in '${run.status}' status. Run must be ACTIVE.`,
+            );
+          }
 
-        // Support / Assistance context preservation
-        const assisted = Boolean(dto.payload?.usedHint || dto.payload?.assisted);
-        const supportContext = {
-          hintUsed: assisted,
-          assistanceLevel: assisted ? 'HINT' : 'NONE',
-        };
+          const blockConfig = pinnedBlock.config as {
+            allowHints?: boolean;
+            hintText?: string;
+          };
 
-        const submittedResponse =
-          (dto.payload?.response as Record<string, unknown>) ??
-          dto.payload ??
-          {};
+          if (!blockConfig.allowHints || !blockConfig.hintText) {
+            throw new BadRequestException(
+              'Hints are not enabled for this activity block.',
+            );
+          }
 
-        // Deterministic server-side evaluation against protected block configuration
-        const evaluatedOutcome = await this.registry.evaluate(
-          pinnedBlock.blockTypeId,
-          pinnedBlock.config,
-          {
-            runId: run.id,
-            attemptId: 'temp',
-            attemptNumber: 0,
-            userId,
-            submittedResponse,
-            supportContext,
-          },
-        );
-
-        return this.prisma.$transaction(async (tx) => {
-          const attemptCount = await tx.aBAttempt.count({
-            where: { runId: run.id },
+          await tx.aBEvent.create({
+            data: {
+              runId: run.id,
+              eventType: 'HINT_DELIVERED',
+              idempotencyKey: dto.idempotencyKey,
+              payload: { hintText: blockConfig.hintText },
+              serverTimestamp: now,
+            },
           });
-          const attemptNumber = attemptCount + 1;
+
+          const latestAttempt = await tx.aBAttempt.findFirst({
+            where: { runId: run.id },
+            orderBy: { attemptNumber: 'desc' },
+          });
+          const latestAssessment = await tx.assessmentResult.findFirst({
+            where: { runId: run.id },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          return this.toRunDto(run, pinnedBlock, latestAttempt, latestAssessment);
+        }
+
+        case 'SUBMIT_RESPONSE': {
+          if (run.status !== 'ACTIVE') {
+            throw new BadRequestException(
+              `Cannot submit response when run is in '${run.status}' status. Run must be ACTIVE.`,
+            );
+          }
+
+          if (
+            !def.manifest.capabilities.submittable ||
+            !def.manifest.capabilities.evaluatable
+          ) {
+            throw new BadRequestException(
+              `Block type '${pinnedBlock.blockTypeId}' does not accept response submissions or server evaluation.`,
+            );
+          }
+
+          // Gate 4: Trusted Assistance Provenance Model
+          // Check if server recorded a HINT_DELIVERED event on this run
+          const hintDeliveredEvent = await tx.aBEvent.findFirst({
+            where: { runId: run.id, eventType: 'HINT_DELIVERED' },
+          });
+
+          let assisted: boolean;
+          let supportContext: Record<string, unknown>;
+
+          if (hintDeliveredEvent) {
+            // Server-observed assistance: client cannot claim independence when hint was delivered
+            assisted = true;
+            supportContext = {
+              hintUsed: true,
+              assistanceLevel: 'SERVER_OBSERVED_HINT',
+              provenance: 'SERVER_OBSERVED',
+              hintDelivered: true,
+            };
+          } else if (
+            dto.payload?.usedHint === true ||
+            dto.payload?.assisted === true
+          ) {
+            // Client self-reported assistance
+            assisted = true;
+            supportContext = {
+              hintUsed: true,
+              assistanceLevel: 'CLIENT_REPORTED',
+              provenance: 'SELF_REPORTED_ASSISTED',
+            };
+          } else {
+            // Client self-reported independence (unverified, not verified by proctor)
+            assisted = false;
+            supportContext = {
+              hintUsed: false,
+              assistanceLevel: 'NONE',
+              provenance: 'SELF_REPORTED_INDEPENDENT',
+            };
+          }
+
+          const submittedResponse =
+            (dto.payload?.response as Record<string, unknown>) ??
+            dto.payload ??
+            {};
+
+          // Atomically calculate next attemptNumber under the row-level lock
+          const lastAttempt = await tx.aBAttempt.findFirst({
+            where: { runId: run.id },
+            orderBy: { attemptNumber: 'desc' },
+          });
+          const attemptNumber = (lastAttempt?.attemptNumber ?? 0) + 1;
+
+          // Deterministic server-side evaluation against protected block configuration
+          const evaluatedOutcome = await def.evaluateResponse!(
+            pinnedBlock.config,
+            {
+              runId: run.id,
+              attemptId: 'temp',
+              attemptNumber,
+              userId,
+              submittedResponse,
+              supportContext,
+            },
+          );
 
           const attempt = await tx.aBAttempt.create({
             data: {
@@ -322,7 +450,7 @@ export class RuntimeService {
               submittedResponse: submittedResponse as unknown as Prisma.InputJsonValue,
               assisted,
               supportContext: supportContext as unknown as Prisma.InputJsonValue,
-              idempotencyKey: dto.idempotencyKey ?? null,
+              idempotencyKey: dto.idempotencyKey,
               createdAt: now,
             },
           });
@@ -345,29 +473,28 @@ export class RuntimeService {
             data: {
               runId: run.id,
               eventType: 'ATTEMPT_SUBMITTED',
-              idempotencyKey: dto.idempotencyKey ?? null,
+              idempotencyKey: dto.idempotencyKey,
               payload: {
                 attemptNumber,
                 assisted,
                 isCorrect: evaluatedOutcome.isCorrect,
+                provenance: String(supportContext.provenance),
               },
               serverTimestamp: now,
             },
           });
 
           return this.toRunDto(run, pinnedBlock, attempt, assessment);
-        });
-      }
-
-      case 'FINISH': {
-        if (run.status !== 'ACTIVE') {
-          throw new BadRequestException(
-            `Cannot finish run in '${run.status}' status. Run must be ACTIVE.`,
-          );
         }
 
-        const updated = await this.prisma.$transaction(async (tx) => {
-          const r = await tx.aBRun.update({
+        case 'FINISH': {
+          if (run.status !== 'ACTIVE') {
+            throw new BadRequestException(
+              `Cannot finish run in '${run.status}' status. Run must be ACTIVE.`,
+            );
+          }
+
+          const updated = await tx.aBRun.update({
             where: { id: run.id },
             data: {
               status: 'CLOSED',
@@ -380,7 +507,7 @@ export class RuntimeService {
             data: {
               runId: run.id,
               eventType: 'RUN_COMPLETED',
-              idempotencyKey: dto.idempotencyKey ?? null,
+              idempotencyKey: dto.idempotencyKey,
               payload: {
                 ungraded: pinnedBlock.blockTypeId === 'video',
               },
@@ -388,19 +515,17 @@ export class RuntimeService {
             },
           });
 
-          return r;
-        });
-
-        return this.toRunDto(updated, pinnedBlock);
-      }
-
-      case 'ABANDON': {
-        if (run.status === 'CLOSED') {
-          throw new BadRequestException('Cannot abandon a run that is already CLOSED.');
+          return this.toRunDto(updated, pinnedBlock);
         }
 
-        const updated = await this.prisma.$transaction(async (tx) => {
-          const r = await tx.aBRun.update({
+        case 'ABANDON': {
+          if (run.status === 'CLOSED') {
+            throw new BadRequestException(
+              'Cannot abandon a run that is already CLOSED.',
+            );
+          }
+
+          const updated = await tx.aBRun.update({
             where: { id: run.id },
             data: {
               status: 'CLOSED',
@@ -413,57 +538,20 @@ export class RuntimeService {
             data: {
               runId: run.id,
               eventType: 'RUN_ABANDONED',
-              idempotencyKey: dto.idempotencyKey ?? null,
+              idempotencyKey: dto.idempotencyKey,
               serverTimestamp: now,
             },
           });
 
-          return r;
-        });
-
-        return this.toRunDto(updated, pinnedBlock);
-      }
-
-      case 'FAIL': {
-        if (run.status === 'CLOSED') {
-          throw new BadRequestException('Cannot fail a run that is already CLOSED.');
+          return this.toRunDto(updated, pinnedBlock);
         }
 
-        const failureReason =
-          typeof dto.payload?.reason === 'string'
-            ? dto.payload.reason
-            : 'Runtime execution failure';
-
-        const updated = await this.prisma.$transaction(async (tx) => {
-          const r = await tx.aBRun.update({
-            where: { id: run.id },
-            data: {
-              status: 'CLOSED',
-              closeReason: 'FAILED',
-              failureDetails: failureReason,
-              closedAt: now,
-            },
-          });
-
-          await tx.aBEvent.create({
-            data: {
-              runId: run.id,
-              eventType: 'RUN_FAILED',
-              idempotencyKey: dto.idempotencyKey ?? null,
-              payload: { reason: failureReason },
-              serverTimestamp: now,
-            },
-          });
-
-          return r;
-        });
-
-        return this.toRunDto(updated, pinnedBlock);
+        default:
+          throw new BadRequestException(
+            `Unknown command '${(dto as { command: string }).command}'.`,
+          );
       }
-
-      default:
-        throw new BadRequestException(`Unknown command '${(dto as { command: string }).command}'.`);
-    }
+    });
   }
 
   /**
@@ -496,6 +584,27 @@ export class RuntimeService {
     };
   }
 
+  private mapCommandToEventType(command: RunCommandType): string {
+    switch (command) {
+      case 'START':
+        return 'RUN_STARTED';
+      case 'SUSPEND':
+        return 'RUN_SUSPENDED';
+      case 'RESUME':
+        return 'RUN_RESUMED';
+      case 'REQUEST_HINT':
+        return 'HINT_DELIVERED';
+      case 'SUBMIT_RESPONSE':
+        return 'ATTEMPT_SUBMITTED';
+      case 'FINISH':
+        return 'RUN_COMPLETED';
+      case 'ABANDON':
+        return 'RUN_ABANDONED';
+      default:
+        return 'UNKNOWN';
+    }
+  }
+
   private extractPinnedBlock(
     version: CourseVersion,
     blockInstanceId: string,
@@ -524,6 +633,7 @@ export class RuntimeService {
     const learnerConfig = this.registry.sanitizeForLearner(
       pinnedBlock.blockTypeId,
       pinnedBlock.config,
+      pinnedBlock.typeVersion,
     );
 
     return {

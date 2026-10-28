@@ -7,9 +7,9 @@ const VALID_COMMANDS: RunCommandType[] = [
   'SUSPEND',
   'RESUME',
   'SUBMIT_RESPONSE',
+  'REQUEST_HINT',
   'FINISH',
   'ABANDON',
-  'FAIL',
 ];
 
 export class ExecuteRunCommandDto implements ExecuteRunCommandRequest {
@@ -25,17 +25,17 @@ export class ExecuteRunCommandDto implements ExecuteRunCommandRequest {
 
   @ApiPropertyOptional({
     example: { selectedOptionId: 'opt_1', usedHint: false },
-    description: 'Payload for the command (e.g. response submission, failure reason)',
+    description: 'Payload for the command (e.g. response submission)',
   })
   @IsObject()
   @IsOptional()
   payload?: Record<string, unknown>;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     example: 'req_idemp_cmd_456',
     description: 'Client idempotency key to prevent duplicate command processing',
   })
   @IsString()
-  @IsOptional()
-  idempotencyKey?: string;
+  @IsNotEmpty()
+  idempotencyKey!: string;
 }

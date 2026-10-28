@@ -63,24 +63,32 @@
 - **Consequences**: Strong isolation between authors (User A vs User B) with consistent 404 responses on private resources; zero client-facing ability to set `visibility: PUBLIC` or `status: PUBLISHED` without future editorial review workflows. Real concurrent draft edits and concurrent version allocations verified in `test/auth-and-concurrency.integration.spec.ts`.
 
 
-## ADR-009: Activity Block Protocol (ABP v0.2), Developer-Owned Registry & Minimal Runtime
+## ADR-009: Activity Block Protocol (ABP v0.2), Concurrency Hardening & Trusted Minimal Runtime
 
-- **Status**: Accepted (Phase 1B Vertical Slice Verified)
-- **Context**: ULE requires a modular, extensible Activity Block Protocol (ABP) to support diverse learning experiences (videos, quizzes, exercises) while enforcing strict trust boundaries, version pinning, server-side deterministic assessment, and learning science invariants.
+- **Status**: Accepted (Phase 1B Final Integrity Hardened & Verified)
+- **Context**: ULE requires a modular, extensible Activity Block Protocol (ABP) to support diverse learning experiences (videos, quizzes, exercises) while enforcing strict trust boundaries, version pinning, server-side deterministic assessment, and learning science invariants. Direct source review identified four integrity gates requiring hardening: atomic draft block mutations, consistent CourseVersion snapshots, runtime concurrency/idempotency, and trusted support provenance.
 - **Decision**: Establish an in-process, modular ABP vertical slice across `packages/contracts`, NestJS `AbpModule`, and PostgreSQL persistence:
-  1. **Technical Contract Separation**:
+  1. **Course Authoring Aggregate Lock & Atomic Concurrency**:
+     - Concurrency strategy: Adopt a single, uniform lock acquisition order across the entire authoring aggregate: `SELECT id, owner_id FROM courses WHERE id = $1 FOR UPDATE` is executed first in all draft metadata updates, draft block mutations (`add`, `update`, `delete`, `reorder`), and version creation transactions.
+     - Eliminates deadlocks and guarantees snapshot consistency: version creation snapshots cannot interleave with metadata or block mutations.
+     - Mandatory `expectedRevision`: Required on all draft block mutations (`addDraftBlock`, `updateDraftBlock`, `deleteDraftBlock`, `reorderDraftBlocks`). Revisions are checked and incremented atomically inside the locked transaction; stale revisions return HTTP 409 Conflict. Duplicate block IDs in reordering are rejected with HTTP 400 Bad Request.
+  2. **Technical Contract Separation**:
      - `ABType`: Developer-defined manifest, schema, capabilities, and optional evaluator. Creator configuration cannot weaken or remove structural requirements.
      - `DraftBlockInstance`: Creator-configured instance inside an owned CourseDraft. Participates in draft revision tracking and optimistic concurrency.
-     - `CourseVersion Snapshot`: CourseVersion creation atomically validates all draft blocks and freezes an immutable snapshot (`snapshot.blocks`). Subsequent mutable draft edits cannot alter older versions.
+     - `CourseVersion Snapshot`: CourseVersion creation atomically validates all draft blocks against the registry and freezes an immutable snapshot (`snapshot.blocks`). Subsequent mutable draft edits cannot alter older versions.
      - `ABRun`: Pinned execution context bound to an immutable CourseVersion snapshot and block instance. Lifecycle: `CREATED → ACTIVE ↔ SUSPENDED → CLOSED` (`COMPLETED`, `ABANDONED`, `FAILED`).
-     - `ABAttempt`: Submitted learner response with attempt provenance and assistance tracking (`assisted: boolean`, `supportContext: { hintUsed, assistanceLevel }`).
+     - `ABAttempt`: Submitted learner response with attempt provenance and assistance tracking.
      - `AssessmentResult`: Authoritative server-side evaluation result. Client-supplied scores, passes, or mastery have zero authority.
      - `ABEvent`: Audit trail of accepted runtime facts and server timestamps.
-  2. **Initial Block Types**:
-     - `video`: Renderable and completable. Strictly ungraded; completion never produces a score, pass, or mastery.
-     - `multiple-choice`: Evaluatable and submittable. Evaluator secrets and answer keys are strictly stripped from learner-facing runtime payloads. Assesses responses on the server; distinguishes assisted vs. independent attempts.
-     - `coding`: Demonstrates extensible contract validation. Runtime execution is marked unsupported (`runtimeExecutionSupported: false`) pending an isolated sandboxing capability.
-  3. **Idempotency & Security**:
-     - Repeated command executions or response submissions with the same `idempotencyKey` are deduplicated and do not produce duplicate attempts or events.
-     - Cross-user access isolation: non-owners receive consistent HTTP 404 responses.
-- **Consequences**: Proven ABP vertical slice without distributed message queues or premature microservices. Real PostgreSQL verification in `test/abp-runtime.integration.spec.ts` covers type discovery, draft validation, version snapshot pinning, secret stripping, lifecycle transitions, idempotency, assistance provenance, and cross-user isolation.
+  3. **Runtime Idempotency, Atomicity & Command Surface**:
+     - Mandatory `idempotencyKey` on all state-changing runtime operations (`startRun`, `executeCommand`). Missing keys return HTTP 400 Bad Request.
+     - Concurrent `startRun` deduplication backed by `ab_runs.idempotencyKey` unique index and PostgreSQL unique constraint violation mapping: concurrent identical requests yield the same run ID without duplicate database rows; mismatched payloads yield HTTP 409 Conflict.
+     - Runtime host commands execute under row-level lock on `ab_runs` (`SELECT id, user_id, status FROM ab_runs WHERE id = $1 FOR UPDATE`). Atomic state transitions prevent invalid lifecycle jumps. Racing submissions receive strictly monotonic, sequential attempt numbers (`1`, `2`...) without collisions.
+     - Public command surface restriction: `FAIL` is reserved exclusively for trusted runtime authority and cannot be issued as a client command (returns HTTP 400 Bad Request).
+  4. **Learning Science Invariants & Trusted Support Provenance**:
+     - **Video Completion vs. Assessment**: Video activities are renderable and completable but strictly non-evaluatable. Completion produces an `UNGRADED` assessment result with null score, never implying mastery or a pass.
+     - **Assistance Provenance Model**: Do not treat client-supplied `usedHint: false` as proof of independent work. ULE records server-side assistance facts (via `REQUEST_HINT` generating `HINT_DELIVERED` events). When a hint was delivered by the server, `assisted: true` and `provenance: 'SERVER_OBSERVED'` are enforced authoritatively regardless of client claims. When no server assistance occurred, client claims are tracked as `'SELF_REPORTED_INDEPENDENT'` or `'SELF_REPORTED_ASSISTED'`, never mislabeled as proctored independent evidence.
+  5. **Block Type Versioning Policy**:
+     - Registry resolves block types by tuple `(typeId, typeVersion)`. Mismatched or unsupported versions are rejected explicitly with HTTP 400 Bad Request.
+     - Historical execution compatibility: Existing CourseVersion snapshots execute against their declared pinned type versions (verified with historical definition `video@0.9.0`).
+- **Consequences**: Proven, concurrency-hardened ABP vertical slice without distributed message queues or premature microservices. Real PostgreSQL verification in `test/abp-runtime.integration.spec.ts` (26 tests) and `test/abp-concurrency-and-integrity.integration.spec.ts` (14 tests) covers type discovery, draft validation, version snapshot pinning, secret stripping, lifecycle transitions, sequential and concurrent idempotency, assistance provenance, and cross-user isolation.

@@ -78,10 +78,14 @@ export async function updateDraftBlock(
 export async function deleteDraftBlock(
   courseId: string,
   blockId: string,
+  expectedRevision: number,
 ): Promise<void> {
-  return request<void>(`/api/v1/courses/${courseId}/draft/blocks/${blockId}`, {
-    method: 'DELETE',
-  });
+  return request<void>(
+    `/api/v1/courses/${courseId}/draft/blocks/${blockId}?expectedRevision=${expectedRevision}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 export async function validateDraftBlocks(

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -136,7 +137,7 @@ export class DraftBlocksController {
   @ApiParam({ name: 'blockId', description: 'Draft block identifier (UUID)' })
   @ApiQuery({
     name: 'expectedRevision',
-    required: false,
+    required: true,
     description: 'Expected draft revision for concurrency check',
   })
   @ApiResponse({
@@ -149,7 +150,13 @@ export class DraftBlocksController {
     @CurrentUser('id') userId: string,
     @Query('expectedRevision') expectedRevision?: string,
   ): Promise<void> {
-    const revision = expectedRevision ? parseInt(expectedRevision, 10) : undefined;
+    if (!expectedRevision) {
+      throw new BadRequestException('expectedRevision query parameter is required.');
+    }
+    const revision = parseInt(expectedRevision, 10);
+    if (isNaN(revision) || revision < 1) {
+      throw new BadRequestException('expectedRevision must be a positive integer.');
+    }
     return this.draftBlocksService.deleteDraftBlock(
       courseId,
       blockId,

@@ -1,5 +1,5 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+import { IsNotEmpty, IsString, IsUUID } from 'class-validator';
 import { StartRunRequest } from '@ule/contracts';
 
 export class StartRunDto implements StartRunRequest {
@@ -19,11 +19,11 @@ export class StartRunDto implements StartRunRequest {
   @IsNotEmpty()
   blockInstanceId!: string;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     example: 'req_idemp_start_123',
     description: 'Client idempotency key to prevent duplicate run creation',
   })
   @IsString()
-  @IsOptional()
-  idempotencyKey?: string;
+  @IsNotEmpty()
+  idempotencyKey!: string;
 }

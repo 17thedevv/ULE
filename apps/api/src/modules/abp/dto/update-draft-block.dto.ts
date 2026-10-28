@@ -1,6 +1,7 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsInt,
+  IsNotEmpty,
   IsObject,
   IsOptional,
   IsString,
@@ -24,12 +25,12 @@ export class UpdateDraftBlockDto {
   @IsOptional()
   config?: Record<string, unknown>;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     example: 2,
     description: 'Expected draft revision for optimistic concurrency control',
   })
   @IsInt()
   @Min(1)
-  @IsOptional()
-  expectedRevision?: number;
+  @IsNotEmpty()
+  expectedRevision!: number;
 }

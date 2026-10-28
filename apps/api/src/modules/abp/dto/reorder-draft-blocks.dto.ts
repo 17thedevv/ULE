@@ -1,9 +1,9 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 import {
   ArrayMinSize,
   IsArray,
   IsInt,
-  IsOptional,
+  IsNotEmpty,
   IsString,
   Min,
 } from 'class-validator';
@@ -18,12 +18,12 @@ export class ReorderDraftBlocksDto {
   @ArrayMinSize(1)
   blockIds!: string[];
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     example: 3,
     description: 'Expected draft revision for optimistic concurrency control',
   })
   @IsInt()
   @Min(1)
-  @IsOptional()
-  expectedRevision?: number;
+  @IsNotEmpty()
+  expectedRevision!: number;
 }

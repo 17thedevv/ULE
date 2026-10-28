@@ -52,6 +52,7 @@ describe('ABP Frontend API Service', () => {
       blockTypeId: 'video',
       title: 'Video Lesson',
       config: { url: 'https://cdn.ule.internal/vid.mp4' },
+      expectedRevision: 1,
     });
 
     expect(fetchSpy).toHaveBeenCalledWith(
@@ -83,6 +84,7 @@ describe('ABP Frontend API Service', () => {
     const run = await startRun({
       courseVersionId: 'v-1',
       blockInstanceId: 'b-1',
+      idempotencyKey: 'test-idemp-1',
     });
 
     expect(run).toEqual(mockRun);
@@ -96,7 +98,10 @@ describe('ABP Frontend API Service', () => {
       json: async () => mockUpdatedRun,
     } as Response);
 
-    const run = await executeRunCommand('r-1', { command: 'FINISH' });
+    const run = await executeRunCommand('r-1', {
+      command: 'FINISH',
+      idempotencyKey: 'test-idemp-2',
+    });
     expect(run.status).toBe('CLOSED');
   });
 });

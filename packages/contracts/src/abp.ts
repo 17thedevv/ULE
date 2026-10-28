@@ -103,18 +103,18 @@ export interface AddDraftBlockRequest {
   title: string;
   config: Record<string, unknown>;
   orderIndex?: number;
-  expectedRevision?: number;
+  expectedRevision: number;
 }
 
 export interface UpdateDraftBlockRequest {
   title?: string;
   config?: Record<string, unknown>;
-  expectedRevision?: number;
+  expectedRevision: number;
 }
 
 export interface ReorderDraftBlocksRequest {
   blockIds: string[];
-  expectedRevision?: number;
+  expectedRevision: number;
 }
 
 export interface BlockValidationResultDto {
@@ -158,14 +158,28 @@ export type RunCommandType =
   | 'SUSPEND'
   | 'RESUME'
   | 'SUBMIT_RESPONSE'
+  | 'REQUEST_HINT'
   | 'FINISH'
-  | 'ABANDON'
-  | 'FAIL';
+  | 'ABANDON';
 
 export interface StartRunRequest {
   courseVersionId: string;
   blockInstanceId: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
+}
+
+export type SupportProvenance =
+  | 'SERVER_OBSERVED'
+  | 'SELF_REPORTED_ASSISTED'
+  | 'SELF_REPORTED_INDEPENDENT'
+  | 'UNVERIFIED';
+
+export interface SupportContextDto {
+  hintUsed: boolean;
+  assistanceLevel: string;
+  provenance: SupportProvenance;
+  hintDelivered?: boolean;
+  [key: string]: unknown;
 }
 
 export interface SubmitResponsePayload {
@@ -177,7 +191,7 @@ export interface SubmitResponsePayload {
 export interface ExecuteRunCommandRequest {
   command: RunCommandType;
   payload?: Record<string, unknown>;
-  idempotencyKey?: string;
+  idempotencyKey: string;
 }
 
 export interface ABAttemptDto {

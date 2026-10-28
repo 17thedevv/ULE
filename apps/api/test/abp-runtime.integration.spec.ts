@@ -141,6 +141,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
           blockTypeId: 'non-existent-type',
           title: 'Invalid Block',
           config: {},
+          expectedRevision: 1,
         })
         .expect(HttpStatus.NOT_FOUND);
 
@@ -158,6 +159,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
             question: 'Is this valid?',
             options: [{ id: 'opt_1', text: 'Only one option' }],
           },
+          expectedRevision: 1,
         })
         .expect(HttpStatus.BAD_REQUEST);
 
@@ -179,6 +181,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
             ],
             answerKey: { correctOptionId: 'opt_ghost' },
           },
+          expectedRevision: 1,
         })
         .expect(HttpStatus.BAD_REQUEST);
 
@@ -192,6 +195,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
         .send({
           blockTypeId: 'video',
           title: 'Lesson 1: Introduction Video',
+          expectedRevision: 1,
           config: {
             url: 'https://cdn.ule.internal/lessons/intro.mp4',
             durationSeconds: 180,
@@ -220,6 +224,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
         .send({
           blockTypeId: 'multiple-choice',
           title: 'Lesson 1: Knowledge Check',
+          expectedRevision: 2,
           config: {
             question: 'What tier does the React application belong to in ULE?',
             options: [
@@ -249,6 +254,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
         .send({
           blockTypeId: 'coding',
           title: 'Practice: Write a Function',
+          expectedRevision: 3,
           config: {
             language: 'typescript',
             starterCode: 'export function add(a: number, b: number): number { return 0; }',
@@ -262,7 +268,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
 
       // Clean up coding block to keep course slice focused on Video + MCQ
       await request(app.getHttpServer())
-        .delete(`/api/v1/courses/${courseAId}/draft/blocks/${res.body.id}`)
+        .delete(`/api/v1/courses/${courseAId}/draft/blocks/${res.body.id}?expectedRevision=4`)
         .set('Cookie', userACookie)
         .expect(HttpStatus.NO_CONTENT);
     });
@@ -396,7 +402,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
       const res = await request(app.getHttpServer())
         .post(`/api/v1/runs/${runVideoId}/commands`)
         .set('Cookie', userACookie)
-        .send({ command: 'FINISH' })
+        .send({ command: 'FINISH', idempotencyKey: 'finish_video_cmd_1' })
         .expect(HttpStatus.OK);
 
       expect(res.body.status).toBe('CLOSED');
@@ -420,6 +426,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
         .send({
           courseVersionId: courseVersion1Id,
           blockInstanceId: mcqBlockId,
+          idempotencyKey: 'start_mcq_run_key_1',
         })
         .expect(HttpStatus.CREATED);
 
@@ -445,7 +452,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
       const suspendRes = await request(app.getHttpServer())
         .post(`/api/v1/runs/${runMcqId}/commands`)
         .set('Cookie', userACookie)
-        .send({ command: 'SUSPEND' })
+        .send({ command: 'SUSPEND', idempotencyKey: 'cmd_suspend_1' })
         .expect(HttpStatus.OK);
       expect(suspendRes.body.status).toBe('SUSPENDED');
 
@@ -456,6 +463,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
         .send({
           command: 'SUBMIT_RESPONSE',
           payload: { selectedOptionId: 'opt_client' },
+          idempotencyKey: 'cmd_reject_sub_1',
         })
         .expect(HttpStatus.BAD_REQUEST);
 
@@ -463,7 +471,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
       const resumeRes = await request(app.getHttpServer())
         .post(`/api/v1/runs/${runMcqId}/commands`)
         .set('Cookie', userACookie)
-        .send({ command: 'RESUME' })
+        .send({ command: 'RESUME', idempotencyKey: 'cmd_resume_1' })
         .expect(HttpStatus.OK);
       expect(resumeRes.body.status).toBe('ACTIVE');
     });
@@ -486,7 +494,6 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
       expect(res.body.latestAttempt.attemptNumber).toBe(1);
       expect(res.body.latestAttempt.assisted).toBe(true);
       expect(res.body.latestAttempt.supportContext.hintUsed).toBe(true);
-      expect(res.body.latestAttempt.supportContext.assistanceLevel).toBe('HINT');
 
       // Authoritative backend assessment
       expect(res.body.latestAssessment).toBeDefined();
@@ -536,7 +543,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
       expect(res.body.latestAttempt.attemptNumber).toBe(2);
       expect(res.body.latestAttempt.assisted).toBe(false);
       expect(res.body.latestAttempt.supportContext.hintUsed).toBe(false);
-      expect(res.body.latestAttempt.supportContext.assistanceLevel).toBe('NONE');
+      expect(res.body.latestAttempt.supportContext.provenance).toBe('SELF_REPORTED_INDEPENDENT');
     });
 
     it('client-supplied score or mastery has zero authority', async () => {
@@ -564,7 +571,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
       await request(app.getHttpServer())
         .post(`/api/v1/runs/${runMcqId}/commands`)
         .set('Cookie', userACookie)
-        .send({ command: 'FINISH' })
+        .send({ command: 'FINISH', idempotencyKey: 'cmd_finish_mcq_1' })
         .expect(HttpStatus.OK);
 
       // Rejects submission on CLOSED run
@@ -574,6 +581,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
         .send({
           command: 'SUBMIT_RESPONSE',
           payload: { selectedOptionId: 'opt_client' },
+          idempotencyKey: 'cmd_sub_after_closed_1',
         })
         .expect(HttpStatus.BAD_REQUEST);
     });
@@ -625,6 +633,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
         .send({
           courseVersionId: courseVersion1Id,
           blockInstanceId: videoBlockId,
+          idempotencyKey: 'start_v1_run_pinned',
         })
         .expect(HttpStatus.CREATED);
 

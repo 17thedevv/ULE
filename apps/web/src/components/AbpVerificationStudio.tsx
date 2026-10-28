@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ABRunDto,
+  CourseDraftDto,
   CourseDto,
   CourseVersionDto,
   DraftBlockInstanceDto,
@@ -16,11 +17,12 @@ import {
   startRun,
   validateDraftBlocks,
 } from '../services/abp';
-import { createCourseVersion, listCourses, listCourseVersions } from '../services/courses';
+import { createCourseVersion, getCourseDraft, listCourses, listCourseVersions } from '../services/courses';
 
 export const AbpVerificationStudio: React.FC = () => {
   const [courses, setCourses] = useState<CourseDto[]>([]);
   const [selectedCourseId, setSelectedCourseId] = useState<string>('');
+  const [currentDraft, setCurrentDraft] = useState<CourseDraftDto | null>(null);
   const [draftBlocks, setDraftBlocks] = useState<DraftBlockInstanceDto[]>([]);
   const [validationReport, setValidationReport] = useState<DraftValidationResponseDto | null>(null);
   const [versions, setVersions] = useState<CourseVersionDto[]>([]);
@@ -30,6 +32,7 @@ export const AbpVerificationStudio: React.FC = () => {
 
   const [selectedOptionId, setSelectedOptionId] = useState<string>('');
   const [usedHint, setUsedHint] = useState<boolean>(false);
+  const [serverHintText, setServerHintText] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
@@ -46,9 +49,13 @@ export const AbpVerificationStudio: React.FC = () => {
     }
   }, [selectedCourseId]);
 
-  const loadDraftBlocks = useCallback(async (courseId: string) => {
+  const loadDraftAndBlocks = useCallback(async (courseId: string) => {
     try {
-      const blocks = await listDraftBlocks(courseId);
+      const [draft, blocks] = await Promise.all([
+        getCourseDraft(courseId),
+        listDraftBlocks(courseId),
+      ]);
+      setCurrentDraft(draft);
       setDraftBlocks(blocks);
       setValidationReport(null);
     } catch (err: unknown) {
@@ -76,22 +83,24 @@ export const AbpVerificationStudio: React.FC = () => {
 
   useEffect(() => {
     if (selectedCourseId) {
-      void loadDraftBlocks(selectedCourseId);
+      void loadDraftAndBlocks(selectedCourseId);
       void loadVersions(selectedCourseId);
     } else {
+      setCurrentDraft(null);
       setDraftBlocks([]);
       setVersions([]);
     }
-  }, [selectedCourseId, loadDraftBlocks, loadVersions]);
+  }, [selectedCourseId, loadDraftAndBlocks, loadVersions]);
 
   const handleAddSampleVideo = async () => {
-    if (!selectedCourseId) return;
+    if (!selectedCourseId || !currentDraft) return;
     setLoading(true);
     setErrorMessage('');
     try {
       await addDraftBlock(selectedCourseId, {
         blockTypeId: 'video',
         title: 'Video: Core Architecture Overview',
+        expectedRevision: currentDraft.revision,
         config: {
           url: 'https://cdn.ule.internal/lessons/architecture-overview.mp4',
           durationSeconds: 240,
@@ -100,7 +109,7 @@ export const AbpVerificationStudio: React.FC = () => {
         },
       });
       setStatusMessage('Added Video block successfully.');
-      await loadDraftBlocks(selectedCourseId);
+      await loadDraftAndBlocks(selectedCourseId);
     } catch (err: unknown) {
       const e = err as Error;
       setErrorMessage(e.message);
@@ -110,13 +119,14 @@ export const AbpVerificationStudio: React.FC = () => {
   };
 
   const handleAddSampleMcq = async () => {
-    if (!selectedCourseId) return;
+    if (!selectedCourseId || !currentDraft) return;
     setLoading(true);
     setErrorMessage('');
     try {
       await addDraftBlock(selectedCourseId, {
         blockTypeId: 'multiple-choice',
         title: 'Quiz: Architecture Knowledge Check',
+        expectedRevision: currentDraft.revision,
         config: {
           question: 'Which framework powers the ULE backend tier?',
           options: [
@@ -134,7 +144,7 @@ export const AbpVerificationStudio: React.FC = () => {
         },
       });
       setStatusMessage('Added Multiple Choice Quiz block successfully.');
-      await loadDraftBlocks(selectedCourseId);
+      await loadDraftAndBlocks(selectedCourseId);
     } catch (err: unknown) {
       const e = err as Error;
       setErrorMessage(e.message);
@@ -144,13 +154,14 @@ export const AbpVerificationStudio: React.FC = () => {
   };
 
   const handleTriggerValidationError = async () => {
-    if (!selectedCourseId) return;
+    if (!selectedCourseId || !currentDraft) return;
     setLoading(true);
     setErrorMessage('');
     try {
       await addDraftBlock(selectedCourseId, {
         blockTypeId: 'multiple-choice',
         title: 'Broken MCQ (Mismatched Key)',
+        expectedRevision: currentDraft.revision,
         config: {
           question: 'What is 1 + 1?',
           options: [{ id: 'opt_1', text: '2' }],
@@ -186,12 +197,12 @@ export const AbpVerificationStudio: React.FC = () => {
   };
 
   const handleDeleteBlock = async (blockId: string) => {
-    if (!selectedCourseId) return;
+    if (!selectedCourseId || !currentDraft) return;
     setLoading(true);
     try {
-      await deleteDraftBlock(selectedCourseId, blockId);
+      await deleteDraftBlock(selectedCourseId, blockId, currentDraft.revision);
       setStatusMessage('Deleted block.');
-      await loadDraftBlocks(selectedCourseId);
+      await loadDraftAndBlocks(selectedCourseId);
     } catch (err: unknown) {
       const e = err as Error;
       setErrorMessage(e.message);
@@ -228,11 +239,12 @@ export const AbpVerificationStudio: React.FC = () => {
       const run = await startRun({
         courseVersionId: selectedVersionId,
         blockInstanceId,
-        idempotencyKey: `client_run_${Date.now()}`,
+        idempotencyKey: `client_run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       });
       setActiveRun(run);
       setSelectedOptionId('');
       setUsedHint(false);
+      setServerHintText('');
       setStatusMessage(`Started Run (${run.blockTypeId}) in ACTIVE status.`);
       loadRunResults(run.id);
     } catch (err: unknown) {
@@ -248,13 +260,40 @@ export const AbpVerificationStudio: React.FC = () => {
     setLoading(true);
     setErrorMessage('');
     try {
-      const updated = await executeRunCommand(activeRun.id, { command });
+      const updated = await executeRunCommand(activeRun.id, {
+        command,
+        idempotencyKey: `client_cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      });
       setActiveRun(updated);
       setStatusMessage(`Command ${command} executed. Status is now ${updated.status}.`);
       loadRunResults(updated.id);
     } catch (err: unknown) {
       const e = err as Error;
       setErrorMessage(`Command execution failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRequestServerHint = async () => {
+    if (!activeRun) return;
+    setLoading(true);
+    setErrorMessage('');
+    try {
+      const updated = await executeRunCommand(activeRun.id, {
+        command: 'REQUEST_HINT',
+        idempotencyKey: `client_hint_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      });
+      setActiveRun(updated);
+      setUsedHint(true);
+      if (activeRun.block.learnerConfig.hintText) {
+        setServerHintText(String(activeRun.block.learnerConfig.hintText));
+      }
+      setStatusMessage('Server hint delivered and logged in authoritative runtime audit trail.');
+      loadRunResults(updated.id);
+    } catch (err: unknown) {
+      const e = err as Error;
+      setErrorMessage(`Request hint failed: ${e.message}`);
     } finally {
       setLoading(false);
     }
@@ -275,7 +314,7 @@ export const AbpVerificationStudio: React.FC = () => {
           selectedOptionId,
           usedHint,
         },
-        idempotencyKey: `attempt_${Date.now()}`,
+        idempotencyKey: `attempt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       });
       setActiveRun(updated);
       setStatusMessage('Response submitted and evaluated by authoritative server evaluator.');
@@ -513,18 +552,30 @@ export const AbpVerificationStudio: React.FC = () => {
                     </div>
 
                     <div style={{ margin: '0.75rem 0' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                      {Boolean(activeRun.block.learnerConfig.allowHints) && (
+                        <div style={{ marginBottom: '0.5rem' }}>
+                          <button
+                            type="button"
+                            className="btn-warning btn-sm"
+                            onClick={handleRequestServerHint}
+                            disabled={activeRun.status !== 'ACTIVE' || loading}
+                          >
+                            💡 Request Official Server Hint
+                          </button>
+                        </div>
+                      )}
+                      {serverHintText && (
+                        <p className="hint-text">💡 <strong>Delivered Server Hint:</strong> {serverHintText}</p>
+                      )}
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginTop: '0.5rem' }}>
                         <input
                           type="checkbox"
                           checked={usedHint}
                           onChange={(e) => setUsedHint(e.target.checked)}
                           disabled={activeRun.status !== 'ACTIVE' || loading}
                         />
-                        <span>I used a hint or assistance for this question</span>
+                        <span>Self-reported assistance indicator (Client hint checkbox)</span>
                       </label>
-                      {usedHint && Boolean(activeRun.block.learnerConfig.hintText) && (
-                        <p className="hint-text">💡 Hint: {String(activeRun.block.learnerConfig.hintText)}</p>
-                      )}
                     </div>
 
                     {activeRun.status === 'ACTIVE' && (
@@ -543,8 +594,10 @@ export const AbpVerificationStudio: React.FC = () => {
                         <p><strong>Score:</strong> {activeRun.latestAssessment.score} / 1.0</p>
                         <p><strong>Evaluator:</strong> {activeRun.latestAssessment.evaluatorId}</p>
                         <p>
-                          <strong>Attempt Support Context:</strong>{' '}
-                          {activeRun.latestAttempt?.assisted ? '⚠️ Assisted (Hint Used)' : '✨ Independent Attempt'}
+                          <strong>Attempt Support Provenance:</strong>{' '}
+                          {activeRun.latestAttempt?.assisted
+                            ? `⚠️ Assisted [${String(activeRun.latestAttempt.supportContext?.provenance || 'ASSISTED')}]`
+                            : `✨ Independent [${String(activeRun.latestAttempt?.supportContext?.provenance || 'SELF_REPORTED_INDEPENDENT')}]`}
                         </p>
                         {activeRun.latestAssessment.feedback && (
                           <p>

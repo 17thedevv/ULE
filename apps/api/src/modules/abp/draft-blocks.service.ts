@@ -79,39 +79,45 @@ export class DraftBlocksService {
 
   /**
    * Adds a new validated activity block instance to an owned course draft.
+   * Executes under an aggregate row-level lock on the parent course with atomic revision increment.
    */
   async addDraftBlock(
     courseId: string,
     userId: string,
     dto: AddDraftBlockDto,
   ): Promise<DraftBlockInstanceDto> {
-    const draft = await this.getOwnedDraft(courseId, userId);
-
-    // 1. Validate block type existence
-    const typeDef = this.registry.getDefinition(dto.blockTypeId);
+    // 1. Resolve block type and schema version from registry
+    const typeDef = this.registry.getDefinition(dto.blockTypeId, dto.typeVersion);
 
     // 2. Validate configuration against developer-defined schema
     const validation = typeDef.validateConfig(dto.config, 'new-block', dto.title);
     if (!validation.valid) {
       throw new BadRequestException(
-        `Validation failed for block type '${dto.blockTypeId}': ${validation.errors.join('; ')}`,
+        `Validation failed for block type '${dto.blockTypeId}' (v${typeDef.manifest.version}): ${validation.errors.join('; ')}`,
       );
     }
 
-    // 3. Atomically update draft revision and persist block
+    // 3. Atomically acquire aggregate lock, check expected revision, and persist block
     return this.prisma.$transaction(async (tx) => {
-      // Optimistic concurrency check if expectedRevision provided
-      if (dto.expectedRevision !== undefined && draft.revision !== dto.expectedRevision) {
-        throw new ConflictException(
-          `Draft revision conflict. Expected revision ${dto.expectedRevision}, but draft is at revision ${draft.revision}.`,
-        );
+      const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
+        SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
+      `;
+      if (!lockedCourses || lockedCourses.length === 0 || lockedCourses[0].ownerId !== userId) {
+        throw new NotFoundException(`Course '${courseId}' not found.`);
       }
 
-      // Increment draft revision atomically
-      await tx.courseDraft.update({
-        where: { id: draft.id },
-        data: { revision: { increment: 1 } },
+      const draft = await tx.courseDraft.findUnique({
+        where: { courseId },
       });
+      if (!draft) {
+        throw new NotFoundException(`Draft for course '${courseId}' not found.`);
+      }
+
+      if (draft.revision !== dto.expectedRevision) {
+        throw new ConflictException(
+          `Draft revision conflict. Expected revision ${dto.expectedRevision}, but current revision is ${draft.revision}. Please reload before updating.`,
+        );
+      }
 
       // Determine orderIndex if not specified
       let orderIndex = dto.orderIndex;
@@ -134,12 +140,19 @@ export class DraftBlocksService {
         },
       });
 
+      // Increment draft revision atomically
+      await tx.courseDraft.update({
+        where: { id: draft.id },
+        data: { revision: { increment: 1 } },
+      });
+
       return this.toDto(created);
     });
   }
 
   /**
    * Updates an existing draft block instance's title or configuration.
+   * Executes under an aggregate row-level lock on the parent course with atomic revision increment.
    */
   async updateDraftBlock(
     courseId: string,
@@ -147,42 +160,49 @@ export class DraftBlocksService {
     userId: string,
     dto: UpdateDraftBlockDto,
   ): Promise<DraftBlockInstanceDto> {
-    const draft = await this.getOwnedDraft(courseId, userId);
-
-    const existing = await this.prisma.draftBlockInstance.findFirst({
-      where: { id: blockId, draftId: draft.id },
-    });
-
-    if (!existing) {
-      throw new NotFoundException(`Block '${blockId}' not found in course draft.`);
-    }
-
-    // Validate updated configuration if supplied
-    if (dto.config !== undefined) {
-      const typeDef = this.registry.getDefinition(existing.blockTypeId);
-      const validation = typeDef.validateConfig(
-        dto.config,
-        existing.id,
-        dto.title ?? existing.title,
-      );
-      if (!validation.valid) {
-        throw new BadRequestException(
-          `Validation failed for block '${blockId}': ${validation.errors.join('; ')}`,
-        );
-      }
-    }
-
     return this.prisma.$transaction(async (tx) => {
-      if (dto.expectedRevision !== undefined && draft.revision !== dto.expectedRevision) {
+      const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
+        SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
+      `;
+      if (!lockedCourses || lockedCourses.length === 0 || lockedCourses[0].ownerId !== userId) {
+        throw new NotFoundException(`Course '${courseId}' not found.`);
+      }
+
+      const draft = await tx.courseDraft.findUnique({
+        where: { courseId },
+      });
+      if (!draft) {
+        throw new NotFoundException(`Draft for course '${courseId}' not found.`);
+      }
+
+      if (draft.revision !== dto.expectedRevision) {
         throw new ConflictException(
-          `Draft revision conflict. Expected revision ${dto.expectedRevision}, but draft is at revision ${draft.revision}.`,
+          `Draft revision conflict. Expected revision ${dto.expectedRevision}, but current revision is ${draft.revision}. Please reload before updating.`,
         );
       }
 
-      await tx.courseDraft.update({
-        where: { id: draft.id },
-        data: { revision: { increment: 1 } },
+      const existing = await tx.draftBlockInstance.findFirst({
+        where: { id: blockId, draftId: draft.id },
       });
+
+      if (!existing) {
+        throw new NotFoundException(`Block '${blockId}' not found in course draft.`);
+      }
+
+      // Validate updated configuration if supplied
+      if (dto.config !== undefined) {
+        const typeDef = this.registry.getDefinition(existing.blockTypeId, existing.typeVersion);
+        const validation = typeDef.validateConfig(
+          dto.config,
+          existing.id,
+          dto.title ?? existing.title,
+        );
+        if (!validation.valid) {
+          throw new BadRequestException(
+            `Validation failed for block '${blockId}': ${validation.errors.join('; ')}`,
+          );
+        }
+      }
 
       const updated = await tx.draftBlockInstance.update({
         where: { id: blockId },
@@ -195,40 +215,53 @@ export class DraftBlocksService {
         },
       });
 
+      await tx.courseDraft.update({
+        where: { id: draft.id },
+        data: { revision: { increment: 1 } },
+      });
+
       return this.toDto(updated);
     });
   }
 
   /**
    * Removes a block instance from a course draft.
+   * Executes under an aggregate row-level lock on the parent course with atomic revision increment.
    */
   async deleteDraftBlock(
     courseId: string,
     blockId: string,
     userId: string,
-    expectedRevision?: number,
+    expectedRevision: number,
   ): Promise<void> {
-    const draft = await this.getOwnedDraft(courseId, userId);
-
-    const existing = await this.prisma.draftBlockInstance.findFirst({
-      where: { id: blockId, draftId: draft.id },
-    });
-
-    if (!existing) {
-      throw new NotFoundException(`Block '${blockId}' not found in course draft.`);
-    }
-
     await this.prisma.$transaction(async (tx) => {
-      if (expectedRevision !== undefined && draft.revision !== expectedRevision) {
+      const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
+        SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
+      `;
+      if (!lockedCourses || lockedCourses.length === 0 || lockedCourses[0].ownerId !== userId) {
+        throw new NotFoundException(`Course '${courseId}' not found.`);
+      }
+
+      const draft = await tx.courseDraft.findUnique({
+        where: { courseId },
+      });
+      if (!draft) {
+        throw new NotFoundException(`Draft for course '${courseId}' not found.`);
+      }
+
+      if (draft.revision !== expectedRevision) {
         throw new ConflictException(
-          `Draft revision conflict. Expected revision ${expectedRevision}, but draft is at revision ${draft.revision}.`,
+          `Draft revision conflict. Expected revision ${expectedRevision}, but current revision is ${draft.revision}. Please reload before updating.`,
         );
       }
 
-      await tx.courseDraft.update({
-        where: { id: draft.id },
-        data: { revision: { increment: 1 } },
+      const existing = await tx.draftBlockInstance.findFirst({
+        where: { id: blockId, draftId: draft.id },
       });
+
+      if (!existing) {
+        throw new NotFoundException(`Block '${blockId}' not found in course draft.`);
+      }
 
       await tx.draftBlockInstance.delete({
         where: { id: blockId },
@@ -248,49 +281,68 @@ export class DraftBlocksService {
           });
         }
       }
+
+      await tx.courseDraft.update({
+        where: { id: draft.id },
+        data: { revision: { increment: 1 } },
+      });
     });
   }
 
   /**
    * Reorders all blocks in a course draft.
+   * Enforces uniqueness of block IDs and executes under an aggregate row-level lock.
    */
   async reorderDraftBlocks(
     courseId: string,
     userId: string,
     dto: ReorderDraftBlocksDto,
   ): Promise<DraftBlockInstanceDto[]> {
-    const draft = await this.getOwnedDraft(courseId, userId);
-
-    const blocks = await this.prisma.draftBlockInstance.findMany({
-      where: { draftId: draft.id },
-    });
-
-    if (blocks.length !== dto.blockIds.length) {
-      throw new BadRequestException(
-        `Reorder list must contain all ${blocks.length} block IDs in the draft.`,
-      );
-    }
-
-    const existingIds = new Set(blocks.map((b) => b.id));
-    for (const id of dto.blockIds) {
-      if (!existingIds.has(id)) {
-        throw new BadRequestException(
-          `Block ID '${id}' is not part of this draft.`,
-        );
-      }
+    // 1. Guard against duplicate block IDs in input
+    const uniqueIds = new Set(dto.blockIds);
+    if (uniqueIds.size !== dto.blockIds.length) {
+      throw new BadRequestException('Reorder list contains duplicate block IDs.');
     }
 
     return this.prisma.$transaction(async (tx) => {
-      if (dto.expectedRevision !== undefined && draft.revision !== dto.expectedRevision) {
+      const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
+        SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
+      `;
+      if (!lockedCourses || lockedCourses.length === 0 || lockedCourses[0].ownerId !== userId) {
+        throw new NotFoundException(`Course '${courseId}' not found.`);
+      }
+
+      const draft = await tx.courseDraft.findUnique({
+        where: { courseId },
+      });
+      if (!draft) {
+        throw new NotFoundException(`Draft for course '${courseId}' not found.`);
+      }
+
+      if (draft.revision !== dto.expectedRevision) {
         throw new ConflictException(
-          `Draft revision conflict. Expected revision ${dto.expectedRevision}, but draft is at revision ${draft.revision}.`,
+          `Draft revision conflict. Expected revision ${dto.expectedRevision}, but current revision is ${draft.revision}. Please reload before updating.`,
         );
       }
 
-      await tx.courseDraft.update({
-        where: { id: draft.id },
-        data: { revision: { increment: 1 } },
+      const blocks = await tx.draftBlockInstance.findMany({
+        where: { draftId: draft.id },
       });
+
+      if (blocks.length !== dto.blockIds.length) {
+        throw new BadRequestException(
+          `Reorder list must contain all ${blocks.length} block IDs in the draft.`,
+        );
+      }
+
+      const existingIds = new Set(blocks.map((b) => b.id));
+      for (const id of dto.blockIds) {
+        if (!existingIds.has(id)) {
+          throw new BadRequestException(
+            `Block ID '${id}' is not part of this draft.`,
+          );
+        }
+      }
 
       // Update orderIndex for each block
       for (let i = 0; i < dto.blockIds.length; i++) {
@@ -299,6 +351,11 @@ export class DraftBlocksService {
           data: { orderIndex: i },
         });
       }
+
+      await tx.courseDraft.update({
+        where: { id: draft.id },
+        data: { revision: { increment: 1 } },
+      });
 
       const reordered = await tx.draftBlockInstance.findMany({
         where: { draftId: draft.id },
@@ -324,13 +381,15 @@ export class DraftBlocksService {
     });
 
     const results = blocks.map((block) => {
-      if (!this.registry.hasType(block.blockTypeId)) {
+      if (!this.registry.hasType(block.blockTypeId, block.typeVersion)) {
         return {
           blockId: block.id,
           title: block.title,
           blockTypeId: block.blockTypeId,
           valid: false,
-          errors: [`Block type '${block.blockTypeId}' is not recognized.`],
+          errors: [
+            `Block type '${block.blockTypeId}' version '${block.typeVersion}' is not supported. Supported versions: ${this.registry.getSupportedVersions(block.blockTypeId).join(', ')}`,
+          ],
         };
       }
       return this.registry.validateConfig(
@@ -338,6 +397,7 @@ export class DraftBlocksService {
         block.config,
         block.id,
         block.title,
+        block.typeVersion,
       );
     });
 
