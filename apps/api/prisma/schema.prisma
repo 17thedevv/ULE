@@ -1,5 +1,6 @@
 // Prisma schema for ULE (Universal Learning Engine)
 // Phase 1A: Course Core, Ownership & Versioning
+// Phase 1B: Activity Block Protocol & Minimal Runtime
 
 datasource db {
   provider = "postgresql"
@@ -24,18 +25,19 @@ model ProvisionalMigrationProbe {
 // Authentication Domain (Better Auth Canonical Models)
 // ----------------------------------------------------
 model User {
-  id            String    @id @default(uuid())
-  name          String
-  email         String    @unique
-  emailVerified Boolean   @default(false)
-  image         String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id              String          @id @default(uuid())
+  name            String
+  email           String          @unique
+  emailVerified   Boolean         @default(false)
+  image           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
-  sessions      Session[]
-  accounts      Account[]
-  courses       Course[]
+  sessions        Session[]
+  accounts        Account[]
+  courses         Course[]
   createdVersions CourseVersion[] @relation("UserCreatedVersions")
+  runs            ABRun[]
 
   @@map("users")
 }
@@ -115,16 +117,18 @@ model Course {
 
 /// Represents the current editable authoring state for a Course.
 model CourseDraft {
-  id              String         @id @default(uuid())
-  courseId        String         @unique
-  course          Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  id              String               @id @default(uuid())
+  courseId        String               @unique
+  course          Course               @relation(fields: [courseId], references: [id], onDelete: Cascade)
   title           String
   description     String?
   summary         String?
-  revision        Int            @default(1)
+  revision        Int                  @default(1)
   sourceVersionId String?
-  sourceVersion   CourseVersion? @relation("DraftSourceVersion", fields: [sourceVersionId], references: [id], onDelete: SetNull)
-  updatedAt       DateTime       @updatedAt
+  sourceVersion   CourseVersion?       @relation("DraftSourceVersion", fields: [sourceVersionId], references: [id], onDelete: SetNull)
+  updatedAt       DateTime             @updatedAt
+
+  blocks          DraftBlockInstance[]
 
   @@map("course_drafts")
 }
@@ -146,9 +150,129 @@ model CourseVersion {
   createdAt     DateTime     @default(now())
 
   derivedDrafts CourseDraft[] @relation("DraftSourceVersion")
+  runs          ABRun[]
 
   @@unique([courseId, versionNumber])
   @@index([courseId])
   @@index([createdById])
   @@map("course_versions")
+}
+
+// ----------------------------------------------------
+// ABP Domain (Activity Block Protocol & Runtime)
+// ----------------------------------------------------
+
+enum RunStatus {
+  CREATED
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum RunCloseReason {
+  COMPLETED
+  ABANDONED
+  FAILED
+}
+
+enum AssessmentStatus {
+  EVALUATED
+  SKIPPED
+  FAILED
+}
+
+model DraftBlockInstance {
+  id          String      @id @default(uuid())
+  draftId     String
+  draft       CourseDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  blockTypeId String
+  typeVersion String      @default("1.0.0")
+  title       String
+  orderIndex  Int         @default(0)
+  config      Json
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([draftId])
+  @@index([draftId, orderIndex])
+  @@map("draft_block_instances")
+}
+
+model ABRun {
+  id              String          @id @default(uuid())
+  userId          String
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseVersionId String
+  courseVersion   CourseVersion   @relation(fields: [courseVersionId], references: [id], onDelete: Cascade)
+  blockInstanceId String
+  blockTypeId     String
+  typeVersion     String          @default("1.0.0")
+  status          RunStatus       @default(CREATED)
+  closeReason     RunCloseReason?
+  failureDetails  String?
+  startedAt       DateTime?
+  closedAt        DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  attempts          ABAttempt[]
+  events            ABEvent[]
+  assessmentResults AssessmentResult[]
+
+  @@index([userId])
+  @@index([courseVersionId])
+  @@index([courseVersionId, blockInstanceId])
+  @@map("ab_runs")
+}
+
+model ABAttempt {
+  id                String            @id @default(uuid())
+  runId             String
+  run               ABRun             @relation(fields: [runId], references: [id], onDelete: Cascade)
+  attemptNumber     Int
+  submittedResponse Json
+  assisted          Boolean           @default(false)
+  supportContext    Json?
+  idempotencyKey    String?
+  createdAt         DateTime          @default(now())
+
+  assessmentResult  AssessmentResult?
+
+  @@unique([runId, attemptNumber])
+  @@unique([runId, idempotencyKey])
+  @@index([runId])
+  @@map("ab_attempts")
+}
+
+model AssessmentResult {
+  id          String           @id @default(uuid())
+  attemptId   String?          @unique
+  attempt     ABAttempt?       @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  runId       String
+  run         ABRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
+  status      AssessmentStatus @default(EVALUATED)
+  isCorrect   Boolean?
+  score       Float?
+  feedback    Json?
+  evaluatorId String
+  evaluatedAt DateTime         @default(now())
+  createdAt   DateTime         @default(now())
+
+  @@index([runId])
+  @@map("assessment_results")
+}
+
+model ABEvent {
+  id              String   @id @default(uuid())
+  runId           String
+  run             ABRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  eventType       String
+  payload         Json?
+  idempotencyKey  String?
+  serverTimestamp DateTime @default(now())
+
+  @@unique([runId, idempotencyKey])
+  @@index([runId])
+  @@index([runId, serverTimestamp])
+  @@map("ab_events")
 }

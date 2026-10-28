@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import configuration from './config/configuration';
 import { validate } from './config/validation';
+import { AbpModule } from './modules/abp/abp.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CoursesModule } from './modules/courses/courses.module';
 import { HealthModule } from './modules/health/health.module';
@@ -19,6 +20,7 @@ import { PrismaModule } from './modules/prisma/prisma.module';
     AuthModule,
     MeModule,
     CoursesModule,
+    AbpModule,
     HealthModule,
   ],
 })

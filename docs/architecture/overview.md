@@ -58,3 +58,45 @@ flowchart LR
 6. **Modular Monolith**:
    - The backend is organized as a modular monolith within a single deployable NestJS service.
    - Microservices, message brokers (Kafka/RabbitMQ), and distributed caches (Redis) are deliberately avoided until concrete scale or domain boundaries necessitate them.
+
+
+## 3. Activity Block Protocol (ABP v0.2) & Minimal Runtime
+
+```mermaid
+flowchart TD
+    subgraph Authoring["1. Authoring & Validation"]
+        Registry["Developer-Owned Block Registry\n(video, multiple-choice, coding)"]
+        Draft["CourseDraft (Mutable Revision N)\n+ DraftBlockInstances"]
+        Registry -->|Validate Schema & Invariants| Draft
+    end
+
+    subgraph Snapshotting["2. Immutable Snapshotting"]
+        CourseVersion["CourseVersion (Immutable vX)\nSnapshot: { blocks: [...] }"]
+        Draft -->|createVersion under Row Lock| CourseVersion
+    end
+
+    subgraph Runtime["3. ABP Runtime Execution"]
+        Run["ABRun (Pinned to CourseVersion vX)\nStatus: Created -> Active <-> Suspended -> Closed"]
+        Attempt["ABAttempt\n(Submitted Response + Assistance Provenance)"]
+        Evaluator["Server Evaluator\n(Protected Answer Key Assessment)"]
+        Assessment["AssessmentResult\n(Score, Correctness, Feedback)"]
+        EventLog["ABEvent (Audit Trail of Accepted Facts)"]
+
+        CourseVersion -->|Instantiate Run| Run
+        Run -->|SUBMIT_RESPONSE Command| Attempt
+        Attempt -->|Evaluated by| Evaluator
+        Evaluator --> Assessment
+        Run -->|Accepted Facts| EventLog
+    end
+```
+
+### ABP Architectural Responsibilities
+1. **Definition**: Developer-defined `ABTypeManifest` dictates structure, validation, schema, and capabilities. Creators cannot delete or weaken required structure.
+2. **Configuration**: Creator-configured `DraftBlockInstance` inside an owned `CourseDraft`. Revisions participate in atomic optimistic locking.
+3. **Snapshotting**: `CourseVersion` captures an immutable, validated snapshot of activities. Mutable draft edits never leak into historical versions.
+4. **Runtime**: `ABRun` executes strictly against a pinned `CourseVersion`. Lifecycle follows `CREATED → ACTIVE ↔ SUSPENDED → CLOSED` (`COMPLETED`, `ABANDONED`, `FAILED`).
+5. **Host Commands**: Commands are validated requests. Repeated requests with the same `idempotencyKey` prevent duplicate attempts or events.
+6. **Events & Results**: Authoritative evaluation occurs on the server. Answer keys are strictly stripped from learner payloads.
+7. **Learning Science Invariants**:
+   - Video completion is ungraded and produces no score, pass, or mastery.
+   - Assisted/hinted attempts retain distinct provenance from independent attempts.

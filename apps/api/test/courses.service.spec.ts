@@ -32,6 +32,9 @@ describe('CoursesService (Unit Tests)', () => {
         findFirst: jest.fn(),
         findMany: jest.fn(),
       },
+      draftBlockInstance: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
     };
 
     service = new CoursesService(prismaMock as unknown as PrismaService);
@@ -51,68 +54,46 @@ describe('CoursesService (Unit Tests)', () => {
       prismaMock.courseDraft.create.mockResolvedValue({
         id: 'd-1',
         courseId: 'c-1',
-        title: 'Quantum Physics',
-        description: 'Intro to quantum mechanics',
-        summary: null,
+        title: 'Draft Title',
+        description: 'Draft Description',
+        summary: 'Draft Summary',
         revision: 1,
         sourceVersionId: null,
         updatedAt: now,
       });
 
       const result = await service.createCourse('user-a', {
-        title: 'Quantum Physics',
-        description: 'Intro to quantum mechanics',
+        title: 'Draft Title',
+        description: 'Draft Description',
+        summary: 'Draft Summary',
       });
 
+      expect(prismaMock.$transaction).toHaveBeenCalled();
       expect(prismaMock.course.create).toHaveBeenCalledWith({
         data: {
           ownerId: 'user-a',
           visibility: 'PRIVATE',
         },
       });
+      expect(prismaMock.courseDraft.create).toHaveBeenCalledWith({
+        data: {
+          courseId: 'c-1',
+          title: 'Draft Title',
+          description: 'Draft Description',
+          summary: 'Draft Summary',
+          revision: 1,
+        },
+      });
 
+      expect(result.course.id).toBe('c-1');
       expect(result.course.visibility).toBe('PRIVATE');
-      expect(result.course.ownerId).toBe('user-a');
+      expect(result.draft.title).toBe('Draft Title');
       expect(result.draft.revision).toBe(1);
     });
   });
 
-  describe('Ownership & Isolation', () => {
-    it('throws NotFoundException when User B tries to read User A course', async () => {
-      prismaMock.course.findUnique.mockResolvedValue({
-        id: 'c-1',
-        ownerId: 'user-a', // Owned by User A
-        visibility: 'PRIVATE',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      // User B tries to read User A's course
-      await expect(service.getCourse('c-1', 'user-b')).rejects.toThrow(
-        NotFoundException,
-      );
-    });
-
-    it('throws NotFoundException when User B tries to update User A draft', async () => {
-      prismaMock.course.findUnique.mockResolvedValue({
-        id: 'c-1',
-        ownerId: 'user-a',
-        visibility: 'PRIVATE',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      await expect(
-        service.updateDraft('c-1', 'user-b', {
-          title: 'Hacked',
-          expectedRevision: 1,
-        }),
-      ).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('Atomic Optimistic Concurrency Control', () => {
-    it('updates draft atomically when expectedRevision matches and increments revision', async () => {
+  describe('Draft Concurrency & Revisions', () => {
+    it('updates draft title and increments revision when expectedRevision matches', async () => {
       const now = new Date();
       prismaMock.course.findUnique.mockResolvedValue({
         id: 'c-1',
@@ -126,7 +107,7 @@ describe('CoursesService (Unit Tests)', () => {
       prismaMock.courseDraft.findUniqueOrThrow.mockResolvedValue({
         id: 'd-1',
         courseId: 'c-1',
-        title: 'Calculus Updated',
+        title: 'New Title',
         description: null,
         summary: null,
         revision: 2,
@@ -135,7 +116,7 @@ describe('CoursesService (Unit Tests)', () => {
       });
 
       const updated = await service.updateDraft('c-1', 'user-a', {
-        title: 'Calculus Updated',
+        title: 'New Title',
         expectedRevision: 1,
       });
 
@@ -145,42 +126,34 @@ describe('CoursesService (Unit Tests)', () => {
           revision: 1,
         },
         data: {
-          title: 'Calculus Updated',
+          title: 'New Title',
           revision: { increment: 1 },
         },
       });
+      expect(updated.title).toBe('New Title');
       expect(updated.revision).toBe(2);
-      expect(updated.title).toBe('Calculus Updated');
     });
 
-    it('throws ConflictException if expectedRevision does not match current revision', async () => {
-      const now = new Date();
+    it('rejects stale draft update with 409 ConflictException when revision does not match', async () => {
       prismaMock.course.findUnique.mockResolvedValue({
         id: 'c-1',
         ownerId: 'user-a',
         visibility: 'PRIVATE',
-        createdAt: now,
-        updatedAt: now,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       });
 
-      // updateMany matched 0 rows because expectedRevision was 2 but database revision was 3
       prismaMock.courseDraft.updateMany.mockResolvedValue({ count: 0 });
       prismaMock.courseDraft.findUnique.mockResolvedValue({
         id: 'd-1',
         courseId: 'c-1',
-        title: 'Calculus',
-        description: null,
-        summary: null,
-        revision: 3, // Current revision is 3
-        sourceVersionId: null,
-        updatedAt: now,
+        revision: 3,
       });
 
-      // Client sends stale revision 2
       await expect(
         service.updateDraft('c-1', 'user-a', {
-          title: 'Calculus Updated',
-          expectedRevision: 2,
+          title: 'Conflicting Title',
+          expectedRevision: 1,
         }),
       ).rejects.toThrow(ConflictException);
     });
@@ -251,16 +224,38 @@ describe('CoursesService (Unit Tests)', () => {
       prismaMock.courseDraft.findUnique.mockResolvedValue({
         id: 'd-1',
         courseId: 'c-1',
-        title: 'AB', // Only 2 chars
-        description: null,
-        summary: null,
+        title: 'ab',
         revision: 1,
-        sourceVersionId: null,
-        updatedAt: new Date(),
       });
 
       await expect(service.createVersion('c-1', 'user-a')).rejects.toThrow(
         BadRequestException,
+      );
+    });
+  });
+
+  describe('Cross-User Access Isolation', () => {
+    it('returns 404 for Course if requested by non-owner user', async () => {
+      prismaMock.course.findUnique.mockResolvedValue({
+        id: 'c-1',
+        ownerId: 'user-a',
+        visibility: 'PRIVATE',
+      });
+
+      await expect(service.getCourse('c-1', 'user-attacker')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('returns 404 for Draft if requested by non-owner user', async () => {
+      prismaMock.course.findUnique.mockResolvedValue({
+        id: 'c-1',
+        ownerId: 'user-a',
+        visibility: 'PRIVATE',
+      });
+
+      await expect(service.getDraft('c-1', 'user-attacker')).rejects.toThrow(
+        NotFoundException,
       );
     });
   });

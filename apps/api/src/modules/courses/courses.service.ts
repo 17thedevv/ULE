@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   CourseDto,
@@ -11,13 +12,21 @@ import {
   CreateCourseResponse,
 } from '@ule/contracts';
 import { Course, CourseDraft, CourseVersion, Prisma } from '@prisma/client';
+import { BlockTypeRegistry } from '../abp/registry/block-type.registry';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDraftDto } from './dto/update-draft.dto';
 
 @Injectable()
 export class CoursesService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly registry: BlockTypeRegistry;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() registry?: BlockTypeRegistry,
+  ) {
+    this.registry = registry ?? new BlockTypeRegistry();
+  }
 
   /**
    * Creates a new Course and its initial editable Draft under authoritative user ownership.
@@ -180,12 +189,57 @@ export class CoursesService {
           );
         }
 
+        // Validate all configured draft activity block instances
+        const blocks = tx.draftBlockInstance
+          ? await tx.draftBlockInstance.findMany({
+              where: { draftId: draft.id },
+              orderBy: { orderIndex: 'asc' },
+            })
+          : [];
+
+        const validationErrors: string[] = [];
+        for (const block of blocks) {
+          if (!this.registry.hasType(block.blockTypeId)) {
+            validationErrors.push(
+              `Block '${block.title}' (${block.id}) references unrecognized type '${block.blockTypeId}'.`,
+            );
+            continue;
+          }
+          const validation = this.registry.validateConfig(
+            block.blockTypeId,
+            block.config,
+            block.id,
+            block.title,
+          );
+          if (!validation.valid) {
+            validationErrors.push(
+              `Block '${block.title}' (${block.id}) validation failed: ${validation.errors.join('; ')}`,
+            );
+          }
+        }
+
+        if (validationErrors.length > 0) {
+          throw new BadRequestException({
+            message: 'Cannot create version: Draft contains invalid activity block instances.',
+            errors: validationErrors,
+          });
+        }
+
         const latestVersion = await tx.courseVersion.findFirst({
           where: { courseId },
           orderBy: { versionNumber: 'desc' },
         });
 
         const nextVersionNumber = (latestVersion?.versionNumber ?? 0) + 1;
+
+        const blocksSnapshot = blocks.map((b) => ({
+          id: b.id,
+          blockTypeId: b.blockTypeId,
+          typeVersion: b.typeVersion,
+          title: b.title,
+          orderIndex: b.orderIndex,
+          config: b.config as Record<string, unknown>,
+        }));
 
         const snapshotData = {
           courseId,
@@ -197,6 +251,7 @@ export class CoursesService {
           draftRevision: draft.revision,
           createdById: userId,
           createdAt: new Date().toISOString(),
+          blocks: blocksSnapshot,
         };
 
         const version = await tx.courseVersion.create({
