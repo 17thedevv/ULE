@@ -1,16 +1,23 @@
 {
-  "moduleFileExtensions": ["js", "json", "ts"],
+  "moduleFileExtensions": ["js", "json", "ts", "mjs"],
   "rootDir": ".",
   "testRegex": ".e2e.spec.ts$",
   "setupFiles": ["<rootDir>/setup.ts"],
   "transform": {
-    "^.+\\.(t|j)s$": [
+    "^.+\\.(t|j|mj)s$": [
       "ts-jest",
       {
-        "tsconfig": "tsconfig.json"
+        "tsconfig": {
+          "allowJs": true,
+          "module": "commonjs",
+          "target": "ES2022",
+          "moduleResolution": "node",
+          "esModuleInterop": true
+        }
       }
     ]
   },
+  "transformIgnorePatterns": [],
   "testEnvironment": "node",
   "moduleNameMapper": {
     "^@ule/contracts$": "<rootDir>/../../packages/contracts/src/index.ts"

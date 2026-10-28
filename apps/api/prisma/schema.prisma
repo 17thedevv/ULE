@@ -1,5 +1,5 @@
 // Prisma schema for ULE (Universal Learning Engine)
-// Phase 0: Foundation & Infrastructure Bootstrap
+// Phase 1A: Course Core, Ownership & Versioning
 
 datasource db {
   provider = "postgresql"
@@ -9,15 +9,146 @@ generator client {
   provider = "prisma-client-js"
 }
 
-/// Provisional model introduced strictly to validate Prisma migrations and PostgreSQL
-/// connectivity in Phase 0.
-///
-/// NOTE: Full course, activity block, and learner progression models will be introduced
-/// in Phase 1 (Course Core & Activity Block Runtime). This table is intentional and provisional.
+// ----------------------------------------------------
+// Phase 0: Provisional Probe (Kept for migration baseline)
+// ----------------------------------------------------
 model ProvisionalMigrationProbe {
   id        String   @id @default(uuid())
   probedAt  DateTime @default(now())
   probeNote String   @default("Phase 0 bootstrap migration validation probe")
 
   @@map("provisional_migration_probes")
+}
+
+// ----------------------------------------------------
+// Authentication Domain (Better Auth Canonical Models)
+// ----------------------------------------------------
+model User {
+  id            String    @id @default(uuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions      Session[]
+  accounts      Account[]
+  courses       Course[]
+  createdVersions CourseVersion[] @relation("UserCreatedVersions")
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id @default(uuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Verification {
+  id         String    @id @default(uuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime? @default(now())
+  updatedAt  DateTime? @updatedAt
+
+  @@map("verifications")
+}
+
+// ----------------------------------------------------
+// Course Core Domain (Course, CourseDraft, CourseVersion)
+// ----------------------------------------------------
+
+enum CourseVisibility {
+  PRIVATE
+  PUBLIC
+}
+
+/// Represents the stable Course identity and authoritative owner.
+/// In Phase 1A, visibility is PRIVATE by default, and public publication
+/// is strictly disallowed without future editorial review.
+model Course {
+  id         String           @id @default(uuid())
+  ownerId    String
+  owner      User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  visibility CourseVisibility @default(PRIVATE)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  draft      CourseDraft?
+  versions   CourseVersion[]
+
+  @@index([ownerId])
+  @@map("courses")
+}
+
+/// Represents the current editable authoring state for a Course.
+model CourseDraft {
+  id              String         @id @default(uuid())
+  courseId        String         @unique
+  course          Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title           String
+  description     String?
+  summary         String?
+  revision        Int            @default(1)
+  sourceVersionId String?
+  sourceVersion   CourseVersion? @relation("DraftSourceVersion", fields: [sourceVersionId], references: [id], onDelete: SetNull)
+  updatedAt       DateTime       @updatedAt
+
+  @@map("course_drafts")
+}
+
+/// Represents an immutable version snapshot created from a validated CourseDraft.
+model CourseVersion {
+  id            String       @id @default(uuid())
+  courseId      String
+  course        Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  versionNumber Int
+  title         String
+  description   String?
+  summary       String?
+  snapshot      Json
+  schemaVersion String       @default("1.0.0")
+  draftRevision Int
+  createdById   String
+  createdBy     User         @relation("UserCreatedVersions", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt     DateTime     @default(now())
+
+  derivedDrafts CourseDraft[] @relation("DraftSourceVersion")
+
+  @@unique([courseId, versionNumber])
+  @@index([courseId])
+  @@index([createdById])
+  @@map("course_versions")
 }

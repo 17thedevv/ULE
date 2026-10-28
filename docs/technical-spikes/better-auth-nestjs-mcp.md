@@ -2,7 +2,7 @@
 
 **Author:** ULE Bootstrap Engineering Team  
 **Date:** October 2026  
-**Status:** Feasibility Evaluated & Architecture Defined (Runtime Integration & OAuth Unverified)
+**Status:** Runtime Integration & Session Lifecycle Verified in NestJS/Prisma & Real HTTP E2E (Phase 1A); MCP OAuth Client Flows Explicitly Unverified & Separate
 
 ---
 
@@ -15,7 +15,7 @@ This spike investigates the feasibility of adopting **Better Auth** as the autho
 4. Resource-scoped authorization for private, owner-scoped courses.
 
 ### Architectural Boundary Rules
-- **Authentication Direction**: Better Auth is the preferred direction, but its compatibility with NestJS and MCP clients remains **unverified** until tested end-to-end.
+- **Authentication Direction**: Better Auth core integration, email sign-up/sign-in, session cookies, and bearer tokens are fully verified in Phase 1A via real HTTP and PostgreSQL integration tests (`test/auth-and-concurrency.integration.spec.ts`). MCP OAuth client flows remain **explicitly unverified** pending future MCP spikes.
 - **No Insecure Workarounds**: No provisional token bypass guards or stubbed auth mechanisms have been introduced into runtime code.
 - **Authoritative Domain Isolation**: Authentication (identity) is separate from Authorization. Resource-scoped authorization (e.g. course ownership) belongs authoritatively in the NestJS domain service layer, not in generic auth tables.
 

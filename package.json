@@ -18,9 +18,11 @@
     "test": "pnpm --recursive run test",
     "test:api": "pnpm --filter @ule/api test",
     "test:web": "pnpm --filter @ule/web test",
+    "test:e2e": "pnpm --filter @ule/api test:e2e",
     "test:integration": "pnpm --filter @ule/api test:integration",
     "prisma:generate": "pnpm --filter @ule/api prisma:generate",
     "prisma:migrate": "pnpm --filter @ule/api prisma:migrate",
+    "prisma:deploy": "pnpm --filter @ule/api prisma:deploy",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"
   },

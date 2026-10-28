@@ -5,6 +5,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { createCorsOriginValidator } from './common/utils/cors.util';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -20,20 +21,9 @@ async function bootstrap(): Promise<void> {
   // Set global API versioning prefix (e.g. /api/v1)
   app.setGlobalPrefix(apiPrefix);
 
-  // Configure CORS with explicit environment-specific origins
-  const allowedOrigins = corsOrigin.split(',').map((origin) => origin.trim());
+  // Configure CORS with explicit trusted origins (wildcards prohibited)
   app.enableCors({
-    origin: (
-      origin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void,
-    ) => {
-      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
-      if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
-        callback(null, true);
-      } else {
-        callback(new Error(`Origin '${origin}' not allowed by CORS configuration.`));
-      }
-    },
+    origin: createCorsOriginValidator(corsOrigin),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
     credentials: true,
@@ -58,6 +48,9 @@ async function bootstrap(): Promise<void> {
     )
     .setVersion('1.0.0')
     .addTag('Health', 'Health checks and readiness probes')
+    .addTag('Auth', 'Authentication and session management')
+    .addTag('Courses', 'Authoritative Course Core and draft management')
+    .addBearerAuth()
     .build();
 
   const document = SwaggerModule.createDocument(app, swaggerConfig);
@@ -68,7 +61,7 @@ async function bootstrap(): Promise<void> {
   logger.log(`🚀 ULE API is running on: http://localhost:${port}/${apiPrefix}`);
   logger.log(`📚 OpenAPI Documentation available at: http://localhost:${port}/docs`);
   logger.log(`🔒 Environment: ${nodeEnv}`);
-  logger.log(`🌐 CORS Allowed Origins: ${allowedOrigins.join(', ')}`);
+  logger.log(`🌐 CORS Allowed Origins: ${corsOrigin}`);
 }
 
 void bootstrap();

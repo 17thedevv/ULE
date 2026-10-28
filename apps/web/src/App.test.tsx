@@ -42,7 +42,7 @@ describe('App Component (Frontend Architectural Boundary & UI State)', () => {
     expect(screen.getByText('42s')).toBeInTheDocument();
 
     // Confirm that frontend runtime environment does NOT have access to DATABASE_URL or Prisma
-    expect(typeof (process?.env?.DATABASE_URL)).toBe('undefined');
+    expect(typeof ((import.meta.env as Record<string, unknown>).DATABASE_URL)).toBe('undefined');
   });
 
   it('renders failure state when backend API is unreachable', async () => {

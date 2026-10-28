@@ -25,6 +25,7 @@
     "@prisma/adapter-pg": "7.10.1",
     "@prisma/client": "^7.10.1",
     "@ule/contracts": "workspace:*",
+    "better-auth": "1.7.14",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "pg": "^8.23.1",
