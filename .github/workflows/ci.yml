@@ -35,17 +35,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build shared contracts
+        run: pnpm --filter @ule/contracts build
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
       - name: Run ESLint
         run: pnpm lint
 
       - name: Run TypeScript type checking
         run: pnpm typecheck
 
-      - name: Generate Prisma client
-        run: pnpm prisma:generate
-
-      - name: Build contracts and applications
-        run: pnpm build
+      - name: Build backend and frontend applications
+        run: pnpm --filter @ule/api build && pnpm --filter @ule/web build
 
       - name: Run unit & contract tests
         run: pnpm test
@@ -94,6 +97,12 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build shared contracts
+        run: pnpm --filter @ule/contracts build
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
 
       - name: Apply Prisma migrations to PostgreSQL service
         run: pnpm --filter @ule/api prisma:deploy
