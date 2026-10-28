@@ -301,13 +301,14 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
           blockTypeId: 'video',
           title: 'Malicious Injected Block',
           config: { url: 'https://evil.com/video.mp4' },
+          expectedRevision: 1,
         })
         .expect(HttpStatus.NOT_FOUND);
     });
 
     it('User B cannot delete User A draft block (returns 404)', async () => {
       await request(app.getHttpServer())
-        .delete(`/api/v1/courses/${courseAId}/draft/blocks/${videoBlockId}`)
+        .delete(`/api/v1/courses/${courseAId}/draft/blocks/${videoBlockId}?expectedRevision=1`)
         .set('Cookie', userBCookie)
         .expect(HttpStatus.NOT_FOUND);
     });
@@ -600,7 +601,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
       await request(app.getHttpServer())
         .post(`/api/v1/runs/${runMcqId}/commands`)
         .set('Cookie', userBCookie)
-        .send({ command: 'RESUME' })
+        .send({ command: 'RESUME', idempotencyKey: 'unauth_resume_cmd' })
         .expect(HttpStatus.NOT_FOUND);
     });
   });
