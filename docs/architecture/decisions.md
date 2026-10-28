@@ -94,3 +94,34 @@
      - Registry resolves block types by tuple `(typeId, typeVersion)`. Mismatched or unsupported versions are rejected explicitly with HTTP 400 Bad Request.
      - Historical execution compatibility: Existing CourseVersion snapshots execute against their declared pinned type versions (verified with historical definition `video@0.9.0`).
 - **Consequences**: Proven, concurrency-hardened ABP vertical slice without distributed message queues or premature microservices. Real PostgreSQL verification in `test/abp-runtime.integration.spec.ts` (26 tests) and `test/abp-concurrency-and-integrity.integration.spec.ts` (14 tests) covers type discovery, draft validation, version snapshot pinning, secret stripping, lifecycle transitions, sequential and concurrent idempotency, assistance provenance, and cross-user isolation.
+
+
+## ADR-010: Model Context Protocol (MCP) Authoring MVP, OAuth 2.1 & Secure ABP Runtime Integration
+
+- **Status**: Accepted (Phase 2 Verified)
+- **Context**: External AI coding and authoring assistants (e.g. Claude Desktop, Cursor, external autonomous agents) need to configure private ULE courses and activity blocks without running ULE-paid model inferences, without bypassing backend domain authority, and without exposing learner progress or evaluator secrets.
+- **Decision**: Implement a secure, streamable Model Context Protocol (MCP) authoring subsystem within the existing NestJS modular monolith:
+  1. **Transport & Protocol Negotiation**:
+     - Standard endpoint: `/api/v1/mcp` using `@modelcontextprotocol/server` (`createMcpHandler`) over Web Standard Streamable HTTP.
+     - RFC 9728 Protected Resource discovery at `/.well-known/oauth-protected-resource` and `/api/v1/mcp/.well-known/oauth-protected-resource`.
+     - DNS rebinding and cross-site hijacking protection: Host header validation and Origin validation against configured trusted hosts and CORS origins.
+     - Multi-session concurrency: Request-level handler factory ensures each client connection operates on an isolated `McpServer` instance without "Server already initialized" collisions.
+  2. **Identity & OAuth 2.1 Authorization**:
+     - Integration with Better Auth (`@better-auth/mcp`, `@better-auth/oauth-provider`, `@better-auth/cimd`, `jwt`) with EdDSA JWT verification via server JWKS (`jose.jwtVerify`).
+     - Minimal fine-grained permission scopes:
+       - `course:read`: Authoring capability discovery, block type listing, schema inspection, reading owned courses/drafts/blocks/versions, and draft validation.
+       - `course:write`: Private course creation, draft block addition, updating, deletion, reordering, draft metadata updating, and immutable version allocation.
+     - Security gates: Anonymous callers fail closed (HTTP 401 with RFC 9728 `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="..."`). Expired, revoked, wrong-audience (`aud`), or forged tokens are rejected authoritatively.
+     - Leak-proof principal propagation: `AsyncLocalStorage<McpAuthContext>` propagates verified `{ userId, clientId, scopes }` into tool execution callbacks without cross-request state leakage.
+  3. **Authoritative Domain Reuse (Adapter Pattern)**:
+     - MCP tools do not perform direct, unguarded database writes. Every tool validates inputs via Zod and calls existing domain services (`CoursesService`, `DraftBlocksService`, `BlockTypeRegistry`).
+     - Ownership invariants: Course creation strictly derives `ownerId` from authenticated MCP token claims and always creates `visibility: PRIVATE`.
+     - Optimistic concurrency: Mandatory `expectedRevision` on all draft block mutations (`ule_add_draft_block`, `ule_update_draft_block`, `ule_delete_draft_block`, `ule_reorder_draft_blocks`) and draft metadata updates (`ule_update_course_draft`), enforced under course row locks.
+  4. **Durable Mutation Idempotency & Audit Trail**:
+     - `mcp_mutation_idempotency` table: Unique constraint on `[userId, toolName, idempotencyKey]`.
+     - Deterministic deduplication: Replaying mutations with identical SHA-256 payload hashes returns cached results without duplicate database side-effects. Reusing idempotency keys with changed payloads yields explicit HTTP 409 Conflict.
+     - `mcp_audit_logs` table: Audits every mutation with `userId`, `clientId`, `toolName`, `action: 'EXECUTE'`, `resourceType`, `resourceId`, `idempotencyKey`, `status`, and server timestamp. Secrets and raw tokens are omitted.
+  5. **Confidentiality & Prohibited Operations**:
+     - Secret answers and evaluators are stripped from discovery schemas and learner-facing outputs.
+     - Prohibitions enforced in registry: Tools for learner attempt submission (`submit_learner_attempt`), mastery alteration (`alter_mastery`), reward grants (`grant_xp_or_rewards`), or public course publication (`publish_course_publicly`) are strictly omitted.
+- **Consequences**: Proven external AI authoring integration that preserves all Phase 1A/1B concurrency guarantees without introducing external LLM costs. Verified via real PostgreSQL automated tests: `test/mcp-auth.integration.spec.ts` (17 tests covering Phase 2A exit gate) and `test/mcp-authoring.integration.spec.ts` (19 tests covering the 13-step scenario, cross-user isolation, idempotency, and audit trails).

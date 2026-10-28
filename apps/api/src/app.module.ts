@@ -6,6 +6,7 @@ import { AbpModule } from './modules/abp/abp.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CoursesModule } from './modules/courses/courses.module';
 import { HealthModule } from './modules/health/health.module';
+import { McpModule } from './modules/mcp/mcp.module';
 import { MeModule } from './modules/me/me.module';
 import { PrismaModule } from './modules/prisma/prisma.module';
 
@@ -21,6 +22,7 @@ import { PrismaModule } from './modules/prisma/prisma.module';
     MeModule,
     CoursesModule,
     AbpModule,
+    McpModule,
     HealthModule,
   ],
 })

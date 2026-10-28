@@ -20,6 +20,6 @@
   "transformIgnorePatterns": [],
   "testEnvironment": "node",
   "moduleNameMapper": {
-    "^@ule/contracts$": "<rootDir>/../../packages/contracts/src/index.ts"
+    "^@ule/contracts$": "<rootDir>/../../../packages/contracts/dist/index.js"
   }
 }

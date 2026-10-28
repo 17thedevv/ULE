@@ -18,8 +18,10 @@ async function bootstrap(): Promise<void> {
   const corsOrigin = configService.get<string>('CORS_ORIGIN', 'http://localhost:5173');
   const nodeEnv = configService.get<string>('NODE_ENV', 'development');
 
-  // Set global API versioning prefix (e.g. /api/v1)
-  app.setGlobalPrefix(apiPrefix);
+  // Set global API versioning prefix (e.g. /api/v1), excluding RFC standard .well-known endpoints
+  app.setGlobalPrefix(apiPrefix, {
+    exclude: ['/.well-known/(.*)', '.well-known/(.*)'],
+  });
 
   // Configure CORS with explicit trusted origins (wildcards prohibited)
   app.enableCors({
@@ -53,6 +55,7 @@ async function bootstrap(): Promise<void> {
     .addTag('ABP Block Types', 'Activity block manifests, capabilities, and schemas')
     .addTag('ABP Draft Blocks', 'Draft block instances configuration and validation')
     .addTag('ABP Runtime', 'Activity Block Protocol execution context and host commands')
+    .addTag('MCP', 'Model Context Protocol (MCP) streamable authoring endpoints')
     .addBearerAuth()
     .build();
 
