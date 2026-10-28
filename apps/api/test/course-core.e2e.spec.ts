@@ -45,7 +45,14 @@ describe('Course Core, Ownership & Versioning (e2e)', () => {
 
   const mockPrismaService: any = {
     $transaction: jest.fn(async (cb) => cb(mockPrismaService)),
-    $queryRaw: jest.fn().mockResolvedValue([{ id: 'mock-course' }]),
+    $queryRaw: jest.fn(async (_strings, ...values) => {
+      const courseId = values[0];
+      const match = coursesTable.find((c) => c.id === courseId);
+      if (match) {
+        return [{ id: match.id, ownerId: match.ownerId }];
+      }
+      return [];
+    }),
     course: {
       create: jest.fn(async ({ data }) => {
         const course = {
@@ -83,10 +90,16 @@ describe('Course Core, Ownership & Versioning (e2e)', () => {
         return draft;
       }),
       findUnique: jest.fn(async ({ where }) => {
-        return draftsTable.find((d) => d.courseId === where.courseId) || null;
+        return (
+          draftsTable.find((d) =>
+            where.id ? d.id === where.id : d.courseId === where.courseId,
+          ) || null
+        );
       }),
       findUniqueOrThrow: jest.fn(async ({ where }) => {
-        const draft = draftsTable.find((d) => d.courseId === where.courseId);
+        const draft = draftsTable.find((d) =>
+          where.id ? d.id === where.id : d.courseId === where.courseId,
+        );
         if (!draft) throw new Error('Not found');
         return draft;
       }),
@@ -104,7 +117,9 @@ describe('Course Core, Ownership & Versioning (e2e)', () => {
         return { count: 1 };
       }),
       update: jest.fn(async ({ where, data }) => {
-        const draft = draftsTable.find((d) => d.courseId === where.courseId);
+        const draft = draftsTable.find((d) =>
+          where.id ? d.id === where.id : d.courseId === where.courseId,
+        );
         if (!draft) return null;
         if (data.title !== undefined) draft.title = data.title;
         if (data.description !== undefined) draft.description = data.description;
@@ -149,6 +164,9 @@ describe('Course Core, Ownership & Versioning (e2e)', () => {
         versionsTable.push(version);
         return version;
       }),
+    },
+    draftBlockInstance: {
+      findMany: jest.fn(async () => []),
     },
   };
 

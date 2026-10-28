@@ -50,6 +50,9 @@ async function bootstrap(): Promise<void> {
     .addTag('Health', 'Health checks and readiness probes')
     .addTag('Auth', 'Authentication and session management')
     .addTag('Courses', 'Authoritative Course Core and draft management')
+    .addTag('ABP Block Types', 'Activity block manifests, capabilities, and schemas')
+    .addTag('ABP Draft Blocks', 'Draft block instances configuration and validation')
+    .addTag('ABP Runtime', 'Activity Block Protocol execution context and host commands')
     .addBearerAuth()
     .build();
 

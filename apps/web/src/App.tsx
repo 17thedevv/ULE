@@ -1,4 +1,5 @@
 import React from 'react';
+import { AbpVerificationStudio } from './components/AbpVerificationStudio';
 import { AuthCourseStudio } from './components/AuthCourseStudio';
 import { HealthStatus } from './components/HealthStatus';
 import { getApiBaseUrl } from './services/api';
@@ -15,7 +16,7 @@ export const App: React.FC = () => {
             <div>
               <h1>Universal Learning Engine</h1>
               <p className="subtitle">
-                Phase 1A: Course Core, Ownership &amp; Versioning
+                Phase 1B: Activity Block Protocol &amp; Minimal Runtime
               </p>
             </div>
           </div>
@@ -24,6 +25,7 @@ export const App: React.FC = () => {
             <span className="tag">NestJS</span>
             <span className="tag">Better Auth</span>
             <span className="tag">Prisma 7</span>
+            <span className="tag">ABP v0.2</span>
           </div>
         </div>
       </header>
@@ -32,29 +34,34 @@ export const App: React.FC = () => {
         <div className="grid">
           <div className="column">
             <AuthCourseStudio />
+            <AbpVerificationStudio />
           </div>
 
           <div className="column">
             <HealthStatus />
 
             <section className="card">
-              <h2>Architectural Boundaries</h2>
+              <h2>ABP Architectural Boundaries</h2>
               <ul className="bullet-list">
                 <li>
-                  <strong>Frontend Isolation:</strong> The React application is strictly an HTTP
-                  client of the NestJS API. Direct database connectivity from the UI is prohibited.
+                  <strong>Frontend Isolation:</strong> The React application is strictly an API
+                  client of NestJS. Direct database connectivity from the UI is prohibited.
                 </li>
                 <li>
-                  <strong>Authoritative Backend:</strong> All business logic, course verification,
-                  and data persistence belong in NestJS domain services.
+                  <strong>Protected Evaluator Configuration:</strong> Multiple Choice answer keys
+                  and option explanations are never returned to learner runtime endpoints.
                 </li>
                 <li>
-                  <strong>Canonical API:</strong> The versioned OpenAPI contract serves Web, future
-                  Mobile clients, and MCP tools identically.
+                  <strong>Authoritative Evaluation:</strong> Server-side logic assesses submitted
+                  attempts deterministically. Client-supplied scores, passes, or mastery have zero authority.
                 </li>
                 <li>
-                  <strong>Immutability &amp; Ownership:</strong> Courses are private by default;
-                  version snapshots are immutable; public publication is disabled without editorial review.
+                  <strong>Learning Science Invariants:</strong> Video completion is strictly ungraded
+                  and never produces a score or mastery. Assisted and independent attempts retain distinct context.
+                </li>
+                <li>
+                  <strong>Pinned Immutability:</strong> Runs execute strictly against pinned immutable
+                  CourseVersion snapshots. Subsequent mutable draft edits cannot alter older versions or runs.
                 </li>
               </ul>
             </section>
@@ -71,7 +78,7 @@ export const App: React.FC = () => {
                   <span className="resource-icon">📚</span>
                   <div>
                     <strong>OpenAPI Documentation (Swagger)</strong>
-                    <p className="resource-desc">Explore canonical /api/v1 endpoints</p>
+                    <p className="resource-desc">Explore canonical /api/v1 endpoints including ABP &amp; Runs</p>
                   </div>
                 </a>
                 <a
@@ -93,7 +100,7 @@ export const App: React.FC = () => {
       </main>
 
       <footer className="footer">
-        <p>Universal Learning Engine (ULE) &bull; Phase 1A Implementation</p>
+        <p>Universal Learning Engine (ULE) &bull; Phase 1B Implementation</p>
       </footer>
     </div>
   );

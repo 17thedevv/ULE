@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   CourseDto,
@@ -11,13 +12,21 @@ import {
   CreateCourseResponse,
 } from '@ule/contracts';
 import { Course, CourseDraft, CourseVersion, Prisma } from '@prisma/client';
+import { BlockTypeRegistry } from '../abp/registry/block-type.registry';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDraftDto } from './dto/update-draft.dto';
 
 @Injectable()
 export class CoursesService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly registry: BlockTypeRegistry;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() registry?: BlockTypeRegistry,
+  ) {
+    this.registry = registry ?? new BlockTypeRegistry();
+  }
 
   /**
    * Creates a new Course and its initial editable Draft under authoritative user ownership.
@@ -106,15 +115,32 @@ export class CoursesService {
     userId: string,
     dto: UpdateCourseDraftDto,
   ): Promise<CourseDraftDto> {
-    await this.getCourse(courseId, userId);
-
     return this.prisma.$transaction(async (tx) => {
-      // Perform atomic conditional update matching exact expectedRevision
-      const updateResult = await tx.courseDraft.updateMany({
-        where: {
-          courseId,
-          revision: dto.expectedRevision,
-        },
+      // 1. Acquire aggregate row-level lock on parent course first to prevent deadlock and serialize mutations
+      const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
+        SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
+      `;
+
+      if (!lockedCourses || lockedCourses.length === 0 || lockedCourses[0].ownerId !== userId) {
+        throw new NotFoundException(`Course '${courseId}' not found.`);
+      }
+
+      const draft = await tx.courseDraft.findUnique({
+        where: { courseId },
+      });
+
+      if (!draft) {
+        throw new NotFoundException(`Draft for course '${courseId}' not found.`);
+      }
+
+      if (draft.revision !== dto.expectedRevision) {
+        throw new ConflictException(
+          `Draft revision conflict. Expected revision ${dto.expectedRevision}, but current revision is ${draft.revision}. Please reload before updating.`,
+        );
+      }
+
+      const updated = await tx.courseDraft.update({
+        where: { id: draft.id },
         data: {
           ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
           ...(dto.description !== undefined
@@ -123,24 +149,6 @@ export class CoursesService {
           ...(dto.summary !== undefined ? { summary: dto.summary.trim() } : {}),
           revision: { increment: 1 },
         },
-      });
-
-      if (updateResult.count === 0) {
-        const existing = await tx.courseDraft.findUnique({
-          where: { courseId },
-        });
-
-        if (!existing) {
-          throw new NotFoundException(`Draft for course '${courseId}' not found.`);
-        }
-
-        throw new ConflictException(
-          `Draft revision conflict. Expected revision ${dto.expectedRevision}, but current revision is ${existing.revision}. Please reload before updating.`,
-        );
-      }
-
-      const updated = await tx.courseDraft.findUniqueOrThrow({
-        where: { courseId },
       });
 
       return this.toDraftDto(updated);
@@ -156,13 +164,17 @@ export class CoursesService {
     courseId: string,
     userId: string,
   ): Promise<CourseVersionDto> {
-    await this.getCourse(courseId, userId);
-
     try {
       return await this.prisma.$transaction(async (tx) => {
         // Acquire exclusive row-level lock on the parent Course row in PostgreSQL.
         // This serializes version snapshot requests for this course, preventing races.
-        await tx.$queryRaw`SELECT id FROM courses WHERE id = ${courseId} FOR UPDATE`;
+        const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
+          SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
+        `;
+
+        if (!lockedCourses || lockedCourses.length === 0 || lockedCourses[0].ownerId !== userId) {
+          throw new NotFoundException(`Course '${courseId}' not found.`);
+        }
 
         const draft = await tx.courseDraft.findUnique({
           where: { courseId },
@@ -180,12 +192,58 @@ export class CoursesService {
           );
         }
 
+        // Validate all configured draft activity block instances
+        const blocks = tx.draftBlockInstance
+          ? await tx.draftBlockInstance.findMany({
+              where: { draftId: draft.id },
+              orderBy: { orderIndex: 'asc' },
+            })
+          : [];
+
+        const validationErrors: string[] = [];
+        for (const block of blocks) {
+          if (!this.registry.hasType(block.blockTypeId, block.typeVersion)) {
+            validationErrors.push(
+              `Block '${block.title}' (${block.id}) references unsupported type '${block.blockTypeId}' version '${block.typeVersion}'.`,
+            );
+            continue;
+          }
+          const validation = this.registry.validateConfig(
+            block.blockTypeId,
+            block.config,
+            block.id,
+            block.title,
+            block.typeVersion,
+          );
+          if (!validation.valid) {
+            validationErrors.push(
+              `Block '${block.title}' (${block.id}) validation failed: ${validation.errors.join('; ')}`,
+            );
+          }
+        }
+
+        if (validationErrors.length > 0) {
+          throw new BadRequestException({
+            message: 'Cannot create version: Draft contains invalid activity block instances.',
+            errors: validationErrors,
+          });
+        }
+
         const latestVersion = await tx.courseVersion.findFirst({
           where: { courseId },
           orderBy: { versionNumber: 'desc' },
         });
 
         const nextVersionNumber = (latestVersion?.versionNumber ?? 0) + 1;
+
+        const blocksSnapshot = blocks.map((b) => ({
+          id: b.id,
+          blockTypeId: b.blockTypeId,
+          typeVersion: b.typeVersion,
+          title: b.title,
+          orderIndex: b.orderIndex,
+          config: b.config as Record<string, unknown>,
+        }));
 
         const snapshotData = {
           courseId,
@@ -197,6 +255,7 @@ export class CoursesService {
           draftRevision: draft.revision,
           createdById: userId,
           createdAt: new Date().toISOString(),
+          blocks: blocksSnapshot,
         };
 
         const version = await tx.courseVersion.create({
