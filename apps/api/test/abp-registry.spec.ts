@@ -153,9 +153,11 @@ describe('ABP BlockTypeRegistry Unit Tests', () => {
       expect(Array.isArray(learnerView.options)).toBe(true);
       expect((learnerView.options as Array<{ id: string; text: string }>).length).toBe(3);
 
-      // Explicitly verify answerKey and correctOptionId are NOT present
+      // Explicitly verify answerKey, correctOptionId, and hintText are NOT present
       expect(learnerView).not.toHaveProperty('answerKey');
       expect(learnerView).not.toHaveProperty('correctOptionId');
+      expect(learnerView).not.toHaveProperty('hintText');
+      expect(learnerView).toHaveProperty('allowHints', true);
 
       // Verify options contain only id and text, never explanation
       const options = learnerView.options as Array<Record<string, unknown>>;
@@ -212,9 +214,9 @@ describe('ABP BlockTypeRegistry Unit Tests', () => {
       });
 
       expect(outcome.isCorrect).toBe(true);
-      expect(outcome.feedback).toEqual({
+      expect(outcome.feedback).toMatchObject({
         deferred: true,
-        message: 'Feedback for this assessment is deferred.',
+        isCorrect: true,
       });
     });
   });

@@ -418,6 +418,164 @@ describe('Phase 1B Final Integrity Hardening — Real PostgreSQL Concurrency & I
       expect(attempts[0].attemptNumber).toBe(1);
       expect(attempts[1].attemptNumber).toBe(2);
     });
+
+    it('IDEMPOTENCY TEST: replay with same key and same normalized payload returns original attempt', async () => {
+      const key = `replay_key_${Date.now()}`;
+      const firstRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_4' },
+          idempotencyKey: key,
+        })
+        .expect(HttpStatus.OK);
+
+      const replayRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_4' },
+          idempotencyKey: key,
+        })
+        .expect(HttpStatus.OK);
+
+      expect(replayRes.body.latestAttempt.id).toBe(firstRes.body.latestAttempt.id);
+      expect(replayRes.body.latestAttempt.attemptNumber).toBe(firstRes.body.latestAttempt.attemptNumber);
+    });
+
+    it('CONFLICT TEST: replaying same key with changed payload returns HTTP 409 Conflict', async () => {
+      const key = `conflict_payload_key_${Date.now()}`;
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_3' },
+          idempotencyKey: key,
+        })
+        .expect(HttpStatus.OK);
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_4' }, // CHANGED PAYLOAD!
+          idempotencyKey: key,
+        })
+        .expect(HttpStatus.CONFLICT);
+
+      expect(res.body.statusCode).toBe(HttpStatus.CONFLICT);
+      expect(res.body.message).toContain('different payload data');
+      expect(res.body.message).not.toContain('SELECT');
+      expect(res.body.message).not.toContain('ab_events');
+    });
+
+    it('CONFLICT TEST: replaying same key with different command returns HTTP 409 Conflict', async () => {
+      const key = `conflict_cmd_key_${Date.now()}`;
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUSPEND',
+          idempotencyKey: key,
+        })
+        .expect(HttpStatus.OK);
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'RESUME', // CHANGED COMMAND!
+          idempotencyKey: key,
+        })
+        .expect(HttpStatus.CONFLICT);
+
+      expect(res.body.statusCode).toBe(HttpStatus.CONFLICT);
+      expect(res.body.message).toContain('different command');
+
+      // Resume properly for subsequent tests
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({ command: 'RESUME', idempotencyKey: `clean_resume_${Date.now()}` })
+        .expect(HttpStatus.OK);
+    });
+
+    it('PRIOR ATTEMPT REPLAY: replay of earlier submission returns original attempt, not newer attempt', async () => {
+      const key1 = `earlier_attempt_key_${Date.now()}`;
+      const key2 = `later_attempt_key_${Date.now()}`;
+
+      // Submit Attempt A
+      const attemptARes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_3' },
+          idempotencyKey: key1,
+        })
+        .expect(HttpStatus.OK);
+
+      const attemptAId = attemptARes.body.latestAttempt.id;
+      const attemptANum = attemptARes.body.latestAttempt.attemptNumber;
+
+      // Submit Attempt B
+      const attemptBRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_4' },
+          idempotencyKey: key2,
+        })
+        .expect(HttpStatus.OK);
+
+      const attemptBId = attemptBRes.body.latestAttempt.id;
+      expect(attemptBId).not.toBe(attemptAId);
+
+      // Replay Attempt A using key1
+      const replayARes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_3' },
+          idempotencyKey: key1,
+        })
+        .expect(HttpStatus.OK);
+
+      // CRITICAL: replay of key1 MUST return attempt A, NOT attempt B!
+      expect(replayARes.body.latestAttempt.id).toBe(attemptAId);
+      expect(replayARes.body.latestAttempt.attemptNumber).toBe(attemptANum);
+    });
+
+    it('CONCURRENT IDEMPOTENCY TEST: racing requests with identical key and payload all succeed without duplicate effects', async () => {
+      const concurrentKey = `concurrent_cmd_key_${Date.now()}`;
+      const reqs = Array.from({ length: 3 }).map(() =>
+        request(app.getHttpServer())
+          .post(`/api/v1/runs/${runId}/commands`)
+          .set('Cookie', authorCookie)
+          .send({
+            command: 'SUBMIT_RESPONSE',
+            payload: { selectedOptionId: 'opt_4' },
+            idempotencyKey: concurrentKey,
+          }),
+      );
+
+      const results = await Promise.all(reqs);
+      for (const res of results) {
+        expect(res.status).toBe(HttpStatus.OK);
+      }
+
+      // All must return the exact same attempt ID
+      const firstId = results[0].body.latestAttempt.id;
+      for (const res of results) {
+        expect(res.body.latestAttempt.id).toBe(firstId);
+      }
+    });
   });
 
   // =========================================================================
@@ -565,6 +723,175 @@ describe('Phase 1B Final Integrity Hardening — Real PostgreSQL Concurrency & I
       expect(subRes.body.latestAttempt.assisted).toBe(false);
       expect(subRes.body.latestAttempt.supportContext.hintUsed).toBe(false);
       expect(subRes.body.latestAttempt.supportContext.provenance).toBe('SELF_REPORTED_INDEPENDENT');
+    });
+
+    it('HINT DELIVERY TEST: hintText is strictly absent before request and delivered after authorized REQUEST_HINT', async () => {
+      // 1. Start fresh run
+      const freshRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', authorCookie)
+        .send({
+          courseVersionId: pinnedVersionId,
+          blockInstanceId: mcqBlockId,
+          idempotencyKey: `hint_test_run_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      // Verify hintText is NOT in initial learnerConfig
+      expect(freshRun.body.block.learnerConfig).not.toHaveProperty('hintText');
+      expect(freshRun.body.block.learnerConfig.allowHints).toBe(true);
+      expect(freshRun.body.deliveredHint).toBeNull();
+
+      // 2. Request hint
+      const hintKey = `hint_cmd_${Date.now()}`;
+      const hintRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${freshRun.body.id}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'REQUEST_HINT',
+          idempotencyKey: hintKey,
+        })
+        .expect(HttpStatus.OK);
+
+      expect(hintRes.body.deliveredHint).toBe('Think of basic addition.');
+      expect(hintRes.body.block.learnerConfig).not.toHaveProperty('hintText');
+
+      // 3. Replay hint request with same key
+      const replayHint = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${freshRun.body.id}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'REQUEST_HINT',
+          idempotencyKey: hintKey,
+        })
+        .expect(HttpStatus.OK);
+
+      expect(replayHint.body.deliveredHint).toBe('Think of basic addition.');
+
+      // Check event count in database: exactly 1 HINT_DELIVERED event
+      const hintEvents = await prisma.aBEvent.findMany({
+        where: { runId: freshRun.body.id, eventType: 'HINT_DELIVERED' },
+      });
+      expect(hintEvents).toHaveLength(1);
+    });
+
+    it('DEFERRED FEEDBACK TEST: DEFERRED policy hides correctness and score until run is CLOSED, preserving internal DB records', async () => {
+      // 1. Create a draft block with DEFERRED feedback policy
+      const draftRes = await request(app.getHttpServer())
+        .get(`/api/v1/courses/${courseId}/draft`)
+        .set('Cookie', authorCookie)
+        .expect(HttpStatus.OK);
+
+      const deferredBlockRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/draft/blocks`)
+        .set('Cookie', authorCookie)
+        .send({
+          blockTypeId: 'multiple-choice',
+          title: 'Final Exam: Deferred Knowledge Check',
+          expectedRevision: draftRes.body.revision,
+          config: {
+            question: 'What is 2 + 2?',
+            options: [
+              { id: 'opt_3', text: 'Three' },
+              { id: 'opt_4', text: 'Four', explanation: '2 + 2 equals 4.' },
+            ],
+            answerKey: {
+              correctOptionId: 'opt_4',
+              explanation: 'Standard arithmetic.',
+            },
+            feedbackPolicy: 'DEFERRED',
+            allowHints: false,
+          },
+        })
+        .expect(HttpStatus.CREATED);
+
+      const deferredBlockId = deferredBlockRes.body.id;
+
+      // 2. Create version snapshot containing deferred block
+      const vRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/versions`)
+        .set('Cookie', authorCookie)
+        .expect(HttpStatus.CREATED);
+
+      // 3. Start run for deferred block
+      const dRunRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', authorCookie)
+        .send({
+          courseVersionId: vRes.body.id,
+          blockInstanceId: deferredBlockId,
+          idempotencyKey: `deferred_run_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      const dRunId = dRunRes.body.id;
+
+      // 4. Submit response while run is ACTIVE
+      const subRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${dRunId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_4' },
+          idempotencyKey: `deferred_sub_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Learner-facing result MUST NOT disclose correctness or score!
+      expect(subRes.body.latestAssessment.isCorrect).toBeNull();
+      expect(subRes.body.latestAssessment.score).toBeNull();
+      expect(subRes.body.latestAssessment.feedback.deferred).toBe(true);
+
+      // 5. GET /runs/:id/results while ACTIVE: must NOT disclose deferred evaluation
+      const resultsBeforeClose = await request(app.getHttpServer())
+        .get(`/api/v1/runs/${dRunId}/results`)
+        .set('Cookie', authorCookie)
+        .expect(HttpStatus.OK);
+
+      expect(resultsBeforeClose.body.assessments[0].isCorrect).toBeNull();
+      expect(resultsBeforeClose.body.assessments[0].score).toBeNull();
+      expect(resultsBeforeClose.body.assessments[0].feedback.deferred).toBe(true);
+
+      const attemptEvent = resultsBeforeClose.body.events.find(
+        (e: any) => e.eventType === 'ATTEMPT_SUBMITTED',
+      );
+      expect(attemptEvent.payload.isCorrect).toBeNull();
+
+      // 6. Direct database inspection: internal record in PostgreSQL remains complete and intact!
+      const dbAssessment = await prisma.assessmentResult.findFirst({
+        where: { runId: dRunId },
+      });
+      expect(dbAssessment).not.toBeNull();
+      expect(dbAssessment!.isCorrect).toBe(true);
+      expect(dbAssessment!.score).toBe(1.0);
+
+      // 7. Finish run (Authorized Release Point)
+      const finishRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${dRunId}/commands`)
+        .set('Cookie', authorCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `finish_deferred_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      expect(finishRes.body.status).toBe('CLOSED');
+      expect(finishRes.body.closeReason).toBe('COMPLETED');
+
+      // Now deferred results are released to learner!
+      expect(finishRes.body.latestAssessment.isCorrect).toBe(true);
+      expect(finishRes.body.latestAssessment.score).toBe(1.0);
+      expect(finishRes.body.latestAssessment.feedback.released).toBe(true);
+
+      // 8. GET /runs/:id/results after close: all assessments are released
+      const resultsAfterClose = await request(app.getHttpServer())
+        .get(`/api/v1/runs/${dRunId}/results`)
+        .set('Cookie', authorCookie)
+        .expect(HttpStatus.OK);
+
+      expect(resultsAfterClose.body.assessments[0].isCorrect).toBe(true);
+      expect(resultsAfterClose.body.assessments[0].score).toBe(1.0);
+      expect(resultsAfterClose.body.assessments[0].feedback.released).toBe(true);
     });
   });
 });

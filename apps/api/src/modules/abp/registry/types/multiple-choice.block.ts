@@ -172,7 +172,7 @@ export class MultipleChoiceBlockDefinition implements IBlockTypeDefinition {
   sanitizeForLearner(config: Record<string, unknown>): Record<string, unknown> {
     const options = Array.isArray(config.options) ? config.options : [];
 
-    // Strictly strip answerKey, correctOptionId, and individual option explanations
+    // Strictly strip answerKey, correctOptionId, individual option explanations, and hintText
     return {
       question: typeof config.question === 'string' ? config.question : '',
       options: options.map((opt: Record<string, unknown>) => ({
@@ -180,7 +180,6 @@ export class MultipleChoiceBlockDefinition implements IBlockTypeDefinition {
         text: String(opt.text ?? ''),
       })),
       allowHints: Boolean(config.allowHints),
-      hintText: config.allowHints && typeof config.hintText === 'string' ? config.hintText : undefined,
       feedbackPolicy:
         typeof config.feedbackPolicy === 'string'
           ? config.feedbackPolicy
@@ -237,7 +236,10 @@ export class MultipleChoiceBlockDefinition implements IBlockTypeDefinition {
     } else {
       feedback = {
         deferred: true,
-        message: 'Feedback for this assessment is deferred.',
+        isCorrect,
+        explanation: answerKey.explanation ?? null,
+        selectedOptionText: selectedOption?.text ?? null,
+        optionExplanation: selectedOption?.explanation ?? null,
       };
     }
 

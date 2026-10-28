@@ -142,6 +142,13 @@ export class ABRunResponseDto implements ABRunDto {
 
   @ApiPropertyOptional({ type: AssessmentResultResponseDto })
   latestAssessment?: AssessmentResultResponseDto | null;
+
+  @ApiPropertyOptional({
+    description: 'Authorized hint text delivered by the server upon REQUEST_HINT',
+    nullable: true,
+    type: String,
+  })
+  deliveredHint?: string | null;
 }
 
 export class RunResultsResponseDto implements RunResultsDto {

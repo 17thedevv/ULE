@@ -253,6 +253,7 @@ export interface ABRunDto {
   };
   latestAttempt?: ABAttemptDto | null;
   latestAssessment?: AssessmentResultDto | null;
+  deliveredHint?: string | null;
 }
 
 export interface RunResultsDto {

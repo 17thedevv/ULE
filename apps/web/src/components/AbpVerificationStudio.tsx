@@ -244,7 +244,7 @@ export const AbpVerificationStudio: React.FC = () => {
       setActiveRun(run);
       setSelectedOptionId('');
       setUsedHint(false);
-      setServerHintText('');
+      setServerHintText(run.deliveredHint || '');
       setStatusMessage(`Started Run (${run.blockTypeId}) in ACTIVE status.`);
       loadRunResults(run.id);
     } catch (err: unknown) {
@@ -286,8 +286,8 @@ export const AbpVerificationStudio: React.FC = () => {
       });
       setActiveRun(updated);
       setUsedHint(true);
-      if (activeRun.block.learnerConfig.hintText) {
-        setServerHintText(String(activeRun.block.learnerConfig.hintText));
+      if (updated.deliveredHint) {
+        setServerHintText(updated.deliveredHint);
       }
       setStatusMessage('Server hint delivered and logged in authoritative runtime audit trail.');
       loadRunResults(updated.id);

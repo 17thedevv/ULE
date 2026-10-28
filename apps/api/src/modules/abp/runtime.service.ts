@@ -118,7 +118,8 @@ export class RuntimeService {
               courseVersionId: version.id,
               blockInstanceId: pinnedBlock.id,
               blockTypeId: pinnedBlock.blockTypeId,
-            },
+              _requestPayload: this.normalizePayload(dto as unknown as Record<string, unknown>),
+            } as unknown as Prisma.InputJsonValue,
             serverTimestamp: now,
           },
         });
@@ -162,6 +163,7 @@ export class RuntimeService {
         courseVersion: true,
         attempts: { orderBy: { attemptNumber: 'desc' }, take: 1 },
         assessmentResults: { orderBy: { createdAt: 'desc' }, take: 1 },
+        events: { where: { eventType: 'HINT_DELIVERED' }, take: 1 },
       },
     });
 
@@ -170,11 +172,19 @@ export class RuntimeService {
     }
 
     const pinnedBlock = this.extractPinnedBlock(run.courseVersion, run.blockInstanceId);
+    const hintEvent = run.events[0] ?? null;
+    const deliveredHint = hintEvent
+      ? (hintEvent.payload as { hintText?: string })?.hintText ??
+        (pinnedBlock.config as { hintText?: string })?.hintText ??
+        null
+      : null;
+
     return this.toRunDto(
       run,
       pinnedBlock,
       run.attempts[0],
       run.assessmentResults[0],
+      deliveredHint,
     );
   }
 
@@ -212,6 +222,16 @@ export class RuntimeService {
       const pinnedBlock = this.extractPinnedBlock(run.courseVersion, run.blockInstanceId);
       const def = this.registry.getDefinition(pinnedBlock.blockTypeId, pinnedBlock.typeVersion);
 
+      // Check if hint was previously delivered on this run
+      const existingHintEvent = await tx.aBEvent.findFirst({
+        where: { runId: run.id, eventType: 'HINT_DELIVERED' },
+      });
+      let deliveredHint = existingHintEvent
+        ? (existingHintEvent.payload as { hintText?: string })?.hintText ??
+          (pinnedBlock.config as { hintText?: string })?.hintText ??
+          null
+        : null;
+
       // 3. Concurrent Idempotency Check under the row-level lock
       const existingEvent = await tx.aBEvent.findUnique({
         where: {
@@ -226,20 +246,53 @@ export class RuntimeService {
         const expectedEventType = this.mapCommandToEventType(dto.command);
         if (existingEvent.eventType !== expectedEventType) {
           throw new ConflictException(
-            `Idempotency key '${dto.idempotencyKey}' was already used on this run for command '${existingEvent.eventType}', cannot replay for '${dto.command}'.`,
+            `Idempotency key '${dto.idempotencyKey}' was already used for a different command on this run.`,
           );
         }
 
-        const latestAttempt = await tx.aBAttempt.findFirst({
-          where: { runId: run.id },
-          orderBy: { attemptNumber: 'desc' },
-        });
-        const latestAssessment = await tx.assessmentResult.findFirst({
-          where: { runId: run.id },
-          orderBy: { createdAt: 'desc' },
-        });
+        // Compare normalized request payloads
+        const eventPayload = (existingEvent.payload as Record<string, unknown>) || {};
+        const incomingNormStr = JSON.stringify(this.normalizePayload(dto.payload));
+        const storedNormStr = JSON.stringify(this.normalizePayload(eventPayload._requestPayload));
 
-        return this.toRunDto(run, pinnedBlock, latestAttempt, latestAssessment);
+        if (incomingNormStr !== storedNormStr) {
+          throw new ConflictException(
+            `Idempotency key '${dto.idempotencyKey}' was already used with different payload data on this run.`,
+          );
+        }
+
+        // Fetch original attempt if command was SUBMIT_RESPONSE
+        let replayAttempt: ABAttempt | null = null;
+        let replayAssessment: AssessmentResult | null = null;
+
+        if (dto.command === 'SUBMIT_RESPONSE') {
+          replayAttempt = await tx.aBAttempt.findFirst({
+            where: {
+              runId: run.id,
+              idempotencyKey: dto.idempotencyKey,
+            },
+          });
+
+          if (replayAttempt) {
+            replayAssessment = await tx.assessmentResult.findFirst({
+              where: {
+                runId: run.id,
+                attemptId: replayAttempt.id,
+              },
+            });
+          }
+        } else {
+          replayAttempt = await tx.aBAttempt.findFirst({
+            where: { runId: run.id },
+            orderBy: { attemptNumber: 'desc' },
+          });
+          replayAssessment = await tx.assessmentResult.findFirst({
+            where: { runId: run.id },
+            orderBy: { createdAt: 'desc' },
+          });
+        }
+
+        return this.toRunDto(run, pinnedBlock, replayAttempt, replayAssessment, deliveredHint);
       }
 
       const now = new Date();
@@ -247,7 +300,7 @@ export class RuntimeService {
       switch (dto.command) {
         case 'START': {
           if (run.status === 'ACTIVE') {
-            return this.toRunDto(run, pinnedBlock);
+            return this.toRunDto(run, pinnedBlock, null, null, deliveredHint);
           }
           if (run.status !== 'CREATED') {
             throw new BadRequestException(
@@ -265,11 +318,14 @@ export class RuntimeService {
               runId: run.id,
               eventType: 'RUN_STARTED',
               idempotencyKey: dto.idempotencyKey,
+              payload: {
+                _requestPayload: this.normalizePayload(dto.payload),
+              } as unknown as Prisma.InputJsonValue,
               serverTimestamp: now,
             },
           });
 
-          return this.toRunDto(updated, pinnedBlock);
+          return this.toRunDto(updated, pinnedBlock, null, null, deliveredHint);
         }
 
         case 'SUSPEND': {
@@ -289,16 +345,28 @@ export class RuntimeService {
               runId: run.id,
               eventType: 'RUN_SUSPENDED',
               idempotencyKey: dto.idempotencyKey,
+              payload: {
+                _requestPayload: this.normalizePayload(dto.payload),
+              } as unknown as Prisma.InputJsonValue,
               serverTimestamp: now,
             },
           });
 
-          return this.toRunDto(updated, pinnedBlock);
+          const latestAttempt = await tx.aBAttempt.findFirst({
+            where: { runId: run.id },
+            orderBy: { attemptNumber: 'desc' },
+          });
+          const latestAssessment = await tx.assessmentResult.findFirst({
+            where: { runId: run.id },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          return this.toRunDto(updated, pinnedBlock, latestAttempt, latestAssessment, deliveredHint);
         }
 
         case 'RESUME': {
           if (run.status === 'ACTIVE') {
-            return this.toRunDto(run, pinnedBlock);
+            return this.toRunDto(run, pinnedBlock, null, null, deliveredHint);
           }
           if (run.status !== 'SUSPENDED') {
             throw new BadRequestException(
@@ -316,11 +384,23 @@ export class RuntimeService {
               runId: run.id,
               eventType: 'RUN_RESUMED',
               idempotencyKey: dto.idempotencyKey,
+              payload: {
+                _requestPayload: this.normalizePayload(dto.payload),
+              } as unknown as Prisma.InputJsonValue,
               serverTimestamp: now,
             },
           });
 
-          return this.toRunDto(updated, pinnedBlock);
+          const latestAttempt = await tx.aBAttempt.findFirst({
+            where: { runId: run.id },
+            orderBy: { attemptNumber: 'desc' },
+          });
+          const latestAssessment = await tx.assessmentResult.findFirst({
+            where: { runId: run.id },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          return this.toRunDto(updated, pinnedBlock, latestAttempt, latestAssessment, deliveredHint);
         }
 
         case 'REQUEST_HINT': {
@@ -346,10 +426,15 @@ export class RuntimeService {
               runId: run.id,
               eventType: 'HINT_DELIVERED',
               idempotencyKey: dto.idempotencyKey,
-              payload: { hintText: blockConfig.hintText },
+              payload: {
+                hintText: blockConfig.hintText,
+                _requestPayload: this.normalizePayload(dto.payload),
+              } as unknown as Prisma.InputJsonValue,
               serverTimestamp: now,
             },
           });
+
+          deliveredHint = blockConfig.hintText;
 
           const latestAttempt = await tx.aBAttempt.findFirst({
             where: { runId: run.id },
@@ -360,7 +445,7 @@ export class RuntimeService {
             orderBy: { createdAt: 'desc' },
           });
 
-          return this.toRunDto(run, pinnedBlock, latestAttempt, latestAssessment);
+          return this.toRunDto(run, pinnedBlock, latestAttempt, latestAssessment, deliveredHint);
         }
 
         case 'SUBMIT_RESPONSE': {
@@ -479,12 +564,13 @@ export class RuntimeService {
                 assisted,
                 isCorrect: evaluatedOutcome.isCorrect,
                 provenance: String(supportContext.provenance),
-              },
+                _requestPayload: this.normalizePayload(dto.payload),
+              } as unknown as Prisma.InputJsonValue,
               serverTimestamp: now,
             },
           });
 
-          return this.toRunDto(run, pinnedBlock, attempt, assessment);
+          return this.toRunDto(run, pinnedBlock, attempt, assessment, deliveredHint);
         }
 
         case 'FINISH': {
@@ -510,12 +596,22 @@ export class RuntimeService {
               idempotencyKey: dto.idempotencyKey,
               payload: {
                 ungraded: pinnedBlock.blockTypeId === 'video',
-              },
+                _requestPayload: this.normalizePayload(dto.payload),
+              } as unknown as Prisma.InputJsonValue,
               serverTimestamp: now,
             },
           });
 
-          return this.toRunDto(updated, pinnedBlock);
+          const latestAttempt = await tx.aBAttempt.findFirst({
+            where: { runId: run.id },
+            orderBy: { attemptNumber: 'desc' },
+          });
+          const latestAssessment = await tx.assessmentResult.findFirst({
+            where: { runId: run.id },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          return this.toRunDto(updated, pinnedBlock, latestAttempt, latestAssessment, deliveredHint);
         }
 
         case 'ABANDON': {
@@ -539,11 +635,23 @@ export class RuntimeService {
               runId: run.id,
               eventType: 'RUN_ABANDONED',
               idempotencyKey: dto.idempotencyKey,
+              payload: {
+                _requestPayload: this.normalizePayload(dto.payload),
+              } as unknown as Prisma.InputJsonValue,
               serverTimestamp: now,
             },
           });
 
-          return this.toRunDto(updated, pinnedBlock);
+          const latestAttempt = await tx.aBAttempt.findFirst({
+            where: { runId: run.id },
+            orderBy: { attemptNumber: 'desc' },
+          });
+          const latestAssessment = await tx.assessmentResult.findFirst({
+            where: { runId: run.id },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          return this.toRunDto(updated, pinnedBlock, latestAttempt, latestAssessment, deliveredHint);
         }
 
         default:
@@ -573,14 +681,28 @@ export class RuntimeService {
     }
 
     const pinnedBlock = this.extractPinnedBlock(run.courseVersion, run.blockInstanceId);
-    const latestAttempt = run.attempts[run.attempts.length - 1];
-    const latestAssessment = run.assessmentResults[run.assessmentResults.length - 1];
+    const latestAttempt = run.attempts[run.attempts.length - 1] ?? null;
+    const latestAssessment = run.assessmentResults[run.assessmentResults.length - 1] ?? null;
+
+    const hintEvent = run.events.find((e) => e.eventType === 'HINT_DELIVERED');
+    const deliveredHint = hintEvent
+      ? (hintEvent.payload as { hintText?: string })?.hintText ??
+        (pinnedBlock.config as { hintText?: string })?.hintText ??
+        null
+      : null;
+
+    const isDeferred =
+      (pinnedBlock.config as { feedbackPolicy?: string })?.feedbackPolicy ===
+      'DEFERRED';
+    const shouldRedactDeferred = isDeferred && run.status !== 'CLOSED';
 
     return {
-      run: this.toRunDto(run, pinnedBlock, latestAttempt, latestAssessment),
+      run: this.toRunDto(run, pinnedBlock, latestAttempt, latestAssessment, deliveredHint),
       attempts: run.attempts.map((a) => this.toAttemptDto(a)),
-      assessments: run.assessmentResults.map((ar) => this.toAssessmentDto(ar)),
-      events: run.events.map((e) => this.toEventDto(e)),
+      assessments: run.assessmentResults.map((ar) =>
+        this.toAssessmentDto(ar, shouldRedactDeferred),
+      ),
+      events: run.events.map((e) => this.toEventDto(e, shouldRedactDeferred)),
     };
   }
 
@@ -629,12 +751,18 @@ export class RuntimeService {
     pinnedBlock: BlockInstanceSnapshot,
     attempt?: ABAttempt | null,
     assessment?: AssessmentResult | null,
+    deliveredHint?: string | null,
   ): ABRunDto {
     const learnerConfig = this.registry.sanitizeForLearner(
       pinnedBlock.blockTypeId,
       pinnedBlock.config,
       pinnedBlock.typeVersion,
     );
+
+    const isDeferred =
+      (pinnedBlock.config as { feedbackPolicy?: string })?.feedbackPolicy ===
+      'DEFERRED';
+    const shouldRedactDeferred = isDeferred && run.status !== 'CLOSED';
 
     return {
       id: run.id,
@@ -659,7 +787,10 @@ export class RuntimeService {
         learnerConfig,
       },
       latestAttempt: attempt ? this.toAttemptDto(attempt) : null,
-      latestAssessment: assessment ? this.toAssessmentDto(assessment) : null,
+      latestAssessment: assessment
+        ? this.toAssessmentDto(assessment, shouldRedactDeferred)
+        : null,
+      deliveredHint: deliveredHint ?? null,
     };
   }
 
@@ -675,7 +806,43 @@ export class RuntimeService {
     };
   }
 
-  private toAssessmentDto(entity: AssessmentResult): AssessmentResultDto {
+  private toAssessmentDto(
+    entity: AssessmentResult,
+    shouldRedactDeferred = false,
+  ): AssessmentResultDto {
+    if (shouldRedactDeferred) {
+      return {
+        id: entity.id,
+        attemptId: entity.attemptId,
+        runId: entity.runId,
+        status: entity.status,
+        isCorrect: null,
+        score: null,
+        feedback: {
+          deferred: true,
+          message:
+            'Feedback for this assessment is deferred until the run is completed.',
+        },
+        evaluatorId: entity.evaluatorId,
+        evaluatedAt: entity.evaluatedAt.toISOString(),
+        createdAt: entity.createdAt.toISOString(),
+      };
+    }
+
+    const rawFeedback = entity.feedback as Record<string, unknown> | null;
+    let releasedFeedback: Record<string, unknown> | string | null = rawFeedback;
+
+    if (rawFeedback && rawFeedback.deferred === true) {
+      releasedFeedback = {
+        deferred: false,
+        released: true,
+        isCorrect: entity.isCorrect,
+        explanation: rawFeedback.explanation ?? null,
+        selectedOptionText: rawFeedback.selectedOptionText ?? null,
+        optionExplanation: rawFeedback.optionExplanation ?? null,
+      };
+    }
+
     return {
       id: entity.id,
       attemptId: entity.attemptId,
@@ -683,21 +850,51 @@ export class RuntimeService {
       status: entity.status,
       isCorrect: entity.isCorrect,
       score: entity.score,
-      feedback: entity.feedback as Record<string, unknown> | string | null,
+      feedback: releasedFeedback,
       evaluatorId: entity.evaluatorId,
       evaluatedAt: entity.evaluatedAt.toISOString(),
       createdAt: entity.createdAt.toISOString(),
     };
   }
 
-  private toEventDto(entity: ABEvent): ABEventDto {
+  private toEventDto(
+    entity: ABEvent,
+    shouldRedactDeferred = false,
+  ): ABEventDto {
+    let payload = entity.payload as Record<string, unknown> | null;
+    if (shouldRedactDeferred && payload && entity.eventType === 'ATTEMPT_SUBMITTED') {
+      payload = {
+        ...payload,
+        isCorrect: null,
+      };
+    }
+
     return {
       id: entity.id,
       runId: entity.runId,
       eventType: entity.eventType,
-      payload: entity.payload as Record<string, unknown> | null,
+      payload,
       idempotencyKey: entity.idempotencyKey,
       serverTimestamp: entity.serverTimestamp.toISOString(),
     };
+  }
+
+  private normalizePayload(payload: unknown): Record<string, unknown> | null {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return null;
+    }
+    const record = payload as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      const val = record[key];
+      if (val !== undefined) {
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          sorted[key] = this.normalizePayload(val);
+        } else {
+          sorted[key] = val;
+        }
+      }
+    }
+    return sorted;
   }
 }

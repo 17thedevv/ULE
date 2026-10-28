@@ -446,6 +446,48 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
         expect(opt).not.toHaveProperty('explanation');
         expect(opt).not.toHaveProperty('isCorrect');
       }
+
+      // ABSOLUTELY NO HINT CONTENT LEAKAGE IN INITIAL CONFIG
+      expect(learnerConfig).not.toHaveProperty('hintText');
+      expect(learnerConfig.allowHints).toBe(true);
+      expect(res.body.deliveredHint).toBeNull();
+    });
+
+    it('delivers server hint upon authorized REQUEST_HINT on a fresh run and supports idempotent replay', async () => {
+      const hintRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', userACookie)
+        .send({
+          courseVersionId: courseVersion1Id,
+          blockInstanceId: mcqBlockId,
+          idempotencyKey: 'start_mcq_hint_run_1',
+        })
+        .expect(HttpStatus.CREATED);
+
+      expect(hintRun.body.block.learnerConfig).not.toHaveProperty('hintText');
+      expect(hintRun.body.deliveredHint).toBeNull();
+
+      const hintRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${hintRun.body.id}/commands`)
+        .set('Cookie', userACookie)
+        .send({ command: 'REQUEST_HINT', idempotencyKey: 'req_hint_mcq_1' })
+        .expect(HttpStatus.OK);
+
+      expect(hintRes.body.deliveredHint).toBe(
+        'Check the ULE system topology in docs/architecture/overview.md',
+      );
+      expect(hintRes.body.block.learnerConfig).not.toHaveProperty('hintText');
+
+      // Replaying REQUEST_HINT returns authorized hint idempotently
+      const replayHintRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${hintRun.body.id}/commands`)
+        .set('Cookie', userACookie)
+        .send({ command: 'REQUEST_HINT', idempotencyKey: 'req_hint_mcq_1' })
+        .expect(HttpStatus.OK);
+
+      expect(replayHintRes.body.deliveredHint).toBe(
+        'Check the ULE system topology in docs/architecture/overview.md',
+      );
     });
 
     it('exercises suspend and resume lifecycle transitions', async () => {
