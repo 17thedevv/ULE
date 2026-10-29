@@ -35,10 +35,13 @@ export class CoursesService {
   async createCourse(
     ownerId: string,
     dto: CreateCourseDto,
+    courseId?: string,
+    txClient?: Prisma.TransactionClient,
   ): Promise<CreateCourseResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    const op = async (tx: Prisma.TransactionClient) => {
       const course = await tx.course.create({
         data: {
+          ...(courseId ? { id: courseId } : {}),
           ownerId,
           visibility: 'PRIVATE',
         },
@@ -58,7 +61,9 @@ export class CoursesService {
         course: this.toCourseDto(course),
         draft: this.toDraftDto(draft),
       };
-    });
+    };
+
+    return txClient ? op(txClient) : this.prisma.$transaction(op);
   }
 
   /**
@@ -114,8 +119,9 @@ export class CoursesService {
     courseId: string,
     userId: string,
     dto: UpdateCourseDraftDto,
+    txClient?: Prisma.TransactionClient,
   ): Promise<CourseDraftDto> {
-    return this.prisma.$transaction(async (tx) => {
+    const op = async (tx: Prisma.TransactionClient) => {
       // 1. Acquire aggregate row-level lock on parent course first to prevent deadlock and serialize mutations
       const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
         SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
@@ -152,7 +158,9 @@ export class CoursesService {
       });
 
       return this.toDraftDto(updated);
-    });
+    };
+
+    return txClient ? op(txClient) : this.prisma.$transaction(op);
   }
 
   /**
@@ -163,9 +171,10 @@ export class CoursesService {
   async createVersion(
     courseId: string,
     userId: string,
+    versionId?: string,
+    txClient?: Prisma.TransactionClient,
   ): Promise<CourseVersionDto> {
-    try {
-      return await this.prisma.$transaction(async (tx) => {
+    const op = async (tx: Prisma.TransactionClient) => {
         // Acquire exclusive row-level lock on the parent Course row in PostgreSQL.
         // This serializes version snapshot requests for this course, preventing races.
         const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
@@ -260,6 +269,7 @@ export class CoursesService {
 
         const version = await tx.courseVersion.create({
           data: {
+            ...(versionId ? { id: versionId } : {}),
             courseId,
             versionNumber: nextVersionNumber,
             title: draft.title,
@@ -280,7 +290,10 @@ export class CoursesService {
         });
 
         return this.toVersionDto(version);
-      });
+    };
+
+    try {
+      return await (txClient ? op(txClient) : this.prisma.$transaction(op));
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -339,7 +352,7 @@ export class CoursesService {
 
   // --- DTO Mappers ---
 
-  private toCourseDto(course: Course): CourseDto {
+  public toCourseDto(course: Course): CourseDto {
     return {
       id: course.id,
       ownerId: course.ownerId,
@@ -349,7 +362,7 @@ export class CoursesService {
     };
   }
 
-  private toDraftDto(draft: CourseDraft): CourseDraftDto {
+  public toDraftDto(draft: CourseDraft): CourseDraftDto {
     return {
       id: draft.id,
       courseId: draft.courseId,
@@ -362,7 +375,7 @@ export class CoursesService {
     };
   }
 
-  private toVersionDto(version: CourseVersion): CourseVersionDto {
+  public toVersionDto(version: CourseVersion): CourseVersionDto {
     return {
       id: version.id,
       courseId: version.courseId,

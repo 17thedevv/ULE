@@ -1,3 +1,5 @@
+import { ForbiddenException } from '@nestjs/common';
+
 /**
  * ULE CORS Security Utility
  *
@@ -39,7 +41,9 @@ export function createCorsOriginValidator(corsOriginConfig: string) {
       callback(null, true);
     } else {
       callback(
-        new Error(`Origin '${origin}' not allowed by CORS configuration.`),
+        new ForbiddenException(
+          `Origin '${origin}' not allowed by CORS configuration.`,
+        ),
       );
     }
   };
