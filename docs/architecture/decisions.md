@@ -207,5 +207,13 @@
        - Title-based verification detection and arbitrary unvalidated creator config properties (`isVerification: true`) are eliminated.
        - In Phase 3, because no registered block type defines or validates a formal runtime verification contract, `READY_TO_VERIFY` projections return the honest minimal fallback: `category: 'CONTINUE'` with `isAvailable: false`.
        - Conservative `READY_TO_VERIFY` learner state is preserved without issuing premature `VERIFIED` mastery claims.
-- **Consequences**: Complete Phase 3 vertical slice verified by 32 real PostgreSQL automated integration tests (`test/learning-evidence.integration.spec.ts`, 100% pass) and 180 total integration tests across the monorepo. Zero regressions across Phase 1A, Phase 1B, Phase 2, and Phase 3 suites.
+     - **P1 — Access Grant Revocation Concurrency Hardening**:
+       - `RuntimeService.startRun` includes course version retrieval, grant verification, and run creation in a single atomic transaction synchronized with a row-level lock (`FOR SHARE`) on `course_access_grants`.
+       - `RuntimeService.executeCommand` synchronizes grant validation under `FOR SHARE` on `course_access_grants`.
+       - `AccessGrantsService.revokeGrant` executes under `FOR UPDATE` row lock on `course_access_grants`.
+       - Racing grant revocations and run starts or attempt submissions are serialized strictly at the database tier; racing operations fail closed immediately (HTTP 404 or HTTP 403).
+     - **P2 — Serialized Skill Projection via Advisory Transaction Locking**:
+       - `LearnerSkillProjectionService.recomputeProjection` synchronizes calculations per `(userId, courseVersionId, skillId)` using PostgreSQL advisory transaction locks (`SELECT pg_advisory_xact_lock(hashtext(...))`).
+       - Concurrent attempt submissions on distinct items mapped to the same skill are strictly serialized across database transactions, ensuring downstream projections compute on committed evidence without undercounting or overwriting each other with stale snapshots.
+- **Consequences**: Complete Phase 3 vertical slice verified by 35 real PostgreSQL automated integration tests (`test/learning-evidence.integration.spec.ts`, 100% pass) and 183 total integration tests across the monorepo. Zero regressions across Phase 1A, Phase 1B, Phase 2, and Phase 3 suites.
 

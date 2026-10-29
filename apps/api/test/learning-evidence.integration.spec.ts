@@ -1042,9 +1042,13 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
     });
 
     it('Authorized evaluation correction updates assessment, records auditable history, and reconciles projection', async () => {
-      // Find an AssessmentResult for Bob on mcq1
+      // Find the initial independent AssessmentResult for Bob on mcq1
       const assessment = await prisma.assessmentResult.findFirst({
-        where: { run: { userId: learnerId, blockInstanceId: mcq1BlockId } },
+        where: {
+          run: { userId: learnerId, blockInstanceId: mcq1BlockId },
+          learningEvidence: { some: { isSameItemRepetition: false } },
+        },
+        orderBy: { createdAt: 'asc' },
       });
 
       expect(assessment).toBeDefined();
@@ -2103,6 +2107,326 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
       expect(skillDProj.proposedAction.isAvailable).toBe(false);
       expect(skillDProj.proposedAction.suggestedBlockInstanceId).toBeNull();
       expect(skillDProj.proposedAction.reason).toContain('no schema-validated verification assessment capability is available');
+    });
+
+    it('P1 Concurrency: Concurrent access grant revocation with startRun is serialized under row lock and fails closed', async () => {
+      // 1. Register learner Frank
+      const userFrank = {
+        email: `frank_${Date.now()}@ule.internal`,
+        password: 'FrankPassword123!',
+        name: 'Learner Frank',
+      };
+      const regFrank = await request(app.getHttpServer())
+        .post('/api/v1/auth/sign-up/email')
+        .send(userFrank);
+      const frankCookie = extractCookies(regFrank);
+      const meFrank = await request(app.getHttpServer())
+        .get('/api/v1/me')
+        .set('Cookie', frankCookie);
+      const frankId = meFrank.body.user.id;
+
+      // 2. Grant Frank access to Course A
+      const grantRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: frankId })
+        .expect(HttpStatus.CREATED);
+
+      const frankGrantId = grantRes.body.id;
+
+      // 3. Concurrently trigger Alice revoking grant and Frank starting a run
+      const [revokeRes, runRes] = await Promise.all([
+        request(app.getHttpServer())
+          .delete(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}/grants/${frankGrantId}`)
+          .set('Cookie', ownerCookie),
+        request(app.getHttpServer())
+          .post('/api/v1/runs')
+          .set('Cookie', frankCookie)
+          .send({
+            courseVersionId: courseAVersion1Id,
+            blockInstanceId: mcq1BlockId,
+            idempotencyKey: `frank_run_race_${Date.now()}`,
+          }),
+      ]);
+
+      // Revocation must always succeed
+      expect(revokeRes.status).toBe(HttpStatus.OK);
+      expect(revokeRes.body.status).toBe('REVOKED');
+
+      // Either Frank's startRun acquired the lock before revocation (201) OR after (404).
+      expect([HttpStatus.CREATED, HttpStatus.NOT_FOUND]).toContain(runRes.status);
+
+      // If the run was created before revocation serialized, any subsequent command on it MUST fail closed with 403 Forbidden!
+      if (runRes.status === HttpStatus.CREATED) {
+        await request(app.getHttpServer())
+          .post(`/api/v1/runs/${runRes.body.id}/commands`)
+          .set('Cookie', frankCookie)
+          .send({
+            command: 'SUBMIT_RESPONSE',
+            payload: { selectedOptionId: 'opt_a' },
+            idempotencyKey: `frank_sub_after_revoke_${Date.now()}`,
+          })
+          .expect(HttpStatus.FORBIDDEN);
+      }
+
+      // Any new startRun attempt by Frank after revocation MUST return 404
+      await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', frankCookie)
+        .send({
+          courseVersionId: courseAVersion1Id,
+          blockInstanceId: mcq1BlockId,
+          idempotencyKey: `frank_run_post_revoke_${Date.now()}`,
+        })
+        .expect(HttpStatus.NOT_FOUND);
+    });
+
+    it('P1 Concurrency: Concurrent access grant revocation with executeCommand is serialized under row lock and fails closed', async () => {
+      // 1. Register learner Grace
+      const userGrace = {
+        email: `grace_${Date.now()}@ule.internal`,
+        password: 'GracePassword123!',
+        name: 'Learner Grace',
+      };
+      const regGrace = await request(app.getHttpServer())
+        .post('/api/v1/auth/sign-up/email')
+        .send(userGrace);
+      const graceCookie = extractCookies(regGrace);
+      const meGrace = await request(app.getHttpServer())
+        .get('/api/v1/me')
+        .set('Cookie', graceCookie);
+      const graceId = meGrace.body.user.id;
+
+      // 2. Grant Grace access to Course A
+      const grantRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: graceId })
+        .expect(HttpStatus.CREATED);
+
+      const graceGrantId = grantRes.body.id;
+
+      // 3. Grace starts an active run BEFORE revocation
+      const runRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', graceCookie)
+        .send({
+          courseVersionId: courseAVersion1Id,
+          blockInstanceId: mcq1BlockId,
+          idempotencyKey: `grace_run_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      // 4. Concurrently trigger Alice revoking grant and Grace submitting response
+      const [revokeRes, submitRes] = await Promise.all([
+        request(app.getHttpServer())
+          .delete(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}/grants/${graceGrantId}`)
+          .set('Cookie', ownerCookie),
+        request(app.getHttpServer())
+          .post(`/api/v1/runs/${runRes.body.id}/commands`)
+          .set('Cookie', graceCookie)
+          .send({
+            command: 'SUBMIT_RESPONSE',
+            payload: { selectedOptionId: 'opt_a' },
+            idempotencyKey: `grace_sub_race_${Date.now()}`,
+          }),
+      ]);
+
+      // Revocation must succeed
+      expect(revokeRes.status).toBe(HttpStatus.OK);
+      expect(revokeRes.body.status).toBe('REVOKED');
+
+      // Either submission committed before revocation (200) OR was serialized after/during revocation (403)
+      expect([HttpStatus.OK, HttpStatus.FORBIDDEN]).toContain(submitRes.status);
+
+      // Any subsequent command after revocation must fail with 403 Forbidden
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runRes.body.id}/commands`)
+        .set('Cookie', graceCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_a' },
+          idempotencyKey: `grace_sub_final_${Date.now()}`,
+        })
+        .expect(HttpStatus.FORBIDDEN);
+    });
+
+    it('P2 Concurrency: Concurrent distinct-item submissions serialize correctly via advisory lock and reach independentCount = 2', async () => {
+      // 1. Create Course E with 2 distinct MCQ blocks mapped to skillE
+      const courseERes = await request(app.getHttpServer())
+        .post('/api/v1/courses')
+        .set('Cookie', ownerCookie)
+        .send({ title: 'Course E: Concurrent Distinct Items' })
+        .expect(HttpStatus.CREATED);
+
+      const courseEId = courseERes.body.course.id;
+
+      // Define skillE
+      const skillERes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseEId}/skills`)
+        .set('Cookie', ownerCookie)
+        .send({
+          skillCode: 'SKILL_E',
+          name: 'Concurrent Mastery Skill',
+          description: 'Testing concurrent distinct-item serialization',
+        })
+        .expect(HttpStatus.CREATED);
+
+      const skillEId = skillERes.body.id;
+
+      // Add two distinct MCQ blocks
+      const mcqE1 = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseEId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'multiple-choice',
+          title: 'Distinct MCQ Item 1',
+          orderIndex: 0,
+          config: {
+            question: 'Question 1: What is 5 x 5?',
+            options: [
+              { id: 'opt_1a', text: '25' },
+              { id: 'opt_1b', text: '30' },
+            ],
+            answerKey: { correctOptionId: 'opt_1a' },
+            feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
+          },
+          expectedRevision: 1,
+        })
+        .expect(HttpStatus.CREATED);
+
+      const mcqE2 = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseEId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'multiple-choice',
+          title: 'Distinct MCQ Item 2',
+          orderIndex: 1,
+          config: {
+            question: 'Question 2: What is 6 x 6?',
+            options: [
+              { id: 'opt_2a', text: '36' },
+              { id: 'opt_2b', text: '42' },
+            ],
+            answerKey: { correctOptionId: 'opt_2a' },
+            feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
+          },
+          expectedRevision: 2,
+        })
+        .expect(HttpStatus.CREATED);
+
+      // Map both distinct items to skillE
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseEId}/draft/skill-mappings`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockInstanceId: mcqE1.body.id,
+          skillId: skillEId,
+          expectedRevision: 3,
+        })
+        .expect(HttpStatus.OK);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseEId}/draft/skill-mappings`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockInstanceId: mcqE2.body.id,
+          skillId: skillEId,
+          expectedRevision: 4,
+        })
+        .expect(HttpStatus.OK);
+
+      // Publish Course E Version 1
+      const eVersion = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseEId}/versions`)
+        .set('Cookie', ownerCookie)
+        .expect(HttpStatus.CREATED);
+
+      // Register learner Henry
+      const userHenry = {
+        email: `henry_${Date.now()}@ule.internal`,
+        password: 'HenryPassword123!',
+        name: 'Learner Henry',
+      };
+      const regHenry = await request(app.getHttpServer())
+        .post('/api/v1/auth/sign-up/email')
+        .send(userHenry);
+      const henryCookie = extractCookies(regHenry);
+      const meHenry = await request(app.getHttpServer())
+        .get('/api/v1/me')
+        .set('Cookie', henryCookie);
+      const henryId = meHenry.body.user.id;
+
+      // Grant Henry access to Course E Version 1
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseEId}/versions/${eVersion.body.id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: henryId })
+        .expect(HttpStatus.CREATED);
+
+      // Henry starts Run 1 on Item 1 and Run 2 on Item 2
+      const [run1Res, run2Res] = await Promise.all([
+        request(app.getHttpServer())
+          .post('/api/v1/runs')
+          .set('Cookie', henryCookie)
+          .send({
+            courseVersionId: eVersion.body.id,
+            blockInstanceId: mcqE1.body.id,
+            idempotencyKey: `henry_run1_${Date.now()}`,
+          }),
+        request(app.getHttpServer())
+          .post('/api/v1/runs')
+          .set('Cookie', henryCookie)
+          .send({
+            courseVersionId: eVersion.body.id,
+            blockInstanceId: mcqE2.body.id,
+            idempotencyKey: `henry_run2_${Date.now()}`,
+          }),
+      ]);
+
+      expect(run1Res.status).toBe(HttpStatus.CREATED);
+      expect(run2Res.status).toBe(HttpStatus.CREATED);
+
+      // CRITICAL P2 CONCURRENCY RACE:
+      // Henry submits correct responses to both distinct items simultaneously.
+      // Under pg_advisory_xact_lock, recomputeProjection is serialized per (userId, courseVersionId, skillId).
+      // Neither transaction can overwrite the other with a stale snapshot or undercount.
+      const [sub1Res, sub2Res] = await Promise.all([
+        request(app.getHttpServer())
+          .post(`/api/v1/runs/${run1Res.body.id}/commands`)
+          .set('Cookie', henryCookie)
+          .send({
+            command: 'SUBMIT_RESPONSE',
+            payload: { selectedOptionId: 'opt_1a' },
+            idempotencyKey: `henry_sub1_${Date.now()}`,
+          }),
+        request(app.getHttpServer())
+          .post(`/api/v1/runs/${run2Res.body.id}/commands`)
+          .set('Cookie', henryCookie)
+          .send({
+            command: 'SUBMIT_RESPONSE',
+            payload: { selectedOptionId: 'opt_2a' },
+            idempotencyKey: `henry_sub2_${Date.now()}`,
+          }),
+      ]);
+
+      expect(sub1Res.status).toBe(HttpStatus.OK);
+      expect(sub2Res.status).toBe(HttpStatus.OK);
+
+      // Check Henry's skill projection on Course E
+      const eSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${eVersion.body.id}/skills`)
+        .set('Cookie', henryCookie)
+        .expect(HttpStatus.OK);
+
+      const skillEProj = eSkillsRes.body.find((s: any) => s.skillId === skillEId);
+      expect(skillEProj).toBeDefined();
+
+      // INVARIANT: independentCount MUST be 2 (both distinct items counted, no stale undercount to 1)
+      expect(skillEProj.independentCount).toBe(2);
+      expect(skillEProj.repeatedCount).toBe(0);
+      expect(skillEProj.incorrectCount).toBe(0);
+      expect(skillEProj.state).toBe('READY_TO_VERIFY');
     });
   });
 });

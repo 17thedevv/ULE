@@ -25,7 +25,18 @@ export class LearnerSkillProjectionService {
     skillId: string,
     txClient?: Prisma.TransactionClient,
   ): Promise<LearnerSkillProjectionDto> {
-    const tx = txClient ?? this.prisma;
+    if (!txClient) {
+      return this.prisma.$transaction(async (tx) =>
+        this.recomputeProjection(userId, courseVersionId, skillId, tx),
+      );
+    }
+    const tx = txClient;
+
+    // P2: Serialize projection recomputation per (userId, courseVersionId, skillId)
+    // using PostgreSQL advisory transaction lock to prevent concurrent undercounting races
+    // and ensure sequential evaluation read models across distinct items.
+    const lockKey = `projection:${userId}:${courseVersionId}:${skillId}`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
     // Load version snapshot to read skill definition and available verification blocks
     const version = await tx.courseVersion.findUnique({

@@ -140,6 +140,8 @@ export class AccessGrantsService {
 
   /**
    * Revokes access for a specific grant.
+   * P1: Synchronized under transaction with row-level lock (FOR UPDATE)
+   * to serialize with concurrent startRun and executeCommand operations.
    */
   async revokeGrant(
     ownerId: string,
@@ -147,34 +149,37 @@ export class AccessGrantsService {
     versionId: string,
     grantId: string,
   ): Promise<CourseAccessGrantDto> {
-    const course = await this.prisma.course.findUnique({
-      where: { id: courseId },
+    return this.prisma.$transaction(async (tx) => {
+      const course = await tx.course.findUnique({
+        where: { id: courseId },
+      });
+
+      if (!course || course.ownerId !== ownerId) {
+        throw new NotFoundException(`Course '${courseId}' not found.`);
+      }
+
+      const lockedGrants = await tx.$queryRaw<Array<{ id: string; status: string }>>`
+        SELECT id, status FROM course_access_grants
+        WHERE id = ${grantId} AND "courseVersionId" = ${versionId} AND "courseId" = ${courseId}
+        FOR UPDATE
+      `;
+
+      if (!lockedGrants || lockedGrants.length === 0) {
+        throw new NotFoundException(`Access grant '${grantId}' not found.`);
+      }
+
+      const updated = await tx.courseAccessGrant.update({
+        where: { id: lockedGrants[0].id },
+        data: {
+          status: 'REVOKED',
+          revokedAt: new Date(),
+          revokedById: ownerId,
+        },
+        include: { user: true },
+      });
+
+      return this.toGrantDto(updated);
     });
-
-    if (!course || course.ownerId !== ownerId) {
-      throw new NotFoundException(`Course '${courseId}' not found.`);
-    }
-
-    const grant = await this.prisma.courseAccessGrant.findFirst({
-      where: { id: grantId, courseVersionId: versionId, courseId },
-      include: { user: true },
-    });
-
-    if (!grant) {
-      throw new NotFoundException(`Access grant '${grantId}' not found.`);
-    }
-
-    const updated = await this.prisma.courseAccessGrant.update({
-      where: { id: grant.id },
-      data: {
-        status: 'REVOKED',
-        revokedAt: new Date(),
-        revokedById: ownerId,
-      },
-      include: { user: true },
-    });
-
-    return this.toGrantDto(updated);
   }
 
   /**
