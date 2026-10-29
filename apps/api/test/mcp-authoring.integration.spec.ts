@@ -8,6 +8,8 @@ import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter
 import { createCorsOriginValidator } from '../src/common/utils/cors.util';
 import { PrismaService } from '../src/modules/prisma/prisma.service';
 import { AuthService } from '../src/modules/auth/auth.service';
+import { CoursesService } from '../src/modules/courses/courses.service';
+import { McpService } from '../src/modules/mcp/mcp.service';
 
 function parseMcpResponse(res: request.Response): any {
   if (res.body && typeof res.body === 'object' && Object.keys(res.body).length > 0) {
@@ -42,6 +44,8 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
   let userAToken: string;
   let userBToken: string;
   let readOnlyToken: string;
+
+  jest.setTimeout(30000);
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -907,4 +911,288 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
       expect(parsed.result.content[0].text).not.toContain('node_modules');
     });
   });
+
+  // =========================================================================
+  // GATE A: CRASH-CONSISTENT MUTATION IDEMPOTENCY & FAULT-INJECTION RECOVERY
+  // =========================================================================
+
+  describe('Gate A — Crash-Consistent Mutation Idempotency & Fault-Injection Recovery', () => {
+    let coursesService: CoursesService;
+    let mcpService: McpService;
+
+    beforeAll(() => {
+      coursesService = app.get(CoursesService);
+      mcpService = app.get(McpService);
+    });
+
+    it('Point 1: Fault injected before domain mutation - cleans reservation, allows retry, produces 1 course', async () => {
+      const initialCourses = await prisma.course.count({ where: { ownerId: userAId } });
+      const idempotencyKey = `gateA_pt1_${Date.now()}`;
+
+      // Spy on coursesService.createCourse to throw before committing
+      const origCreateCourse = coursesService.createCourse.bind(coursesService);
+      let failedOnce = false;
+      coursesService.createCourse = (async (ownerId: string, dto: any, courseId?: string) => {
+        if (!failedOnce) {
+          failedOnce = true;
+          throw new Error('Injected crash BEFORE domain mutation committed');
+        }
+        return origCreateCourse(ownerId, dto, courseId);
+      }) as any;
+
+      // First attempt fails due to pre-mutation fault
+      const failRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: 'Point 1 Course Failure',
+        idempotencyKey,
+      });
+      expect(failRes.isError).toBe(true);
+
+      // Verify PostgreSQL: Course count is UNCHANGED (mutation did NOT commit)
+      expect(await prisma.course.count({ where: { ownerId: userAId } })).toBe(initialCourses);
+
+      // Verify reservation was removed so retries are not blocked
+      const reservation = await prisma.mcpMutationIdempotency.findFirst({
+        where: { userId: userAId, idempotencyKey },
+      });
+      expect(reservation).toBeNull();
+
+      // Retry the exact same mutation with the same idempotency key
+      const retryRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: 'Point 1 Course Failure',
+        idempotencyKey,
+      });
+      expect(retryRes.isError).toBeFalsy();
+      const created = JSON.parse(retryRes.content[0].text);
+      expect(created.course.id).toBeDefined();
+
+      // Verify PostgreSQL: Course count increased by EXACTLY 1
+      expect(await prisma.course.count({ where: { ownerId: userAId } })).toBe(initialCourses + 1);
+
+      coursesService.createCourse = origCreateCourse;
+    });
+
+    it('Point 2 (Course): Fault injected after domain mutation commits but before result stored - recovers course, 0 duplicate', async () => {
+      const initialCourses = await prisma.course.count({ where: { ownerId: userAId } });
+      const idempotencyKey = `gateA_pt2_c_${Date.now()}`;
+      const preallocatedCourseId = crypto.randomUUID();
+
+      // 1. Domain mutation commits directly to PostgreSQL (simulating committed transaction)
+      const committedCourse = await coursesService.createCourse(
+        userAId,
+        { title: 'Point 2 Committed Course' },
+        preallocatedCourseId,
+      );
+      expect(committedCourse.course.id).toBe(preallocatedCourseId);
+
+      // 2. Worker crashes before marking COMPLETED: record left as IN_PROGRESS with expired lease
+      await prisma.mcpMutationIdempotency.create({
+        data: {
+          userId: userAId,
+          clientId: 'claude_author_client',
+          toolName: 'ule_create_private_course',
+          idempotencyKey,
+          payloadHash: (mcpService as any).computePayloadHash({
+            title: 'Point 2 Committed Course',
+            idempotencyKey,
+          }),
+          resourceId: preallocatedCourseId,
+          status: 'IN_PROGRESS',
+          updatedAt: new Date(Date.now() - 3000), // Expired past 2000ms lease
+        },
+      });
+
+      // Course count right now is initialCourses + 1
+      const countAfterCommit = await prisma.course.count({ where: { ownerId: userAId } });
+      expect(countAfterCommit).toBe(initialCourses + 1);
+
+      // 3. Client retries with exact same key and payload
+      const retryRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: 'Point 2 Committed Course',
+        idempotencyKey,
+      });
+      expect(retryRes.isError).toBeFalsy();
+      const recovered = JSON.parse(retryRes.content[0].text);
+      expect(recovered.course.id).toBe(preallocatedCourseId);
+
+      // 4. CRITICAL INVARIANT: Course count in PostgreSQL MUST REMAIN EXACTLY countAfterCommit (NO duplicate course!)
+      expect(await prisma.course.count({ where: { ownerId: userAId } })).toBe(countAfterCommit);
+
+      // Verify idempotency record is now COMPLETED
+      const idempRecord = await prisma.mcpMutationIdempotency.findFirst({
+        where: { userId: userAId, idempotencyKey },
+      });
+      expect(idempRecord?.status).toBe('COMPLETED');
+    });
+
+    it('Point 2 (Version): Fault injected after version commits but before result stored - recovers version, 0 duplicate', async () => {
+      // Create a course first
+      const courseRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: `Gate A Version Test Course ${Date.now()}`,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      const courseId = JSON.parse(courseRes.content[0].text).course.id;
+
+      const initialVersions = await prisma.courseVersion.count({ where: { courseId } });
+      expect(initialVersions).toBe(0);
+
+      const idempotencyKey = `gateA_pt2_v_${Date.now()}`;
+      const preallocatedVersionId = crypto.randomUUID();
+
+      // 1. Version creation commits to PostgreSQL
+      const committedVersion = await coursesService.createVersion(courseId, userAId, preallocatedVersionId);
+      expect(committedVersion.id).toBe(preallocatedVersionId);
+
+      // 2. Worker leaves IN_PROGRESS record with expired lease
+      await prisma.mcpMutationIdempotency.create({
+        data: {
+          userId: userAId,
+          clientId: 'claude_author_client',
+          toolName: 'ule_create_private_course_version',
+          idempotencyKey,
+          payloadHash: (mcpService as any).computePayloadHash({
+            courseId,
+            idempotencyKey,
+          }),
+          resourceId: preallocatedVersionId,
+          status: 'IN_PROGRESS',
+          updatedAt: new Date(Date.now() - 3000),
+        },
+      });
+
+      // 3. Client retries
+      const retryRes = await callMcpTool(userAToken, 'ule_create_private_course_version', {
+        courseId,
+        idempotencyKey,
+      });
+      expect(retryRes.isError).toBeFalsy();
+      const recovered = JSON.parse(retryRes.content[0].text);
+      expect(recovered.id).toBe(preallocatedVersionId);
+
+      // 4. CRITICAL INVARIANT: Version count MUST BE EXACTLY 1 (NO second version created!)
+      expect(await prisma.courseVersion.count({ where: { courseId } })).toBe(1);
+    });
+
+    it('Point 3: Fault injected during idempotency result persistence - preserves committed resource and recovers', async () => {
+      const initialCourses = await prisma.course.count({ where: { ownerId: userAId } });
+      const idempotencyKey = `gateA_pt3_${Date.now()}`;
+
+      // Intercept mcpMutationIdempotency.update to throw error during COMPLETED update
+      const origUpdate = prisma.mcpMutationIdempotency.update.bind(prisma.mcpMutationIdempotency);
+      let failedUpdate = false;
+      (prisma.mcpMutationIdempotency as any).update = async (args: any) => {
+        if (!failedUpdate && args.data?.status === 'COMPLETED') {
+          failedUpdate = true;
+          throw new Error('Simulated database disconnect during COMPLETED persistence');
+        }
+        return origUpdate(args);
+      };
+
+      // Call tool: mutation succeeds in domain, update to COMPLETED fails in winner, winner recovers committed resource
+      const callRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: 'Point 3 Course Persistence Fault',
+        idempotencyKey,
+      });
+
+      (prisma.mcpMutationIdempotency as any).update = origUpdate;
+
+      // Winner recovered from committed mutation and returned result
+      expect(callRes.isError).toBeFalsy();
+      const resData = JSON.parse(callRes.content[0].text);
+      expect(resData.course.id).toBeDefined();
+
+      // In PostgreSQL: Course count increased by EXACTLY 1
+      expect(await prisma.course.count({ where: { ownerId: userAId } })).toBe(initialCourses + 1);
+
+      // On subsequent replay with exact same key, returns identical course
+      const replayRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: 'Point 3 Course Persistence Fault',
+        idempotencyKey,
+      });
+      expect(replayRes.isError).toBeFalsy();
+      const replayData = JSON.parse(replayRes.content[0].text);
+      expect(replayData.course.id).toBe(resData.course.id);
+      expect(await prisma.course.count({ where: { ownerId: userAId } })).toBe(initialCourses + 1);
+    });
+
+    it('Point 4: Concurrent retry and payload conflict verification', async () => {
+      const initialCourses = await prisma.course.count({ where: { ownerId: userAId } });
+      const idempotencyKey = `gateA_pt4_${Date.now()}`;
+
+      // Two concurrent identical requests
+      const [res1, res2] = await Promise.all([
+        callMcpTool(userAToken, 'ule_create_private_course', {
+          title: 'Point 4 Concurrent Course',
+          idempotencyKey,
+        }),
+        callMcpTool(userAToken, 'ule_create_private_course', {
+          title: 'Point 4 Concurrent Course',
+          idempotencyKey,
+        }),
+      ]);
+
+      expect(res1.isError).toBeFalsy();
+      expect(res2.isError).toBeFalsy();
+      const course1 = JSON.parse(res1.content[0].text);
+      const course2 = JSON.parse(res2.content[0].text);
+      expect(course1.course.id).toBe(course2.course.id);
+
+      // Exactly 1 course created in PostgreSQL
+      expect(await prisma.course.count({ where: { ownerId: userAId } })).toBe(initialCourses + 1);
+
+      // Changed payload with same idempotency key MUST return Conflict
+      const conflictRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: 'Point 4 CHANGED PAYLOAD Course',
+        idempotencyKey,
+      });
+      expect(conflictRes.isError).toBe(true);
+      expect(conflictRes.content[0].text).toContain('409');
+      expect(conflictRes.content[0].text).toContain('already used with different payload');
+
+      // Course count still exactly initialCourses + 1
+      expect(await prisma.course.count({ where: { ownerId: userAId } })).toBe(initialCourses + 1);
+    });
+  });
+
+  // =========================================================================
+  // GATE C: EXPLICIT AUDIT DURABILITY & STORAGE FAILURE BEHAVIOR
+  // =========================================================================
+
+  describe('Gate C — Explicit Audit Durability & Storage Failure Behavior', () => {
+    it('mutations require durable audit - audit storage failure rejects the tool call (Error 500)', async () => {
+      const origCreate = prisma.mcpAuditLog.create.bind(prisma.mcpAuditLog);
+      (prisma.mcpAuditLog as any).create = async () => {
+        throw new Error('Simulated database/disk failure on audit storage table');
+      };
+
+      const res = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: 'Un-audited Course Should Fail',
+        idempotencyKey: crypto.randomUUID(),
+      });
+
+      (prisma.mcpAuditLog as any).create = origCreate;
+
+      // Mutation call MUST NOT pretend success when mandatory audit logging fails
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain('[Error 500]');
+      expect(res.content[0].text).toContain('An internal error occurred');
+    });
+
+    it('read-only inspection audit is best-effort - query succeeds even if audit storage fails', async () => {
+      const origCreate = prisma.mcpAuditLog.create.bind(prisma.mcpAuditLog);
+      (prisma.mcpAuditLog as any).create = async () => {
+        throw new Error('Simulated disk pressure on audit table during read query');
+      };
+
+      const res = await callMcpTool(userAToken, 'ule_list_block_types', {});
+
+      prisma.mcpAuditLog.create = origCreate;
+
+      // Read-only inspection succeeds under best-effort audit guarantee
+      expect(res.isError).toBeFalsy();
+      const manifests = JSON.parse(res.content[0].text);
+      expect(Array.isArray(manifests)).toBe(true);
+      expect(manifests.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
 });

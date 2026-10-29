@@ -81,11 +81,7 @@ export class DraftBlocksService {
    * Adds a new validated activity block instance to an owned course draft.
    * Executes under an aggregate row-level lock on the parent course with atomic revision increment.
    */
-  async addDraftBlock(
-    courseId: string,
-    userId: string,
-    dto: AddDraftBlockDto,
-  ): Promise<DraftBlockInstanceDto> {
+  async addDraftBlock(courseId: string, userId: string, dto: AddDraftBlockDto, blockId?: string): Promise<DraftBlockInstanceDto> {
     // 1. Resolve block type and schema version from registry
     const typeDef = this.registry.getDefinition(dto.blockTypeId, dto.typeVersion);
 
@@ -131,6 +127,7 @@ export class DraftBlocksService {
 
       const created = await tx.draftBlockInstance.create({
         data: {
+          ...(blockId ? { id: blockId } : {}),
           draftId: draft.id,
           blockTypeId: dto.blockTypeId,
           typeVersion: dto.typeVersion || typeDef.manifest.version,
@@ -411,7 +408,7 @@ export class DraftBlocksService {
     };
   }
 
-  private toDto(entity: DraftBlockInstance): DraftBlockInstanceDto {
+  public toDto(entity: DraftBlockInstance): DraftBlockInstanceDto {
     return {
       id: entity.id,
       draftId: entity.draftId,

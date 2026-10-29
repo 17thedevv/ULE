@@ -219,13 +219,17 @@ export class McpService implements OnModuleInit {
               args as unknown as Record<string, unknown>,
               auth.userId,
               auth.clientId,
-              async () => {
+              async (resId) => {
                 const title = args.title || 'Untitled Private Course';
-                return this.coursesService.createCourse(auth.userId, {
-                  title,
-                  description: args.description,
-                  summary: args.summary,
-                });
+                return this.coursesService.createCourse(
+                  auth.userId,
+                  {
+                    title,
+                    description: args.description,
+                    summary: args.summary,
+                  },
+                  resId,
+                );
               },
             );
           },
@@ -419,7 +423,7 @@ export class McpService implements OnModuleInit {
               args as unknown as Record<string, unknown>,
               auth.userId,
               auth.clientId,
-              async () => {
+              async (resId) => {
                 return this.draftBlocksService.addDraftBlock(
                   args.courseId,
                   auth.userId,
@@ -431,6 +435,7 @@ export class McpService implements OnModuleInit {
                     config: args.config,
                     expectedRevision: args.expectedRevision,
                   },
+                  resId,
                 );
               },
             );
@@ -685,10 +690,11 @@ export class McpService implements OnModuleInit {
               args as unknown as Record<string, unknown>,
               auth.userId,
               auth.clientId,
-              async () => {
+              async (resId) => {
                 return this.coursesService.createVersion(
                   args.courseId,
                   auth.userId,
+                  resId,
                 );
               },
             );
@@ -760,6 +766,18 @@ export class McpService implements OnModuleInit {
   // TOOL EXECUTION WRAPPER & SECURITY PIPELINE
   // =========================================================================
 
+  private isMutationTool(toolName: string): boolean {
+    return (
+      toolName === MCP_AUTHORING_TOOLS.CREATE_PRIVATE_COURSE ||
+      toolName === MCP_AUTHORING_TOOLS.UPDATE_COURSE_DRAFT ||
+      toolName === MCP_AUTHORING_TOOLS.ADD_DRAFT_BLOCK ||
+      toolName === MCP_AUTHORING_TOOLS.UPDATE_DRAFT_BLOCK ||
+      toolName === MCP_AUTHORING_TOOLS.DELETE_DRAFT_BLOCK ||
+      toolName === MCP_AUTHORING_TOOLS.REORDER_DRAFT_BLOCKS ||
+      toolName === MCP_AUTHORING_TOOLS.CREATE_PRIVATE_COURSE_VERSION
+    );
+  }
+
   private async executeTool<T>(
     toolName: string,
     requiredScope: string,
@@ -767,6 +785,7 @@ export class McpService implements OnModuleInit {
   ) {
     const startTime = Date.now();
     const auth = mcpContextStorage.getStore();
+    const isMutation = this.isMutationTool(toolName);
 
     if (!auth || !auth.userId) {
       const durationMs = Date.now() - startTime;
@@ -780,6 +799,7 @@ export class McpService implements OnModuleInit {
         undefined,
         'Authentication required. Missing OAuth Bearer token.',
         durationMs,
+        false, // Best-effort for unauthenticated
       );
 
       return {
@@ -805,6 +825,7 @@ export class McpService implements OnModuleInit {
         undefined,
         `Insufficient scope. Required: ${requiredScope}, granted: ${auth.scopes.join(' ')}`,
         durationMs,
+        false, // Best-effort for scope rejections
       );
 
       return {
@@ -831,6 +852,7 @@ export class McpService implements OnModuleInit {
         undefined,
         undefined,
         durationMs,
+        isMutation, // Mandatory durability for mutations!
       );
       return {
         content: [
@@ -843,7 +865,7 @@ export class McpService implements OnModuleInit {
     } catch (err: unknown) {
       const durationMs = Date.now() - startTime;
       let status = 500;
-      let userFacingMessage = 'Internal server error occurred during tool execution.';
+      let userFacingMessage = 'An internal error occurred during tool execution.';
       let auditStatus = 'ERROR';
 
       if (err instanceof NotFoundException) {
@@ -867,8 +889,7 @@ export class McpService implements OnModuleInit {
         userFacingMessage = err.message;
         auditStatus = status >= 400 && status < 500 ? 'CLIENT_ERROR' : 'ERROR';
       } else if (err instanceof Error) {
-        // Internal unhandled errors are logged internally, sanitized for client
-        this.logger.error(`Internal unhandled error in tool '${toolName}': ${err.message}`, err.stack);
+        this.logger.error(`Internal error in tool '${toolName}': ${err.message}`, err.stack);
         userFacingMessage = 'An internal error occurred during tool execution.';
         auditStatus = 'ERROR';
       }
@@ -883,6 +904,7 @@ export class McpService implements OnModuleInit {
         undefined,
         userFacingMessage,
         durationMs,
+        false, // Best-effort on failure path so error reporting doesn't cascade
       );
 
       return {
@@ -935,8 +957,115 @@ export class McpService implements OnModuleInit {
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   // =========================================================================
-  // DURABLE IDEMPOTENCY & AUDIT LOGGING PIPELINE (GATE 2 & GATE 4)
+  // CRASH-CONSISTENT IDEMPOTENCY & AUDIT LOGGING PIPELINE (GATE A & GATE C)
   // =========================================================================
+
+  private resolveOrPreallocateResourceId(
+    toolName: string,
+    rawPayload: Record<string, unknown>,
+  ): string | null {
+    if (toolName === MCP_AUTHORING_TOOLS.CREATE_PRIVATE_COURSE) {
+      return crypto.randomUUID();
+    }
+    if (toolName === MCP_AUTHORING_TOOLS.CREATE_PRIVATE_COURSE_VERSION) {
+      return crypto.randomUUID();
+    }
+    if (toolName === MCP_AUTHORING_TOOLS.ADD_DRAFT_BLOCK) {
+      return crypto.randomUUID();
+    }
+    if (rawPayload.blockId && typeof rawPayload.blockId === 'string') {
+      return rawPayload.blockId;
+    }
+    if (rawPayload.courseId && typeof rawPayload.courseId === 'string') {
+      return rawPayload.courseId;
+    }
+    return null;
+  }
+
+  private async recoverCommittedMutation<T>(
+    toolName: string,
+    resourceId: string | null,
+    userId: string,
+    rawPayload: Record<string, unknown>,
+  ): Promise<T | null> {
+    if (!resourceId) return null;
+
+    try {
+      if (toolName === MCP_AUTHORING_TOOLS.CREATE_PRIVATE_COURSE) {
+        const course = await this.prisma.course.findUnique({
+          where: { id: resourceId },
+        });
+        if (!course || course.ownerId !== userId) return null;
+        const draft = await this.prisma.courseDraft.findUnique({
+          where: { courseId: resourceId },
+        });
+        if (!draft) return null;
+        return {
+          course: this.coursesService.toCourseDto(course),
+          draft: this.coursesService.toDraftDto(draft),
+        } as unknown as T;
+      }
+
+      if (toolName === MCP_AUTHORING_TOOLS.CREATE_PRIVATE_COURSE_VERSION) {
+        const version = await this.prisma.courseVersion.findUnique({
+          where: { id: resourceId },
+        });
+        if (!version || version.createdById !== userId) return null;
+        return this.coursesService.toVersionDto(version) as unknown as T;
+      }
+
+      if (toolName === MCP_AUTHORING_TOOLS.ADD_DRAFT_BLOCK) {
+        const block = await this.prisma.draftBlockInstance.findUnique({
+          where: { id: resourceId },
+        });
+        if (!block) return null;
+        return this.draftBlocksService.toDto(block) as unknown as T;
+      }
+
+      if (toolName === MCP_AUTHORING_TOOLS.UPDATE_COURSE_DRAFT) {
+        const courseId = rawPayload.courseId as string;
+        const draft = await this.prisma.courseDraft.findUnique({
+          where: { courseId },
+        });
+        if (!draft) return null;
+        return this.coursesService.toDraftDto(draft) as unknown as T;
+      }
+
+      if (toolName === MCP_AUTHORING_TOOLS.UPDATE_DRAFT_BLOCK) {
+        const block = await this.prisma.draftBlockInstance.findUnique({
+          where: { id: resourceId },
+        });
+        if (!block) return null;
+        return this.draftBlocksService.toDto(block) as unknown as T;
+      }
+
+      if (toolName === MCP_AUTHORING_TOOLS.DELETE_DRAFT_BLOCK) {
+        const courseId = rawPayload.courseId as string;
+        const draft = await this.prisma.courseDraft.findUnique({
+          where: { courseId },
+        });
+        if (!draft) return null;
+        return {
+          deleted: true,
+          blockId: resourceId,
+          draftRevision: draft.revision,
+        } as unknown as T;
+      }
+
+      if (toolName === MCP_AUTHORING_TOOLS.REORDER_DRAFT_BLOCKS) {
+        const courseId = rawPayload.courseId as string;
+        const blocks = await this.draftBlocksService.listDraftBlocks(
+          courseId,
+          userId,
+        );
+        return blocks as unknown as T;
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
+  }
 
   private async executeWithIdempotency<T>(
     toolName: string,
@@ -944,7 +1073,7 @@ export class McpService implements OnModuleInit {
     rawPayload: Record<string, unknown>,
     userId: string,
     clientId: string,
-    action: () => Promise<T>,
+    action: (resourceId?: string) => Promise<T>,
   ): Promise<T> {
     if (!idempotencyKey || typeof idempotencyKey !== 'string' || !idempotencyKey.trim()) {
       throw new BadRequestException(
@@ -954,8 +1083,9 @@ export class McpService implements OnModuleInit {
 
     const key = idempotencyKey.trim();
     const normalizedHash = this.computePayloadHash(rawPayload);
+    const preallocatedResourceId = this.resolveOrPreallocateResourceId(toolName, rawPayload);
 
-    // 1. Attempt atomic reservation insertion BEFORE running the authoritative mutation
+    // 1. Attempt atomic reservation insertion BEFORE running the mutation
     let reservationCreated = false;
     try {
       await this.prisma.mcpMutationIdempotency.create({
@@ -965,13 +1095,13 @@ export class McpService implements OnModuleInit {
           toolName,
           idempotencyKey: key,
           payloadHash: normalizedHash,
+          resourceId: preallocatedResourceId,
           status: 'IN_PROGRESS',
           response: Prisma.JsonNull,
         },
       });
       reservationCreated = true;
     } catch (err: unknown) {
-      // Prisma unique constraint violation (P2002) indicates a concurrent or previous call
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === 'P2002'
@@ -982,30 +1112,70 @@ export class McpService implements OnModuleInit {
       }
     }
 
-    // WINNER PATH: This request acquired the reservation and owns execution
+    // WINNER PATH: Acquired reservation and executes domain mutation
     if (reservationCreated) {
       try {
-        const result = await action();
+        const result = await action(preallocatedResourceId ?? undefined);
 
-        // Update reservation to COMPLETED
-        await this.prisma.mcpMutationIdempotency.update({
-          where: {
-            userId_clientId_toolName_idempotencyKey: {
-              userId,
-              clientId,
-              toolName,
-              idempotencyKey: key,
+        // Try to update reservation to COMPLETED
+        try {
+          await this.prisma.mcpMutationIdempotency.update({
+            where: {
+              userId_clientId_toolName_idempotencyKey: {
+                userId,
+                clientId,
+                toolName,
+                idempotencyKey: key,
+              },
             },
-          },
-          data: {
-            status: 'COMPLETED',
-            response: result as unknown as Prisma.InputJsonValue,
-          },
-        });
+            data: {
+              status: 'COMPLETED',
+              response: result as unknown as Prisma.InputJsonValue,
+            },
+          });
+        } catch (updateErr: unknown) {
+          // If update fails (fault-injection point 3), do NOT delete reservation!
+          // The domain mutation already committed.
+          this.logger.error(
+            `Failed to mark idempotency record COMPLETED for ${key}: ${updateErr}`,
+          );
+          throw updateErr;
+        }
 
         return result;
       } catch (actionErr: unknown) {
-        // On failure, delete reservation so subsequent retries are not stuck
+        // Crash consistency: did the mutation commit despite the error? (point 2 & 3)
+        const recovered = await this.recoverCommittedMutation<T>(
+          toolName,
+          preallocatedResourceId,
+          userId,
+          rawPayload,
+        );
+
+        if (recovered) {
+          // Mutation committed! Persist COMPLETED status so retries receive the committed result
+          // Removing a reservation after an error must never erase evidence of a successfully committed mutation
+          await this.prisma.mcpMutationIdempotency
+            .update({
+              where: {
+                userId_clientId_toolName_idempotencyKey: {
+                  userId,
+                  clientId,
+                  toolName,
+                  idempotencyKey: key,
+                },
+              },
+              data: {
+                status: 'COMPLETED',
+                response: recovered as unknown as Prisma.InputJsonValue,
+              },
+            })
+            .catch(() => {});
+
+          return recovered;
+        }
+
+        // Domain mutation did NOT commit (point 1). Remove reservation so subsequent attempts can proceed.
         await this.prisma.mcpMutationIdempotency
           .delete({
             where: {
@@ -1023,10 +1193,11 @@ export class McpService implements OnModuleInit {
       }
     }
 
-    // CONCURRENT / RETRY PATH: Wait for the in-progress operation or return cached result
+    // CONCURRENT / RETRY PATH
     const maxWaitMs = 10000;
     const intervalMs = 50;
     const startTime = Date.now();
+    const LEASE_TIMEOUT_MS = 2000; // Worker lease: abandoned IN_PROGRESS recovered after 2s
 
     while (Date.now() - startTime < maxWaitMs) {
       const existing = await this.prisma.mcpMutationIdempotency.findUnique({
@@ -1041,7 +1212,7 @@ export class McpService implements OnModuleInit {
       });
 
       if (!existing) {
-        // Winner aborted or failed; retry acquiring reservation
+        // Winner aborted or rolled back; retry acquiring reservation
         return this.executeWithIdempotency(
           toolName,
           key,
@@ -1069,11 +1240,52 @@ export class McpService implements OnModuleInit {
           'SUCCESS',
           existing.response,
           key,
+          undefined,
+          undefined,
+          true,
         );
         return existing.response as T;
       }
 
-      // Wait before polling again
+      // If still IN_PROGRESS, check for lease expiration / crash recovery
+      const elapsed = Date.now() - existing.updatedAt.getTime();
+      if (existing.status === 'IN_PROGRESS' && elapsed > LEASE_TIMEOUT_MS) {
+        // Check if the abandoned mutation committed
+        const recovered = await this.recoverCommittedMutation<T>(
+          toolName,
+          existing.resourceId,
+          userId,
+          rawPayload,
+        );
+
+        if (recovered) {
+          await this.prisma.mcpMutationIdempotency.update({
+            where: { id: existing.id },
+            data: {
+              status: 'COMPLETED',
+              response: recovered as unknown as Prisma.InputJsonValue,
+            },
+          });
+          return recovered;
+        } else {
+          // Mutation did NOT commit. Take over lease and execute mutation.
+          await this.prisma.mcpMutationIdempotency.update({
+            where: { id: existing.id },
+            data: { updatedAt: new Date() },
+          });
+          const targetId = existing.resourceId || preallocatedResourceId || undefined;
+          const result = await action(targetId);
+          await this.prisma.mcpMutationIdempotency.update({
+            where: { id: existing.id },
+            data: {
+              status: 'COMPLETED',
+              response: result as unknown as Prisma.InputJsonValue,
+            },
+          });
+          return result;
+        }
+      }
+
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
@@ -1092,6 +1304,7 @@ export class McpService implements OnModuleInit {
     idempotencyKey?: string,
     errorMessage?: string,
     durationMs?: number,
+    isMandatory = false,
   ): Promise<void> {
     try {
       const resourceType = 'COURSE';
@@ -1126,7 +1339,10 @@ export class McpService implements OnModuleInit {
         },
       });
     } catch (e) {
-      this.logger.error(`Critical: Failed to record MCP audit log: ${e}`);
+      this.logger.error(`Failed to record MCP audit log for ${toolName}: ${e}`);
+      if (isMandatory) {
+        throw new Error(`Durable audit logging failed for mutation '${toolName}': ${e}`);
+      }
     }
   }
 

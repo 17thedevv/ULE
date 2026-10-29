@@ -1,3 +1,4 @@
+import { JSDOM } from 'jsdom';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { HttpStatus, INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -854,4 +855,271 @@ describe('Phase 2: MCP Transport, Real OAuth 2.1 & Security Gates (Real PostgreS
       expect(res.body.message).toContain('Origin');
     });
   });
+
+  // =========================================================================
+  // GATE B: Browser OAuth Consent Correctness & Browser DOM Smoke Test
+  // =========================================================================
+
+  describe('Gate B — Browser OAuth Consent Correctness & Automation', () => {
+    const browserClientId = `client_browser_${Date.now()}`;
+    const browserRedirectUri = 'http://localhost:5173/browser/callback';
+    let browserVerifier: string;
+    let browserChallenge: string;
+    let userSessionCookie: string;
+    let readOnlyAuthorizeCookies: string;
+    let readOnlyConsentQuery: string;
+
+    beforeAll(async () => {
+      const mcpResourceUri = authService.getMcpResourceUri();
+
+      // Register public OAuth client
+      await prisma.oauthClient.create({
+        data: {
+          clientId: browserClientId,
+          name: 'Cursor Desktop Automation',
+          redirectUris: [browserRedirectUri],
+          scopes: ['course:read', 'course:write'],
+          requirePKCE: true,
+          tokenEndpointAuthMethod: 'none',
+          grantTypes: ['authorization_code'],
+          responseTypes: ['code'],
+        },
+      });
+
+      await prisma.oauthClientResource.create({
+        data: {
+          clientId: browserClientId,
+          resourceId: mcpResourceUri,
+        },
+      });
+
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/sign-in/email')
+        .set('Origin', trustedOrigin)
+        .send({
+          email: testUserEmail,
+          password: 'Password123!',
+        })
+        .expect(HttpStatus.OK);
+      userSessionCookie = extractCookies(loginRes);
+
+      browserVerifier = crypto.randomBytes(32).toString('base64url');
+      browserChallenge = crypto
+        .createHash('sha256')
+        .update(browserVerifier)
+        .digest('base64url');
+    });
+
+    it('preserves request context and displays actual requested client and scopes (read-only)', async () => {
+      // 1. User requests authorization with course:read ONLY
+      const authRes = await request(app.getHttpServer())
+        .get(
+          `/api/v1/auth/oauth2/authorize?response_type=code&client_id=${browserClientId}&redirect_uri=${encodeURIComponent(
+            browserRedirectUri,
+          )}&scope=course:read&code_challenge=${browserChallenge}&code_challenge_method=S256&resource=${encodeURIComponent(
+            authService.getMcpResourceUri(),
+          )}`,
+        )
+        .set('Cookie', userSessionCookie)
+        .expect(HttpStatus.FOUND);
+
+      expect(authRes.headers['location']).toContain('/auth/consent');
+      const loc = authRes.headers['location'];
+      const qIdx = loc.indexOf('?');
+      readOnlyConsentQuery = qIdx >= 0 ? loc.slice(qIdx + 1) : '';
+      readOnlyAuthorizeCookies = extractCookies(authRes);
+
+      // 2. Fetch rendered HTML from GET /auth/consent
+      const htmlRes = await request(app.getHttpServer())
+        .get(`/auth/consent?${readOnlyConsentQuery}`)
+        .expect(HttpStatus.OK);
+
+      // 3. Load into JSDOM with script execution enabled
+      const dom = new JSDOM(htmlRes.text, {
+        url: `http://localhost:3000/auth/consent?${readOnlyConsentQuery}`,
+        runScripts: 'dangerously',
+      });
+
+      // Verify DOM reflects requesting client and only requested scope
+      const clientNameEl = dom.window.document.getElementById('clientName');
+      expect(clientNameEl?.textContent).toBe(browserClientId);
+
+      // Verify course:read badge exists
+      const readBadge = dom.window.document.getElementById('badge-course:read');
+      expect(readBadge).not.toBeNull();
+      expect(readBadge?.textContent).toBe('course:read');
+
+      // Verify course:write badge is strictly absent (never elevated silently)
+      const writeBadge = dom.window.document.getElementById('badge-course:write');
+      expect(writeBadge).toBeNull();
+    });
+
+    it('verifies consent denial via real button action redirects with access_denied', async () => {
+      const combinedCookie = combineCookies(userSessionCookie, readOnlyAuthorizeCookies);
+
+      const htmlRes = await request(app.getHttpServer())
+        .get(`/auth/consent?${readOnlyConsentQuery}`)
+        .expect(HttpStatus.OK);
+
+      const dom = new JSDOM(htmlRes.text, {
+        url: `http://localhost:3000/auth/consent?${readOnlyConsentQuery}`,
+        runScripts: 'dangerously',
+      });
+
+      let navigatedUrl: string | null = null;
+      dom.window.fetch = (async (url: string, opts: any) => {
+        const req = request(app.getHttpServer()).post(url);
+        req.set('Cookie', combinedCookie);
+        req.set('Origin', trustedOrigin);
+        if (opts.headers) {
+          for (const [k, v] of Object.entries(opts.headers)) {
+            req.set(k, v as string);
+          }
+        }
+        const res = await req.send(opts.body ? JSON.parse(opts.body) : {});
+        if (res.body?.url) {
+          navigatedUrl = res.body.url;
+        }
+        return {
+          ok: res.status >= 200 && res.status < 300,
+          status: res.status,
+          json: async () => res.body,
+        };
+      }) as any;
+
+      // Click the Deny button in real DOM
+      const denyBtn = dom.window.document.getElementById('denyBtn') as any;
+      expect(denyBtn).not.toBeNull();
+      denyBtn.click();
+
+      // Wait briefly for async fetch
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(navigatedUrl).toBeTruthy();
+      expect(navigatedUrl).toContain('error=access_denied');
+      expect(navigatedUrl).toContain(browserRedirectUri);
+
+      // Confirm no consent recorded for read-only
+      const consent = await prisma.oauthConsent.findFirst({
+        where: { clientId: browserClientId, userId: testUserId },
+      });
+      expect(consent).toBeNull();
+    });
+
+    it('verifies consent acceptance via real button action produces read-only token unable to write', async () => {
+      const combinedCookie = combineCookies(userSessionCookie, readOnlyAuthorizeCookies);
+
+      const htmlRes = await request(app.getHttpServer())
+        .get(`/auth/consent?${readOnlyConsentQuery}`)
+        .expect(HttpStatus.OK);
+
+      const dom = new JSDOM(htmlRes.text, {
+        url: `http://localhost:3000/auth/consent?${readOnlyConsentQuery}`,
+        runScripts: 'dangerously',
+      });
+
+      let navigatedUrl: string | null = null;
+      dom.window.fetch = (async (url: string, opts: any) => {
+        const req = request(app.getHttpServer()).post(url);
+        req.set('Cookie', combinedCookie);
+        req.set('Origin', trustedOrigin);
+        if (opts.headers) {
+          for (const [k, v] of Object.entries(opts.headers)) {
+            req.set(k, v as string);
+          }
+        }
+        const res = await req.send(opts.body ? JSON.parse(opts.body) : {});
+        if (res.body?.url) {
+          navigatedUrl = res.body.url;
+        }
+        return {
+          ok: res.status >= 200 && res.status < 300,
+          status: res.status,
+          json: async () => res.body,
+        };
+      }) as any;
+
+      // Click the Authorize button in real DOM
+      const allowBtn = dom.window.document.getElementById('allowBtn') as any;
+      expect(allowBtn).not.toBeNull();
+      allowBtn.click();
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(navigatedUrl).toBeTruthy();
+      expect(navigatedUrl).toContain('code=');
+
+      // Exchange authorization code for token
+      const codeUrl = new URL(navigatedUrl!);
+      const authCode = codeUrl.searchParams.get('code')!;
+      expect(authCode).toBeTruthy();
+
+      const tokenRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/oauth2/token')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send(
+          new URLSearchParams({
+            grant_type: 'authorization_code',
+            code: authCode,
+            code_verifier: browserVerifier,
+            client_id: browserClientId,
+            redirect_uri: browserRedirectUri,
+            resource: authService.getMcpResourceUri(),
+          }).toString(),
+        )
+        .expect(HttpStatus.OK);
+
+      const token = tokenRes.body.access_token;
+      expect(token).toBeTruthy();
+
+      // Verify token scopes in PostgreSQL
+      const dbToken = await prisma.oauthAccessToken.findFirst({
+        where: { token },
+      });
+      expect(dbToken).not.toBeNull();
+      expect(dbToken!.scopes).toEqual(['course:read']);
+
+      // Verify read-only call succeeds
+      const listRes = await request(app.getHttpServer())
+        .post('/api/v1/mcp')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          jsonrpc: '2.0',
+          id: 101,
+          method: 'tools/call',
+          params: {
+            name: 'ule_list_block_types',
+            arguments: {},
+          },
+        })
+        .expect(HttpStatus.OK);
+
+      const parsedList = parseMcpResponse(listRes);
+      expect(parsedList.result.isError).toBeFalsy();
+
+      // Verify write call FAILS with 403 Forbidden
+      const writeRes = await request(app.getHttpServer())
+        .post('/api/v1/mcp')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          jsonrpc: '2.0',
+          id: 102,
+          method: 'tools/call',
+          params: {
+            name: 'ule_create_private_course',
+            arguments: {
+              title: 'Attempted Write With Read Token',
+              idempotencyKey: crypto.randomUUID(),
+            },
+          },
+        })
+        .expect(HttpStatus.OK);
+
+      const parsedWrite = parseMcpResponse(writeRes);
+      expect(parsedWrite.result.isError).toBe(true);
+      expect(parsedWrite.result.content[0].text).toContain('Forbidden');
+      expect(parsedWrite.result.content[0].text).toContain('Insufficient scope');
+    });
+  });
+
 });

@@ -3,6 +3,7 @@
   "rootDir": ".",
   "testRegex": ".integration.spec.ts$",
   "setupFiles": ["<rootDir>/setup.ts"],
+  "testTimeout": 30000,
   "transform": {
     "^.+\\.(t|j|mj)s$": [
       "ts-jest",

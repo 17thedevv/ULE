@@ -207,7 +207,7 @@ export class McpController {
 
       // Stream response body if present
       if (mcpResponse.body) {
-        for await (const chunk of mcpResponse.body as AsyncIterable<Uint8Array>) {
+        for await (const chunk of mcpResponse.body as unknown as AsyncIterable<Uint8Array>) {
           if (res.destroyed) break;
           res.write(chunk);
         }

@@ -36,20 +36,17 @@ All authoring workflows run against the canonical ULE NestJS domain services and
 
 ## 2. Tested External Clients & Verification Methods
 
-The ULE MCP Authoring implementation is verified through two distinct testing strategies:
+The ULE MCP Authoring implementation is verified through rigorous automated testing and real browser DOM simulation:
 
 ### A. Automated Protocol & Domain Integration Tests (Real PostgreSQL)
 Every gate is verified by automated integration test suites running against a live PostgreSQL database:
-- `apps/api/test/mcp-auth.integration.spec.ts` (22 tests): RFC 9728 discovery, Streamable HTTP initialization, Real OAuth 2.1 code exchange with PKCE and user consent, functional `/auth/login` and `/auth/consent` browser routes, active issuance tracking, revocation, and scope validation.
-- `apps/api/test/mcp-authoring.integration.spec.ts` (31 tests): 13-step external AI authoring scenario, two-user isolation, concurrent `ule_create_private_course` and `ule_create_private_course_version` deduplication, optimistic concurrency revision checks, least-privilege `answerKey` protection, and durable audit logs.
+- `apps/api/test/mcp-auth.integration.spec.ts` (25 tests): RFC 9728 discovery, Streamable HTTP initialization, Real OAuth 2.1 code exchange with PKCE (`S256`), functional `/auth/login` and `/auth/consent` browser routes, real browser DOM automation testing with JSDOM, dynamic scope rendering (preventing silent escalation of read-only requests), active issuance tracking in `oauth_access_tokens`, immediate revocation, and scope validation.
+- `apps/api/test/mcp-authoring.integration.spec.ts` (38 tests): Complete 13-step external AI authoring scenario across all 17 authoring tools, two-user isolation, crash-consistent mutation idempotency with fault-injection recovery across 4 critical failure points (pre-mutation, post-domain commit before persistence, persistence failure, and concurrent retry), least-privilege evaluator secret protection, mandatory durable audit logging for mutations, and error sanitization.
 
-### B. Manual Desktop Client Smoke Testing (Claude Desktop / Cursor)
-Manual external client verification was conducted using desktop AI assistants connecting over Streamable HTTP:
-1. Configure `claude_desktop_config.json` with the MCP endpoint `http://localhost:3000/api/v1/mcp` and the bearer token.
-2. Launch Claude Desktop. Verify that 17 ULE authoring tools appear in Claude's tool picker.
-3. Prompt: *"Inspect available block types in ULE."* Claude invokes `ule_list_block_types` and describes `video`, `multiple-choice`, and `coding`.
-4. Prompt: *"Create a private course titled 'TypeScript Architecture' and add a video block."* Claude invokes `ule_create_private_course` followed by `ule_add_draft_block` with generated `idempotencyKey` and `expectedRevision: 1`.
-5. Verify in ULE Web SPA (`http://localhost:5173`) that the course appears in the creator's dashboard with `visibility: PRIVATE`.
+### B. Host Environment Limitations & Desktop Client Instructions (Gate D)
+- **Host Environment Reality**: Desktop AI GUI applications (Claude Desktop and Cursor) are not installed on this headless Windows development and CI execution environment. In accordance with ULE engineering discipline, no claim of manual desktop GUI execution is made for this host.
+- **Client Protocol Compatibility**: The MCP server strictly implements the official Model Context Protocol (protocol version `2024-11-05`) over Streamable HTTP (`POST /api/v1/mcp` with `Accept: application/json, text/event-stream`) and OAuth 2.1 with RFC 9728 metadata discovery.
+- **Developer Workstation Configuration**: External clients on developer workstations with desktop AI tools can connect by following Section 3 below.
 
 ---
 
@@ -140,13 +137,25 @@ The authoritative MCP authoring catalog exposes 17 dedicated tools:
 - **Least-Privilege Answer Key Protection (Gate 3)**:
   - Callers holding only `course:read` tokens receive sanitized block configurations across `ule_get_course_draft`, `ule_list_draft_blocks`, and `ule_get_course_version`. Protected MultipleChoice `answerKey` and `explanation` are omitted.
   - Full configurations with `answerKey` are strictly restricted to authenticated course owners holding `course:write` scope.
-- **Durable Mutation Idempotency (Gate 2)**:
+- **Crash-Consistent Mutation Idempotency & Failure Window Recovery (Gate A)**:
   - All 7 mutation tools require a mandatory `idempotencyKey`.
-  - Keys are namespaced with `[userId, clientId, toolName, idempotencyKey]` and protected via PostgreSQL unique constraints and reservation locks.
-  - Concurrent parallel calls deduplicate atomically: exactly one Course or CourseVersion is created.
-- **Durable Audit Logging (Gate 4)**:
-  - Every tool execution records a persistent audit entry in PostgreSQL `mcp_audit_logs`.
-  - Tracks `userId`, `clientId`, `toolName`, `action`, `resourceId`, `status` (`SUCCESS`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `ERROR`), and `durationMs`.
+  - Keys are namespaced with `[userId, clientId, toolName, idempotencyKey]` and protected via PostgreSQL unique constraints and reservation locks in `mcp_mutation_idempotencies`.
+  - **Durable Resource Association**: A deterministic or preallocated `resourceId` is saved with the `IN_PROGRESS` reservation prior to invoking the domain mutation.
+  - **Failure Window Recovery**:
+    1. *Pre-mutation crash*: If a worker fails before domain commit, the reservation is cleanly removed, allowing a retry to execute cleanly and create exactly 1 resource.
+    2. *Post-commit crash before result persistence*: If a worker commits the domain mutation but crashes before saving the response, the retry detects the committed resource in PostgreSQL by `resourceId`, marks `status: 'COMPLETED'`, and returns the created resource. Zero duplicate Courses or CourseVersions are ever created.
+    3. *Persistence failure*: If writing to `mcp_mutation_idempotencies` fails, the winner catches the error, verifies the committed resource, and preserves it. Subsequent retries recover cleanly.
+    4. *Worker lease timeout*: Reservations have a 2-second worker lease. An `IN_PROGRESS` record abandoned by a crashed worker cannot block requests indefinitely.
+    5. *Concurrent deduplication*: Concurrent identical requests yield exactly 1 effective mutation; changed payload under the same key returns HTTP 409 Conflict.
+- **Browser OAuth Consent Correctness (Gate B)**:
+  - `/auth/login` and `/auth/consent` browser routes preserve the entire authorization query and PKCE context.
+  - `/auth/consent` parses the signed `oauth_query` and dynamically renders only the requested scopes (`course:read` vs `course:write`), strictly preventing silent escalation of read-only requests.
+  - Form submission submits the exact requested scope and signed `oauth_query` to Better Auth.
+  - Fully verified using real DOM automation with JSDOM and button click simulation for both acceptance and denial.
+- **Explicit Audit Durability & Storage Failure Behavior (Gate C)**:
+  - **Mandatory Durable Audit (Mutations)**: For all state-changing authoring mutations (`CREATE_PRIVATE_COURSE`, `UPDATE_COURSE_DRAFT`, `ADD_DRAFT_BLOCK`, `UPDATE_DRAFT_BLOCK`, `DELETE_DRAFT_BLOCK`, `REORDER_DRAFT_BLOCKS`, `CREATE_PRIVATE_COURSE_VERSION`), audit logging is mandatory. If persistence to `mcp_audit_logs` fails, the mutation call fails closed with `[Error 500]` rather than silently swallowing the audit loss.
+  - **Best-Effort Audit (Read-Only)**: Read-only inspection tools have best-effort audit logging, preventing audit storage pressure from causing read downtime.
+  - Audit logs record `userId`, `clientId`, `toolName`, `action`, `resourceId`, `idempotencyKey`, `status`, and `durationMs`.
   - Error messages are sanitized: raw SQL, Prisma query traces, passwords, and Bearer tokens are strictly excluded from audit logs and API responses.
 - **Data Sharing Boundary**: Only the course title, description, and block configuration within the authorized user's course drafts are transmitted to the external client. No learner records, submissions, or private data are ever shared.
 

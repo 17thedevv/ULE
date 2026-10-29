@@ -32,13 +32,11 @@ export class CoursesService {
    * Creates a new Course and its initial editable Draft under authoritative user ownership.
    * By invariant, a newly created course is always PRIVATE.
    */
-  async createCourse(
-    ownerId: string,
-    dto: CreateCourseDto,
-  ): Promise<CreateCourseResponse> {
+  async createCourse(ownerId: string, dto: CreateCourseDto, courseId?: string): Promise<CreateCourseResponse> {
     return this.prisma.$transaction(async (tx) => {
       const course = await tx.course.create({
         data: {
+          ...(courseId ? { id: courseId } : {}),
           ownerId,
           visibility: 'PRIVATE',
         },
@@ -160,10 +158,7 @@ export class CoursesService {
    * Employs PostgreSQL row-level locking on the parent course to serialize version allocation,
    * guaranteeing monotonic version numbering without gaps, duplicate versions, or exposed 500 errors.
    */
-  async createVersion(
-    courseId: string,
-    userId: string,
-  ): Promise<CourseVersionDto> {
+  async createVersion(courseId: string, userId: string, versionId?: string): Promise<CourseVersionDto> {
     try {
       return await this.prisma.$transaction(async (tx) => {
         // Acquire exclusive row-level lock on the parent Course row in PostgreSQL.
@@ -260,6 +255,7 @@ export class CoursesService {
 
         const version = await tx.courseVersion.create({
           data: {
+            ...(versionId ? { id: versionId } : {}),
             courseId,
             versionNumber: nextVersionNumber,
             title: draft.title,
@@ -339,7 +335,7 @@ export class CoursesService {
 
   // --- DTO Mappers ---
 
-  private toCourseDto(course: Course): CourseDto {
+  public toCourseDto(course: Course): CourseDto {
     return {
       id: course.id,
       ownerId: course.ownerId,
@@ -349,7 +345,7 @@ export class CoursesService {
     };
   }
 
-  private toDraftDto(draft: CourseDraft): CourseDraftDto {
+  public toDraftDto(draft: CourseDraft): CourseDraftDto {
     return {
       id: draft.id,
       courseId: draft.courseId,
@@ -362,7 +358,7 @@ export class CoursesService {
     };
   }
 
-  private toVersionDto(version: CourseVersion): CourseVersionDto {
+  public toVersionDto(version: CourseVersion): CourseVersionDto {
     return {
       id: version.id,
       courseId: version.courseId,
