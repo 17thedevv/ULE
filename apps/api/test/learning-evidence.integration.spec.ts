@@ -63,6 +63,7 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
   let courseAVersion1Id: string;
   let grantId: string;
   let correctedAssessmentId: string;
+  let multiSkillAssessmentResultId: string;
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -1151,10 +1152,12 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
       expect(readySkill1.state).toBe('READY_TO_VERIFY');
       expect(readySkill1.state).not.toBe('VERIFIED');
 
-      // Proposal recommends VERIFY targeting the verification block
-      expect(readySkill1.proposedAction.category).toBe('VERIFY');
-      expect(readySkill1.proposedAction.suggestedBlockInstanceId).toBe(verificationBlockId);
-      expect(readySkill1.proposedAction.isAvailable).toBe(true);
+      // Honest boundary: in Phase 3, no registered block has an authoritative verification capability.
+      // Proposed action safely falls back to CONTINUE with isAvailable: false.
+      expect(readySkill1.proposedAction.category).toBe('CONTINUE');
+      expect(readySkill1.proposedAction.suggestedBlockInstanceId).toBeNull();
+      expect(readySkill1.proposedAction.isAvailable).toBe(false);
+      expect(readySkill1.proposedAction.reason).toContain('no schema-validated verification assessment capability is available');
     });
 
     it('Cross-course skill identity: similar skill name in Course B does not leak learner state', async () => {
@@ -1477,7 +1480,7 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         })
         .expect(HttpStatus.CREATED);
 
-      await request(app.getHttpServer())
+      const msSubRes = await request(app.getHttpServer())
         .post(`/api/v1/runs/${msRun.body.id}/commands`)
         .set('Cookie', learnerCookie)
         .send({
@@ -1486,6 +1489,8 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
           idempotencyKey: `bob_sub_multiskill_${Date.now()}`,
         })
         .expect(HttpStatus.OK);
+
+      multiSkillAssessmentResultId = msSubRes.body.latestAssessment.id;
 
       // Inspect Bob's evidence
       const evRes = await request(app.getHttpServer())
@@ -1675,7 +1680,429 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
       expect(skillCProj.proposedAction.category).toBe('CONTINUE');
       expect(skillCProj.proposedAction.isAvailable).toBe(false);
       expect(skillCProj.proposedAction.suggestedBlockInstanceId).toBeNull();
-      expect(skillCProj.proposedAction.reason).toContain('no schema-validated verification assessment is configured');
+      expect(skillCProj.proposedAction.reason).toContain('no schema-validated verification assessment capability is available');
+    });
+  });
+
+  describe('7. PR #5 Final Learner Confidentiality & Evidence Integrity Hardening', () => {
+    it('Learner-safe CourseVersion listing eliminates snapshot/answerKey leaks, preserves owner authoring APIs, and prevents DEFERRED bypass', async () => {
+      // 1. Non-owner Learner Bob calls GET /api/v1/learner/courses
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/learner/courses')
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      expect(Array.isArray(res.body)).toBe(true);
+      const courseA = res.body.find((c: any) => c.id === courseAVersion1Id);
+      expect(courseA).toBeDefined();
+
+      // SECURITY BLOCKER: Raw authoring snapshot MUST NOT be returned to learners!
+      expect(courseA.snapshot).toBeUndefined();
+
+      // Sanitized blocks array must be present for discovery and navigation
+      expect(Array.isArray(courseA.blocks)).toBe(true);
+      expect(courseA.blocks.length).toBeGreaterThan(0);
+
+      // Verify each block is sanitized: answerKey, correctOptionId, undisclosed hints, option explanations are absent
+      for (const block of courseA.blocks) {
+        expect(block.config).toBeDefined();
+        expect(block.config.answerKey).toBeUndefined();
+        expect(block.config.correctOptionId).toBeUndefined();
+        expect(block.config.hintText).toBeUndefined();
+
+        if (block.blockTypeId === 'multiple-choice') {
+          // Verify options array only has id and text
+          expect(Array.isArray(block.config.options)).toBe(true);
+          for (const opt of block.config.options) {
+            expect(opt.id).toBeDefined();
+            expect(opt.text).toBeDefined();
+            expect(opt.explanation).toBeUndefined();
+          }
+        }
+      }
+
+      // 2. Learner can still discover and execute authorized Video and MCQ blocks
+      const mcqBlock = courseA.blocks.find((b: any) => b.blockTypeId === 'multiple-choice');
+      expect(mcqBlock).toBeDefined();
+      const discoverRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: courseA.id,
+          blockInstanceId: mcqBlock.id,
+          idempotencyKey: `discover_run_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+      expect(discoverRun.body.status).toBe('ACTIVE');
+
+      // 3. Course owner Alice retains full authoring access through owner-only APIs
+      const ownerVersionRes = await request(app.getHttpServer())
+        .get(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}`)
+        .set('Cookie', ownerCookie)
+        .expect(HttpStatus.OK);
+
+      expect(ownerVersionRes.body.snapshot).toBeDefined();
+      expect(Array.isArray(ownerVersionRes.body.snapshot.blocks)).toBe(true);
+      const ownerMcq = ownerVersionRes.body.snapshot.blocks.find((b: any) => b.blockTypeId === 'multiple-choice');
+      expect(ownerMcq.config.answerKey).toBeDefined();
+      expect(ownerMcq.config.answerKey.correctOptionId).toBeDefined();
+
+      // 4. Non-owner Learner Bob cannot call owner-only version API (returns 404)
+      await request(app.getHttpServer())
+        .get(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.NOT_FOUND);
+
+      // 5. DEFERRED feedback cannot be bypassed: course listing does not leak deferred answer keys or evaluation
+      const deferredBlock = courseA.blocks.find((b: any) => b.id === mcqDeferredBlockId);
+      expect(deferredBlock).toBeDefined();
+      expect(deferredBlock.config.answerKey).toBeUndefined();
+
+      // 6. Cross-user access remains forbidden: User Charlie cannot access Bob's runs
+      await request(app.getHttpServer())
+        .get(`/api/v1/runs/${discoverRun.body.id}`)
+        .set('Cookie', otherCookie)
+        .expect(HttpStatus.NOT_FOUND);
+    });
+
+    it('Correcting an ambiguous multi-skill MCQ to newIsCorrect: true preserves EXCLUDED status and does NOT promote either skill', async () => {
+      expect(multiSkillAssessmentResultId).toBeDefined();
+
+      // Instructor Alice submits an authorized assessment correction for the multi-skill MCQ
+      const correctionRes = await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: multiSkillAssessmentResultId,
+          newStatus: 'EVALUATED',
+          newIsCorrect: true,
+          newScore: 1.0,
+          reason: 'Manual instructor override on multi-skill MCQ',
+        })
+        .expect(HttpStatus.OK);
+
+      expect(correctionRes.body.revision).toBe(1);
+      expect(correctionRes.body.newIsCorrect).toBe(true);
+
+      // Verify that the underlying evidence rows for this multi-skill MCQ REMAIN EXCLUDED
+      const evRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/evidence`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      const msEvs = evRes.body.filter((e: any) => e.assessmentResultId === multiSkillAssessmentResultId);
+      expect(msEvs).toHaveLength(2);
+
+      for (const ev of msEvs) {
+        expect(ev.status).toBe('EXCLUDED');
+        expect(ev.classification).toBe('EXCLUDED');
+        expect(ev.exclusionReason).toBe('AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION');
+        expect(ev.isCorrect).toBeNull();
+        expect(ev.score).toBeNull();
+      }
+
+      // Verify Learner Bob skill projections: neither skill received independent qualifying credit
+      const skillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/skills`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      const skill2Proj = skillsRes.body.find((s: any) => s.skillId === skill2Id);
+      expect(skill2Proj.independentCount).toBe(0);
+      expect(skill2Proj.state).toBe('INSUFFICIENT_EVIDENCE');
+    });
+
+    it('Valid single-skill MCQ correction updates evidence and projection appropriately', async () => {
+      // Register fresh learner Eve who has not attempted any blocks yet
+      const userEve = {
+        email: `eve_${Date.now()}@ule.internal`,
+        password: 'EvePassword123!',
+        name: 'Learner Eve',
+      };
+      const regEve = await request(app.getHttpServer())
+        .post('/api/v1/auth/sign-up/email')
+        .send(userEve);
+      const eveCookie = extractCookies(regEve);
+      const meEve = await request(app.getHttpServer())
+        .get('/api/v1/me')
+        .set('Cookie', eveCookie);
+      const eveId = meEve.body.user.id;
+
+      // Alice grants Eve access to Course A
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: eveId })
+        .expect(HttpStatus.CREATED);
+
+      // Eve attempts mcq1BlockId with an incorrect option in her first run
+      const runRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', eveCookie)
+        .send({
+          courseVersionId: courseAVersion1Id,
+          blockInstanceId: mcq1BlockId,
+          idempotencyKey: `eve_run_incorrect_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      const subRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${runRes.body.id}/commands`)
+        .set('Cookie', eveCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_b' },
+          idempotencyKey: `eve_sub_incorrect_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      const assessmentId = subRes.body.latestAssessment.id;
+
+      // Alice applies correction for this single-skill assessment to true
+      const corrRes = await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: assessmentId,
+          newStatus: 'EVALUATED',
+          newIsCorrect: true,
+          newScore: 1.0,
+          reason: 'Correction: Question wording was ambiguous, awarding full credit',
+        })
+        .expect(HttpStatus.OK);
+
+      expect(corrRes.body.newIsCorrect).toBe(true);
+
+      // Verify the evidence row for this run is updated to ACCEPTED INDEPENDENT_CORRECT
+      const evRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/evidence`)
+        .set('Cookie', eveCookie)
+        .expect(HttpStatus.OK);
+
+      const correctedEv = evRes.body.find((e: any) => e.runId === runRes.body.id);
+      expect(correctedEv).toBeDefined();
+      expect(correctedEv.status).toBe('ACCEPTED');
+      expect(correctedEv.classification).toBe('INDEPENDENT_CORRECT');
+      expect(correctedEv.isCorrect).toBe(true);
+      expect(correctedEv.score).toBe(1.0);
+      expect(correctedEv.exclusionReason).toBeNull();
+
+      // Verify Eve's skill projection is updated with the independent solve
+      const eveSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/skills`)
+        .set('Cookie', eveCookie)
+        .expect(HttpStatus.OK);
+
+      const eveSkillProj = eveSkillsRes.body.find((s: any) => s.skillId === skill1Id);
+      expect(eveSkillProj.independentCount).toBe(1);
+      expect(eveSkillProj.incorrectCount).toBe(0);
+    });
+
+    it('Replaying or retrying correction does not duplicate or inflate skill evidence', async () => {
+      expect(multiSkillAssessmentResultId).toBeDefined();
+
+      // Count evidence rows before replay
+      const evBefore = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/evidence`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      const countBefore = evBefore.body.length;
+
+      // Alice re-applies the correction with a new revision note
+      const retryRes = await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: multiSkillAssessmentResultId,
+          newStatus: 'EVALUATED',
+          newIsCorrect: true,
+          newScore: 1.0,
+          reason: 'Replay: second confirmation of regrade note',
+        })
+        .expect(HttpStatus.OK);
+
+      expect(retryRes.body.revision).toBe(2);
+
+      // Count evidence rows after replay: MUST NOT DUPLICATE
+      const evAfter = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/evidence`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      expect(evAfter.body.length).toBe(countBefore);
+    });
+
+    it('Creator adds isVerification: true to Multiple Choice block without authoritative contract; projection maintains honest boundary (CONTINUE, isAvailable: false)', async () => {
+      // 1. Create Course D with MCQ block having config.isVerification: true
+      const courseDRes = await request(app.getHttpServer())
+        .post('/api/v1/courses')
+        .set('Cookie', ownerCookie)
+        .send({ title: 'Course D: Unvalidated Verification MCQ' })
+        .expect(HttpStatus.CREATED);
+
+      const courseDId = courseDRes.body.course.id;
+
+      // Define Skill D
+      const skillDRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseDId}/skills`)
+        .set('Cookie', ownerCookie)
+        .send({
+          skillCode: 'SKILL_D',
+          name: 'Skill D Competence',
+          description: 'Demonstrating honest capability boundary',
+        })
+        .expect(HttpStatus.CREATED);
+
+      const skillDId = skillDRes.body.id;
+
+      // Add two MCQ blocks to Course D draft, one configured with isVerification: true
+      const mcqD1 = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseDId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'multiple-choice',
+          title: 'Quiz Item 1',
+          orderIndex: 0,
+          config: {
+            question: 'What is 10 + 10?',
+            options: [
+              { id: 'opt_a', text: '20' },
+              { id: 'opt_b', text: '30' },
+            ],
+            answerKey: { correctOptionId: 'opt_a' },
+            feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
+          },
+          expectedRevision: 1,
+        })
+        .expect(HttpStatus.CREATED);
+
+      const mcqD2 = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseDId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'multiple-choice',
+          title: 'Unvalidated Verification Quiz Item',
+          orderIndex: 1,
+          config: {
+            question: 'What is 20 + 20?',
+            options: [
+              { id: 'opt_a', text: '40' },
+              { id: 'opt_b', text: '50' },
+            ],
+            answerKey: { correctOptionId: 'opt_a' },
+            feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
+            isVerification: true, // Arbitrary creator config without authoritative verification contract
+          },
+          expectedRevision: 2,
+        })
+        .expect(HttpStatus.CREATED);
+
+      // Map both items to skillD
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseDId}/draft/skill-mappings`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockInstanceId: mcqD1.body.id,
+          skillId: skillDId,
+          expectedRevision: 3,
+        })
+        .expect(HttpStatus.OK);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseDId}/draft/skill-mappings`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockInstanceId: mcqD2.body.id,
+          skillId: skillDId,
+          expectedRevision: 4,
+        })
+        .expect(HttpStatus.OK);
+
+      // Publish Course D version 1
+      const dVersion = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseDId}/versions`)
+        .set('Cookie', ownerCookie)
+        .expect(HttpStatus.CREATED);
+
+      // Grant Bob access to Course D
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseDId}/versions/${dVersion.body.id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: learnerId })
+        .expect(HttpStatus.CREATED);
+
+      // Bob solves item 1 independently
+      const r1 = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: dVersion.body.id,
+          blockInstanceId: mcqD1.body.id,
+          idempotencyKey: `d_run1_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${r1.body.id}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_a' },
+          idempotencyKey: `d_sub1_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Bob solves item 2 independently
+      const r2 = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: dVersion.body.id,
+          blockInstanceId: mcqD2.body.id,
+          idempotencyKey: `d_run2_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${r2.body.id}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_a' },
+          idempotencyKey: `d_sub2_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Check Bob's skill projection in Course D:
+      const dSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${dVersion.body.id}/skills`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      const skillDProj = dSkillsRes.body.find((s: any) => s.skillId === skillDId);
+      expect(skillDProj).toBeDefined();
+
+      // State is READY_TO_VERIFY (2 distinct independent correct observations)
+      expect(skillDProj.state).toBe('READY_TO_VERIFY');
+      expect(skillDProj.state).not.toBe('VERIFIED');
+
+      // Verify course progress confirms no mastery
+      const dProg = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${dVersion.body.id}/progress`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+      expect(dProg.body.isMastered).toBe(false);
+      expect(dProg.body.masteryClaim).toBeNull();
+
+      // CRITICAL REQUIREMENT 3 INVARIANT:
+      // Even though creator added isVerification: true to MCQ item 2, MultipleChoice has no authoritative verification contract!
+      // The projection MUST NOT advertise VERIFY or isAvailable: true!
+      // Must return safe minimal fallback: category: CONTINUE with isAvailable: false and null suggestedBlockInstanceId!
+      expect(skillDProj.proposedAction.category).toBe('CONTINUE');
+      expect(skillDProj.proposedAction.isAvailable).toBe(false);
+      expect(skillDProj.proposedAction.suggestedBlockInstanceId).toBeNull();
+      expect(skillDProj.proposedAction.reason).toContain('no schema-validated verification assessment capability is available');
     });
   });
 });

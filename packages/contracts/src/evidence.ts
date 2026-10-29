@@ -204,3 +204,32 @@ export interface CourseProgressDto {
   masteryClaim: null;
   blocks: BlockProgressDto[];
 }
+
+export interface LearnerSafeBlockDto {
+  id: string;
+  blockTypeId: string;
+  typeVersion: string;
+  title: string;
+  orderIndex: number;
+  config: Record<string, unknown>;
+}
+
+export interface LearnerSafeSkillDto {
+  id: string;
+  skillCode: string;
+  name: string;
+  description: string | null;
+}
+
+export interface LearnerCourseVersionDto {
+  id: string;
+  courseId: string;
+  versionNumber: number;
+  title: string;
+  description: string | null;
+  summary: string | null;
+  blocks: LearnerSafeBlockDto[];
+  skills?: LearnerSafeSkillDto[];
+  schemaVersion: string;
+  createdAt: string;
+}

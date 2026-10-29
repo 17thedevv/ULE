@@ -189,48 +189,26 @@ export class LearnerSkillProjectionService {
       );
     }
 
-    // Gate 4: Advertise VERIFY only for an explicitly declared, schema-validated, skill-appropriate verification capability.
-    // Video blocks or title matches can NEVER qualify as verification assessments.
-    const verificationBlock = blocks.find((b) => {
-      if (b.blockTypeId === 'video') return false;
-      if (b.config?.isVerification !== true) return false;
-      return (snapshot.skillMappings ?? []).some(
-        (m) => m.blockInstanceId === b.id && m.skillId === skillId,
-      );
-    });
-
+    // Honest verification capability boundary:
+    // In Phase 3, no registered block type defines or validates an authoritative verification contract.
+    // Arbitrary creator config properties (such as isVerification: true) or title matches cannot announce VERIFY isAvailable: true.
+    // Return safe minimal fallback: CONTINUE with isAvailable: false until schema-validated verification exists.
     let proposedAction: LiiActionProposalDto;
 
     if (state === 'READY_TO_VERIFY') {
-      if (verificationBlock) {
-        proposedAction = {
-          category: 'VERIFY',
-          targetSkillId: skillId,
-          reason:
-            'Learner has demonstrated independent readiness on distinct items. Ready for verification assessment.',
-          sourceEvidenceIds: evidenceIds,
-          policyVersion: '1.0.0',
-          validityConditions: [
-            'Verification assessment must be completed independently without server assistance.',
-          ],
-          suggestedBlockInstanceId: verificationBlock.id,
-          isAvailable: true,
-        };
-      } else {
-        proposedAction = {
-          category: 'CONTINUE',
-          targetSkillId: skillId,
-          reason:
-            'Learner demonstrates readiness, but no schema-validated verification assessment is configured for this skill in the CourseVersion.',
-          sourceEvidenceIds: evidenceIds,
-          policyVersion: '1.0.0',
-          validityConditions: [
-            'A skill-appropriate evaluatable verification block must be authored and published in the CourseVersion snapshot.',
-          ],
-          suggestedBlockInstanceId: null,
-          isAvailable: false,
-        };
-      }
+      proposedAction = {
+        category: 'CONTINUE',
+        targetSkillId: skillId,
+        reason:
+          'Learner demonstrates readiness, but no schema-validated verification assessment capability is available in this platform phase.',
+        sourceEvidenceIds: evidenceIds,
+        policyVersion: '1.0.0',
+        validityConditions: [
+          'A skill-appropriate authoritative verification capability must be supported by the runtime and published in the CourseVersion.',
+        ],
+        suggestedBlockInstanceId: null,
+        isAvailable: false,
+      };
     } else if (state === 'DEVELOPING') {
       if (incorrectCount > 0 || assistedCount > 1) {
         proposedAction = {

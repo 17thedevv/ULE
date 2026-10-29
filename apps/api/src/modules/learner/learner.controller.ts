@@ -7,7 +7,7 @@ import {
 } from '@nestjs/swagger';
 import {
   CourseProgressDto,
-  CourseVersionDto,
+  LearnerCourseVersionDto,
   LearnerSkillProjectionDto,
   LearningEvidenceDto,
 } from '@ule/contracts';
@@ -31,7 +31,7 @@ export class LearnerController {
   @ApiResponse({ status: 200, description: 'Courses retrieved successfully' })
   async listGrantedCourses(
     @CurrentUser() user: AuthUser,
-  ): Promise<CourseVersionDto[]> {
+  ): Promise<LearnerCourseVersionDto[]> {
     return this.learnerService.listGrantedCourses(user.id);
   }
 

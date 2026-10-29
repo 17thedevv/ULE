@@ -180,9 +180,17 @@
        - `READY_TO_VERIFY`: At least 2 distinct independent unassisted correct observations without active errors, and a verification block exists in the course version.
      - **Absolute Invariant**: `VERIFIED` mastery is NEVER declared in this slice under any circumstances. No single quiz score or activity completion equals verified mastery.
      - Explainable outputs: Plain-language rationale, explicit uncertainty, and missing evidence statements.
-     - Minimal action proposals (`LiiActionProposalDto`): `CONTINUE`, `VERIFY` (only if `READY_TO_VERIFY` and verification block present), or fallback.
+     - Minimal action proposals (`LiiActionProposalDto`): `CONTINUE` (with `isAvailable: false` when in `READY_TO_VERIFY` state pending formal verification capability), `SUPPORT`, or fallback.
      - Exclusion of black-box ML (BKT/DKT/CD-CAT), Redis, Kafka, or external AI orchestration.
-  7. **Trusted Evidence Integrity Corrections (PR #5 Review Gates)**:
+  7. **Trusted Evidence Integrity Corrections & Final Hardening (PR #5 Review Findings)**:
+     - **Confidentiality & Learner-Safe CourseVersion DTO**:
+       - `GET /api/v1/learner/courses` returns dedicated `LearnerCourseVersionDto[]` with sanitized blocks; raw authoring `snapshot` is never returned to learners.
+       - Reuses registered `sanitizeForLearner` methods from `BlockTypeRegistry` to strip `answerKey`, `correctOptionId`, protected explanations, and undisclosed hints. Video and Coding blocks are similarly sanitized. Course owners retain full authoring snapshot access via owner-only endpoints.
+     - **Preserving Evidence Eligibility Across Assessment Corrections**:
+       - Authoritative grading corrections (`POST /api/v1/evaluations/correct`) separate grading outcomes from educational evidence eligibility.
+       - Ineligible evidence (`AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION`, `NO_SKILL_MAPPING_CONFIGURED`, `UNGRADED_CONTENT_COMPLETION_ONLY`) remains strictly `EXCLUDED` even when corrected to `newIsCorrect: true`.
+       - Same-item repetitions (`SAME_ITEM_REPETITION`) remain classified as repetitions and cannot become novel independent observations.
+       - Replaying or retrying corrections preserves append-only revision history without duplicating evidence rows or inflating projections.
      - **Gate 1 — Deferred Feedback Leak Prevention**:
        - Under `DEFERRED` runs that are not `CLOSED COMPLETED`, `GET /evidence` sanitizes `classification` to `PENDING_EVALUATION`, `status` to `PENDING_ASSESSMENT`, `assessmentStatus` to `PENDING`, and blanks `isCorrect`, `score`, `evaluatorId`, `evaluatorVersion`, `assessmentResultId`, and `exclusionReason`.
        - Learner skill projection calculation withholds unreleased deferred evidence, returning a safe explicitly pending projection (`state: 'INSUFFICIENT_EVIDENCE'`) with plain-language explanations without revealing correctness.
@@ -195,9 +203,9 @@
      - **Gate 3 — Criterion-Level Skill Mapping Enforcement**:
        - Multiple Choice evaluator outputs aggregate scores without criterion-specific breakdown.
        - When an assessment item is mapped to multiple skills without criterion-specific evaluator output (`assessmentResult.feedback.criteriaResults`), all ambiguous mappings are excluded (`status: 'EXCLUDED'`, `classification: 'EXCLUDED'`, `exclusionReason: 'AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION'`) and grant zero independent skill credit. Single-item, single-skill Multiple Choice flow remains fully valid.
-     - **Gate 4 — Verification Proposal Hardening**:
-       - Title-based verification detection (`b.title.includes('verification')`) is completely eliminated.
-       - `VERIFY` action proposals are advertised only for an explicitly declared (`config.isVerification === true`), schema-validated, evaluatable (non-video), skill-mapped block present in the pinned `CourseVersion.snapshot`.
-       - If no eligible verification block exists, the projection returns `category: 'CONTINUE'` with `isAvailable: false` and an explicit limitation explanation.
-- **Consequences**: Complete Phase 3 vertical slice verified by 27 real PostgreSQL automated integration tests (`test/learning-evidence.integration.spec.ts`, 100% pass) and 175 total integration tests across the monorepo. Zero regressions across Phase 1A, Phase 1B, Phase 2, and Phase 3 suites.
+     - **Gate 4 — Honest Verification Capability Boundary**:
+       - Title-based verification detection and arbitrary unvalidated creator config properties (`isVerification: true`) are eliminated.
+       - In Phase 3, because no registered block type defines or validates a formal runtime verification contract, `READY_TO_VERIFY` projections return the honest minimal fallback: `category: 'CONTINUE'` with `isAvailable: false`.
+       - Conservative `READY_TO_VERIFY` learner state is preserved without issuing premature `VERIFIED` mastery claims.
+- **Consequences**: Complete Phase 3 vertical slice verified by 32 real PostgreSQL automated integration tests (`test/learning-evidence.integration.spec.ts`, 100% pass) and 180 total integration tests across the monorepo. Zero regressions across Phase 1A, Phase 1B, Phase 2, and Phase 3 suites.
 

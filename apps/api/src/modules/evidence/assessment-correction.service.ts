@@ -108,41 +108,99 @@ export class AssessmentCorrectionService {
       for (const ev of evidenceRows) {
         let newClassification = ev.classification;
         let newStatus = ev.status;
+        let newExclusionReason = ev.exclusionReason;
+        let evidenceIsCorrect = targetIsCorrect;
+        let evidenceScore = targetScore;
 
-        if (ev.isSameItemRepetition) {
+        // 1. Ambiguous multi-skill mapping without criterion-level evaluation
+        if (
+          ev.exclusionReason ===
+          'AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION'
+        ) {
+          newClassification = 'EXCLUDED';
+          newStatus = 'EXCLUDED';
+          newExclusionReason =
+            'AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION';
+          evidenceIsCorrect = null;
+          evidenceScore = null;
+        }
+        // 2. Unmapped attempt or missing skill identity
+        else if (
+          !ev.skillId ||
+          ev.exclusionReason === 'NO_SKILL_MAPPING_CONFIGURED'
+        ) {
+          newClassification = 'EXCLUDED';
+          newStatus = 'EXCLUDED';
+          newExclusionReason = 'NO_SKILL_MAPPING_CONFIGURED';
+        }
+        // 3. Ungraded / participation content
+        else if (
+          ev.exclusionReason === 'UNGRADED_CONTENT_COMPLETION_ONLY' ||
+          ev.classification === 'UNGRADED_PARTICIPATION'
+        ) {
+          newClassification = 'UNGRADED_PARTICIPATION';
+          newStatus = 'EXCLUDED';
+          newExclusionReason = 'UNGRADED_CONTENT_COMPLETION_ONLY';
+          evidenceIsCorrect = null;
+          evidenceScore = null;
+        }
+        // 4. Same-item repetition across runs or attempts remains non-novel
+        else if (
+          ev.isSameItemRepetition ||
+          ev.classification === 'SAME_ITEM_REPETITION' ||
+          ev.exclusionReason === 'SAME_ITEM_REPETITION_NOT_INDEPENDENT'
+        ) {
           newClassification = 'SAME_ITEM_REPETITION';
           newStatus = 'ACCEPTED';
-        } else if (targetStatus === 'PENDING') {
+          newExclusionReason = 'SAME_ITEM_REPETITION_NOT_INDEPENDENT';
+          evidenceIsCorrect = targetIsCorrect;
+          evidenceScore = targetScore;
+        }
+        // 5. Valid single-skill evaluatable observations
+        else if (targetStatus === 'PENDING') {
           newClassification = 'PENDING_EVALUATION';
           newStatus = 'PENDING_ASSESSMENT';
+          newExclusionReason = 'ASSESSMENT_STATUS_PENDING';
+          evidenceIsCorrect = null;
+          evidenceScore = null;
+        } else if (targetStatus === 'FAILED') {
+          newClassification = 'EXCLUDED';
+          newStatus = 'EXCLUDED';
+          newExclusionReason = 'ASSESSMENT_STATUS_FAILED';
+          evidenceIsCorrect = null;
+          evidenceScore = null;
         } else if (targetStatus === 'EVALUATED') {
           if (targetIsCorrect === true) {
             newClassification = ev.assisted
               ? 'ASSISTED_CORRECT'
               : 'INDEPENDENT_CORRECT';
             newStatus = 'ACCEPTED';
+            newExclusionReason = null;
           } else {
             newClassification = 'INCORRECT';
             newStatus = 'ACCEPTED';
+            newExclusionReason = null;
           }
         } else {
           newClassification = 'EXCLUDED';
           newStatus = 'EXCLUDED';
+          newExclusionReason = `ASSESSMENT_STATUS_${targetStatus}`;
         }
 
         await tx.learningEvidence.update({
           where: { id: ev.id },
           data: {
             assessmentStatus: targetStatus,
-            isCorrect: targetIsCorrect,
-            score: targetScore,
+            isCorrect: evidenceIsCorrect,
+            score: evidenceScore,
             classification: newClassification,
             status: newStatus,
+            exclusionReason: newExclusionReason,
             evaluatedAt: new Date(),
           },
         });
 
-        if (ev.skillId) {
+        if (ev.skillId && !affectedSkillIds.includes(ev.skillId)) {
           affectedSkillIds.push(ev.skillId);
         }
       }

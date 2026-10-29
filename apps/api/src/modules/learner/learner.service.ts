@@ -1,24 +1,29 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
   CourseProgressDto,
-  CourseVersionDto,
+  LearnerCourseVersionDto,
+  LearnerSafeBlockDto,
+  LearnerSafeSkillDto,
   LearnerSkillProjectionDto,
   LearningEvidenceDto,
 } from '@ule/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import { LearnerSkillProjectionService } from '../evidence/learner-skill-projection.service';
+import { BlockTypeRegistry } from '../abp/registry/block-type.registry';
 
 @Injectable()
 export class LearnerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly projectionService: LearnerSkillProjectionService,
+    private readonly blockTypeRegistry: BlockTypeRegistry,
   ) {}
 
   /**
    * Lists all private CourseVersions explicitly granted to the authenticated learner.
+   * Returns sanitized learner-safe views: never returns raw snapshots or authoring secrets.
    */
-  async listGrantedCourses(userId: string): Promise<CourseVersionDto[]> {
+  async listGrantedCourses(userId: string): Promise<LearnerCourseVersionDto[]> {
     // 1. Grants where user is an active registered learner
     const grants = await this.prisma.courseAccessGrant.findMany({
       where: {
@@ -39,40 +44,86 @@ export class LearnerService {
       orderBy: { createdAt: 'desc' },
     });
 
-    const versionMap = new Map<string, CourseVersionDto>();
+    const versionMap = new Map<string, LearnerCourseVersionDto>();
 
-    for (const g of grants) {
-      const v = g.courseVersion;
-      versionMap.set(v.id, {
+    const toLearnerSafeVersion = (v: {
+      id: string;
+      courseId: string;
+      versionNumber: number;
+      title: string;
+      description: string | null;
+      summary: string | null;
+      snapshot: unknown;
+      schemaVersion: string;
+      createdAt: Date;
+    }): LearnerCourseVersionDto => {
+      const snap = (v.snapshot as {
+        blocks?: Array<{
+          id: string;
+          blockTypeId: string;
+          typeVersion?: string;
+          title: string;
+          orderIndex: number;
+          config?: Record<string, unknown>;
+        }>;
+        skills?: Array<{
+          id: string;
+          skillCode: string;
+          name: string;
+          description?: string | null;
+        }>;
+      }) || {};
+
+      const rawBlocks = snap.blocks ?? [];
+      const safeBlocks: LearnerSafeBlockDto[] = rawBlocks.map((b) => {
+        const typeVersion = b.typeVersion ?? '1.0.0';
+        const sanitizedConfig = this.blockTypeRegistry.hasType(b.blockTypeId, typeVersion)
+          ? this.blockTypeRegistry.sanitizeForLearner(
+              b.blockTypeId,
+              (b.config as Record<string, unknown>) ?? {},
+              typeVersion,
+            )
+          : {};
+
+        return {
+          id: b.id,
+          blockTypeId: b.blockTypeId,
+          typeVersion,
+          title: b.title,
+          orderIndex: b.orderIndex,
+          config: sanitizedConfig,
+        };
+      });
+
+      const safeSkills: LearnerSafeSkillDto[] = (snap.skills ?? []).map((s) => ({
+        id: s.id,
+        skillCode: s.skillCode,
+        name: s.name,
+        description: s.description ?? null,
+      }));
+
+      return {
         id: v.id,
         courseId: v.courseId,
         versionNumber: v.versionNumber,
         title: v.title,
         description: v.description,
         summary: v.summary,
-        snapshot: v.snapshot as Record<string, unknown>,
+        blocks: safeBlocks,
+        skills: safeSkills,
         schemaVersion: v.schemaVersion,
-        draftRevision: v.draftRevision,
-        createdById: v.createdById,
         createdAt: v.createdAt.toISOString(),
-      });
+      };
+    };
+
+    for (const g of grants) {
+      const v = g.courseVersion;
+      versionMap.set(v.id, toLearnerSafeVersion(v));
     }
 
     for (const v of ownedVersions) {
       if (!versionMap.has(v.id)) {
-        versionMap.set(v.id, {
-          id: v.id,
-          courseId: v.courseId,
-          versionNumber: v.versionNumber,
-          title: v.title,
-          description: v.description,
-          summary: v.summary,
-          snapshot: v.snapshot as Record<string, unknown>,
-          schemaVersion: v.schemaVersion,
-          draftRevision: v.draftRevision,
-          createdById: v.createdById,
-          createdAt: v.createdAt.toISOString(),
-        });
+        versionMap.set(v.id, toLearnerSafeVersion(v));
       }
     }
 

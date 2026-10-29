@@ -1,12 +1,12 @@
 import {
   CourseProgressDto,
-  CourseVersionDto,
+  LearnerCourseVersionDto,
   LearnerSkillProjectionDto,
   LearningEvidenceDto,
 } from '@ule/contracts';
 import { getApiBaseUrl } from './api';
 
-export async function fetchGrantedCourses(): Promise<CourseVersionDto[]> {
+export async function fetchGrantedCourses(): Promise<LearnerCourseVersionDto[]> {
   const baseUrl = getApiBaseUrl();
   const res = await fetch(`${baseUrl}/api/v1/learner/courses`, {
     credentials: 'include',

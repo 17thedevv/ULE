@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ABRunDto,
   CourseProgressDto,
-  CourseVersionDto,
+  LearnerCourseVersionDto,
   LearnerSkillProjectionDto,
   LearningEvidenceDto,
   MultipleChoiceLearnerView,
@@ -16,7 +16,7 @@ import {
 } from '../services/learner';
 
 export const LearnerEvidenceStudio: React.FC = () => {
-  const [courses, setCourses] = useState<CourseVersionDto[]>([]);
+  const [courses, setCourses] = useState<LearnerCourseVersionDto[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState<string>('');
   const [progress, setProgress] = useState<CourseProgressDto | null>(null);
   const [evidence, setEvidence] = useState<LearningEvidenceDto[]>([]);
