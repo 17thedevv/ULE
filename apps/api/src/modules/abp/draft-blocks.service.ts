@@ -81,7 +81,13 @@ export class DraftBlocksService {
    * Adds a new validated activity block instance to an owned course draft.
    * Executes under an aggregate row-level lock on the parent course with atomic revision increment.
    */
-  async addDraftBlock(courseId: string, userId: string, dto: AddDraftBlockDto, blockId?: string): Promise<DraftBlockInstanceDto> {
+  async addDraftBlock(
+    courseId: string,
+    userId: string,
+    dto: AddDraftBlockDto,
+    blockId?: string,
+    txClient?: Prisma.TransactionClient,
+  ): Promise<DraftBlockInstanceDto> {
     // 1. Resolve block type and schema version from registry
     const typeDef = this.registry.getDefinition(dto.blockTypeId, dto.typeVersion);
 
@@ -94,7 +100,7 @@ export class DraftBlocksService {
     }
 
     // 3. Atomically acquire aggregate lock, check expected revision, and persist block
-    return this.prisma.$transaction(async (tx) => {
+    const op = async (tx: Prisma.TransactionClient) => {
       const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
         SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
       `;
@@ -144,7 +150,9 @@ export class DraftBlocksService {
       });
 
       return this.toDto(created);
-    });
+    };
+
+    return txClient ? op(txClient) : this.prisma.$transaction(op);
   }
 
   /**
@@ -156,8 +164,9 @@ export class DraftBlocksService {
     blockId: string,
     userId: string,
     dto: UpdateDraftBlockDto,
+    txClient?: Prisma.TransactionClient,
   ): Promise<DraftBlockInstanceDto> {
-    return this.prisma.$transaction(async (tx) => {
+    const op = async (tx: Prisma.TransactionClient) => {
       const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
         SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
       `;
@@ -218,7 +227,9 @@ export class DraftBlocksService {
       });
 
       return this.toDto(updated);
-    });
+    };
+
+    return txClient ? op(txClient) : this.prisma.$transaction(op);
   }
 
   /**
@@ -230,8 +241,9 @@ export class DraftBlocksService {
     blockId: string,
     userId: string,
     expectedRevision: number,
+    txClient?: Prisma.TransactionClient,
   ): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
+    const op = async (tx: Prisma.TransactionClient) => {
       const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
         SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
       `;
@@ -283,7 +295,13 @@ export class DraftBlocksService {
         where: { id: draft.id },
         data: { revision: { increment: 1 } },
       });
-    });
+    };
+
+    if (txClient) {
+      await op(txClient);
+    } else {
+      await this.prisma.$transaction(op);
+    }
   }
 
   /**
@@ -294,6 +312,7 @@ export class DraftBlocksService {
     courseId: string,
     userId: string,
     dto: ReorderDraftBlocksDto,
+    txClient?: Prisma.TransactionClient,
   ): Promise<DraftBlockInstanceDto[]> {
     // 1. Guard against duplicate block IDs in input
     const uniqueIds = new Set(dto.blockIds);
@@ -301,7 +320,7 @@ export class DraftBlocksService {
       throw new BadRequestException('Reorder list contains duplicate block IDs.');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const op = async (tx: Prisma.TransactionClient) => {
       const lockedCourses = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
         SELECT id, "ownerId" AS "ownerId" FROM courses WHERE id = ${courseId} FOR UPDATE
       `;
@@ -360,7 +379,9 @@ export class DraftBlocksService {
       });
 
       return reordered.map((b) => this.toDto(b));
-    });
+    };
+
+    return txClient ? op(txClient) : this.prisma.$transaction(op);
   }
 
   /**

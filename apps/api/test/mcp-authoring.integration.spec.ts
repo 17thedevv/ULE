@@ -1195,4 +1195,386 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
     });
   });
 
+
+  // =========================================================================
+  // GATE 1, 2, 3: TRANSACTIONAL CORRECTNESS, FENCING LEASES & DURABLE AUDIT
+  // =========================================================================
+
+  describe('Phase 2 PR #4 Final Transactional Correctness & Fencing Integrity (Gates 1, 2, 3)', () => {
+    let testCourseId: string;
+    let block1Id: string;
+    let block2Id: string;
+    let coursesService: CoursesService;
+    let mcpService: McpService;
+
+    beforeAll(async () => {
+      coursesService = app.get(CoursesService);
+      mcpService = app.get(McpService);
+      const cRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: `Gate 1-3 Integrity Course ${Date.now()}`,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      testCourseId = JSON.parse(cRes.content[0].text).course.id;
+
+      const b1Res = await callMcpTool(userAToken, 'ule_add_draft_block', {
+        courseId: testCourseId,
+        expectedRevision: 1,
+        blockTypeId: 'video',
+        title: 'Block One',
+        config: { url: 'https://cdn.ule.internal/v1.mp4', durationSeconds: 60 },
+        idempotencyKey: crypto.randomUUID(),
+      });
+      block1Id = JSON.parse(b1Res.content[0].text).id;
+
+      const b2Res = await callMcpTool(userAToken, 'ule_add_draft_block', {
+        courseId: testCourseId,
+        expectedRevision: 2,
+        blockTypeId: 'video',
+        title: 'Block Two',
+        config: { url: 'https://cdn.ule.internal/v2.mp4', durationSeconds: 120 },
+        idempotencyKey: crypto.randomUUID(),
+      });
+      block2Id = JSON.parse(b2Res.content[0].text).id;
+    });
+
+    // 1. Stale UPDATE_COURSE_DRAFT returns 409, does not mutate the Draft, and does not cache success
+    it('1. Stale UPDATE_COURSE_DRAFT returns 409, does not mutate the Draft, and does not cache success', async () => {
+      const draftBefore = await prisma.courseDraft.findUnique({ where: { courseId: testCourseId } });
+      expect(draftBefore?.revision).toBe(3);
+
+      const staleKey = `stale_draft_${Date.now()}`;
+      const res = await callMcpTool(userAToken, 'ule_update_course_draft', {
+        courseId: testCourseId,
+        expectedRevision: 1, // Stale: actual is 3
+        title: 'Stale Title Attempt',
+        idempotencyKey: staleKey,
+      });
+
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain('[Error 409]');
+      expect(res.content[0].text).toContain('revision conflict');
+
+      // Database state: Draft NOT mutated
+      const draftAfter = await prisma.courseDraft.findUnique({ where: { courseId: testCourseId } });
+      expect(draftAfter?.revision).toBe(3);
+      expect(draftAfter?.title).toBe(draftBefore?.title);
+
+      // Idempotency state: No COMPLETED record cached
+      const idempRecord = await prisma.mcpMutationIdempotency.findFirst({
+        where: { userId: userAId, idempotencyKey: staleKey },
+      });
+      expect(idempRecord).toBeNull();
+    });
+
+    // 2. Stale UPDATE_DRAFT_BLOCK does not report success
+    it('2. Stale UPDATE_DRAFT_BLOCK returns 409 and does not report success or mutate block', async () => {
+      const blockBefore = await prisma.draftBlockInstance.findUnique({ where: { id: block1Id } });
+      expect(blockBefore?.title).toBe('Block One');
+
+      const staleKey = `stale_update_b_${Date.now()}`;
+      const res = await callMcpTool(userAToken, 'ule_update_draft_block', {
+        courseId: testCourseId,
+        blockId: block1Id,
+        expectedRevision: 1, // Stale: actual is 3
+        title: 'Stale Updated Title',
+        idempotencyKey: staleKey,
+      });
+
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain('[Error 409]');
+
+      const blockAfter = await prisma.draftBlockInstance.findUnique({ where: { id: block1Id } });
+      expect(blockAfter?.title).toBe('Block One');
+    });
+
+    // 3. Failed DELETE_DRAFT_BLOCK does not return deleted: true
+    it('3. Failed DELETE_DRAFT_BLOCK does not return deleted: true and preserves block', async () => {
+      const staleKey = `stale_del_b_${Date.now()}`;
+      const res = await callMcpTool(userAToken, 'ule_delete_draft_block', {
+        courseId: testCourseId,
+        blockId: block1Id,
+        expectedRevision: 1, // Stale: actual is 3
+        idempotencyKey: staleKey,
+      });
+
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).not.toContain('"deleted": true');
+
+      const blockExists = await prisma.draftBlockInstance.findUnique({ where: { id: block1Id } });
+      expect(blockExists).not.toBeNull();
+    });
+
+    // 4. Failed REORDER_DRAFT_BLOCKS does not return a successful result
+    it('4. Failed REORDER_DRAFT_BLOCKS does not return a successful result and preserves ordering', async () => {
+      const staleKey = `stale_reorder_${Date.now()}`;
+      const res = await callMcpTool(userAToken, 'ule_reorder_draft_blocks', {
+        courseId: testCourseId,
+        expectedRevision: 1, // Stale
+        blockIds: [block2Id, block1Id],
+        idempotencyKey: staleKey,
+      });
+
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain('[Error 409]');
+
+      const blocks = await prisma.draftBlockInstance.findMany({
+        where: { draftId: (await prisma.courseDraft.findUnique({ where: { courseId: testCourseId } }))!.id },
+        orderBy: { orderIndex: 'asc' },
+      });
+      expect(blocks[0].id).toBe(block1Id);
+      expect(blocks[1].id).toBe(block2Id);
+    });
+
+    // 5. A genuinely committed operation can be recovered without duplication
+    it('5. A genuinely committed operation can be recovered without duplication', async () => {
+      const vKey = `version_recovery_${Date.now()}`;
+      const res1 = await callMcpTool(userAToken, 'ule_create_private_course_version', {
+        courseId: testCourseId,
+        idempotencyKey: vKey,
+      });
+      expect(res1.isError).toBeFalsy();
+      const v1 = JSON.parse(res1.content[0].text);
+
+      const res2 = await callMcpTool(userAToken, 'ule_create_private_course_version', {
+        courseId: testCourseId,
+        idempotencyKey: vKey,
+      });
+      expect(res2.isError).toBeFalsy();
+      const v2 = JSON.parse(res2.content[0].text);
+
+      expect(v1.id).toBe(v2.id);
+      expect(v1.versionNumber).toBe(v2.versionNumber);
+
+      const versionCount = await prisma.courseVersion.count({ where: { courseId: testCourseId } });
+      expect(versionCount).toBe(1);
+    });
+
+    // 6. A worker taking longer than the old two-second lease cannot cause concurrent duplicate execution
+    it('6. A worker taking longer than the old two-second lease cannot cause concurrent duplicate execution', async () => {
+      const slowKey = `slow_worker_${Date.now()}`;
+      const courseTitle = `Slow Worker Course ${Date.now()}`;
+      const initialCount = await prisma.course.count({ where: { ownerId: userAId } });
+
+      const preallocatedId = crypto.randomUUID();
+      const payload = { title: courseTitle, idempotencyKey: slowKey };
+      const payloadHash = (mcpService as any).computePayloadHash(payload);
+
+      const reservation = await prisma.mcpMutationIdempotency.create({
+        data: {
+          userId: userAId,
+          clientId: 'claude_author_client',
+          toolName: 'ule_create_private_course',
+          idempotencyKey: slowKey,
+          payloadHash,
+          resourceId: preallocatedId,
+          ownerToken: 'worker-1-uuid',
+          fenceToken: 1,
+          leaseExpiresAt: new Date(Date.now() + 25000), // Lease valid for 25 more seconds
+          status: 'IN_PROGRESS',
+          updatedAt: new Date(Date.now() - 2500), // Elapsed > 2000ms!
+        },
+      });
+
+      // Concurrently simulate Worker 1 finishing domain mutation after 200ms
+      setTimeout(async () => {
+        const course = await prisma.course.create({
+          data: { id: preallocatedId, ownerId: userAId, visibility: 'PRIVATE' },
+        });
+        const draft = await prisma.courseDraft.create({
+          data: { courseId: preallocatedId, title: courseTitle, revision: 1 },
+        });
+        await prisma.mcpMutationIdempotency.update({
+          where: { id: reservation.id },
+          data: {
+            status: 'COMPLETED',
+            response: {
+              course: (coursesService as any).toCourseDto(course),
+              draft: (coursesService as any).toDraftDto(draft),
+            },
+          },
+        });
+      }, 200);
+
+      // Worker 2 (retry) arrives: elapsed > 2000ms, but lease is NOT expired!
+      const retryRes = await callMcpTool(userAToken, 'ule_create_private_course', payload);
+      expect(retryRes.isError).toBeFalsy();
+      const resData = JSON.parse(retryRes.content[0].text);
+      expect(resData.course.id).toBe(preallocatedId);
+
+      // Verify PostgreSQL: Course count increased by EXACTLY 1 (ZERO duplicate course created)
+      const afterCount = await prisma.course.count({ where: { ownerId: userAId } });
+      expect(afterCount).toBe(initialCount + 1);
+    });
+
+    // 7. Two simultaneous lease-recovery attempts cannot both become owners
+    it('7. Two simultaneous lease-recovery attempts cannot both become owners', async () => {
+      const abandonedKey = `abandoned_${Date.now()}`;
+      const rec = await prisma.mcpMutationIdempotency.create({
+        data: {
+          userId: userAId,
+          clientId: 'claude_author_client',
+          toolName: 'ule_create_private_course',
+          idempotencyKey: abandonedKey,
+          payloadHash: 'hash',
+          ownerToken: 'dead-worker',
+          fenceToken: 1,
+          leaseExpiresAt: new Date(Date.now() - 5000), // Expired 5 seconds ago!
+          status: 'IN_PROGRESS',
+        },
+      });
+
+      // Two simultaneous lease takeover attempts in PostgreSQL
+      const [t1, t2] = await Promise.all([
+        prisma.mcpMutationIdempotency.updateMany({
+          where: {
+            id: rec.id,
+            status: 'IN_PROGRESS',
+            fenceToken: 1,
+            leaseExpiresAt: { lte: new Date() },
+          },
+          data: {
+            ownerToken: 'worker-a',
+            fenceToken: { increment: 1 },
+            leaseExpiresAt: new Date(Date.now() + 30000),
+          },
+        }),
+        prisma.mcpMutationIdempotency.updateMany({
+          where: {
+            id: rec.id,
+            status: 'IN_PROGRESS',
+            fenceToken: 1,
+            leaseExpiresAt: { lte: new Date() },
+          },
+          data: {
+            ownerToken: 'worker-b',
+            fenceToken: { increment: 1 },
+            leaseExpiresAt: new Date(Date.now() + 30000),
+          },
+        }),
+      ]);
+
+      // Exactly ONE acquired the lease (count = 1), and the other failed (count = 0)
+      const counts = [t1.count, t2.count].sort();
+      expect(counts).toEqual([0, 1]);
+
+      // State in database: fenceToken is 2, not 3
+      const updatedRec = await prisma.mcpMutationIdempotency.findUnique({ where: { id: rec.id } });
+      expect(updatedRec?.fenceToken).toBe(2);
+
+      await prisma.mcpMutationIdempotency.delete({ where: { id: rec.id } });
+    });
+
+    // 8. Injected mandatory audit persistence failure leaves no unaudited committed mutation
+    it('8. Injected mandatory audit persistence failure leaves no unaudited committed mutation', async () => {
+      const coursesBefore = await prisma.course.count({ where: { ownerId: userAId } });
+
+      const origCreate = prisma.mcpAuditLog.create.bind(prisma.mcpAuditLog);
+      (prisma.mcpAuditLog as any).create = async () => {
+        throw new Error('Simulated database write error during audit commit');
+      };
+
+      const auditFailKey = `audit_fail_${Date.now()}`;
+      const res = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: 'Unaudited Mutation Target',
+        idempotencyKey: auditFailKey,
+      });
+
+      (prisma.mcpAuditLog as any).create = origCreate;
+
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain('[Error 500]');
+
+      // CRITICAL INVARIANT: Business mutation did NOT commit!
+      const coursesAfter = await prisma.course.count({ where: { ownerId: userAId } });
+      expect(coursesAfter).toBe(coursesBefore);
+    });
+
+    // 9. Successful identical retries return the correct original result
+    it('9. Successful identical retries return the correct original result and record replay audit', async () => {
+      const retryKey = `retry_success_${Date.now()}`;
+      const payload = {
+        title: 'Retry Target Course',
+        idempotencyKey: retryKey,
+      };
+
+      const initialRes = await callMcpTool(userAToken, 'ule_create_private_course', payload);
+      expect(initialRes.isError).toBeFalsy();
+      const initialData = JSON.parse(initialRes.content[0].text);
+
+      // Replay 1
+      const replay1 = await callMcpTool(userAToken, 'ule_create_private_course', payload);
+      expect(replay1.isError).toBeFalsy();
+      expect(JSON.parse(replay1.content[0].text).course.id).toBe(initialData.course.id);
+
+      // Replay 2
+      const replay2 = await callMcpTool(userAToken, 'ule_create_private_course', payload);
+      expect(replay2.isError).toBeFalsy();
+      expect(JSON.parse(replay2.content[0].text).course.id).toBe(initialData.course.id);
+
+      // Check audits in PostgreSQL: 1 EXECUTE / SUCCESS, 2 REPLAY / SUCCESS
+      const audits = await prisma.mcpAuditLog.findMany({
+        where: { idempotencyKey: retryKey },
+        orderBy: { createdAt: 'asc' },
+      });
+      expect(audits.length).toBe(3);
+      expect(audits[0].action).toBe('EXECUTE');
+      expect(audits[1].action).toBe('REPLAY');
+      expect(audits[2].action).toBe('REPLAY');
+    });
+
+    // 10. Headless compatibility smoke test using official MCP Client SDK
+    it('10. Headless MCP client compatibility smoke test over HTTP using official TypeScript SDK', async () => {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StreamableHTTPClientTransport } = await import(
+        '@modelcontextprotocol/sdk/client/streamableHttp.js'
+      );
+
+      const server = app.getHttpServer();
+      if (!server.listening) {
+        await new Promise<void>((resolve) => server.listen(0, resolve));
+      }
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 3000;
+      const mcpUrl = new URL(`http://127.0.0.1:${port}/api/v1/mcp`);
+
+      const client = new Client(
+        { name: 'headless-test-client', version: '1.0.0' },
+        { capabilities: {} },
+      );
+
+      const transport = new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: {
+          headers: {
+            Authorization: `Bearer ${userAToken}`,
+          },
+        },
+      });
+
+      await client.connect(transport);
+
+      // 1. List tools via official SDK
+      const toolsResult = await client.listTools();
+      expect(toolsResult.tools).toBeDefined();
+      expect(toolsResult.tools.length).toBeGreaterThanOrEqual(10);
+
+      const toolNames = toolsResult.tools.map((t) => t.name);
+      expect(toolNames).toContain('ule_list_block_types');
+      expect(toolNames).toContain('ule_create_private_course');
+
+      // 2. Call tool via official SDK
+      const callResult: any = await client.callTool({
+        name: 'ule_list_block_types',
+        arguments: {},
+      });
+
+      expect(callResult.content).toBeDefined();
+      expect(callResult.content.length).toBeGreaterThan(0);
+      const manifestList = JSON.parse(callResult.content[0].text);
+      expect(Array.isArray(manifestList)).toBe(true);
+      expect(manifestList.some((m: any) => m.blockTypeId === 'video')).toBe(true);
+
+      await client.close();
+    });
+  });
+
 });

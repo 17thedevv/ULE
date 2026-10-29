@@ -505,6 +505,9 @@ model McpMutationIdempotency {
   idempotencyKey String
   payloadHash    String
   resourceId     String?
+  ownerToken     String?
+  fenceToken     Int      @default(1)
+  leaseExpiresAt DateTime?
   status         String   @default("COMPLETED")
   response       Json?
   createdAt      DateTime @default(now())
@@ -514,5 +517,7 @@ model McpMutationIdempotency {
   @@index([userId])
   @@index([clientId])
   @@index([resourceId])
+  @@index([status, leaseExpiresAt])
+  @@index([fenceToken])
   @@map("mcp_mutation_idempotencies")
 }
