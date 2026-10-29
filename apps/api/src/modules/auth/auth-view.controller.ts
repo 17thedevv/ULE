@@ -127,29 +127,102 @@ export class AuthViewController {
       clientNameEl.textContent = clientId;
     }
 
+    const AUTHORIZED_SCOPES = ['course:read', 'course:write'];
     const scopeDescriptions = {
       'course:read': 'View private courses, drafts, Activity Block schemas, and immutable versions.',
       'course:write': 'Create private courses, add, edit, reorder, or delete draft blocks, and create immutable versions.',
     };
 
     const rawScope = params.get('scope') || 'course:read';
-    const requestedScopes = rawScope.split(' ').map(s => s.trim()).filter(Boolean);
+    const requestedScopes = rawScope.split(/\\s+/).map(s => s.trim()).filter(Boolean);
+
+    const validScopes = [];
+    const invalidScopes = [];
+    requestedScopes.forEach(sc => {
+      if (AUTHORIZED_SCOPES.includes(sc)) {
+        if (!validScopes.includes(sc)) {
+          validScopes.push(sc);
+        }
+      } else {
+        if (!invalidScopes.includes(sc)) {
+          invalidScopes.push(sc);
+        }
+      }
+    });
+
+    const allowBtn = document.getElementById('allowBtn');
+    const denyBtn = document.getElementById('denyBtn');
+    const errEl = document.getElementById('errorMsg');
 
     const scopesContainer = document.getElementById('scopesContainer');
     if (scopesContainer) {
-      scopesContainer.innerHTML = '';
-      requestedScopes.forEach(sc => {
+      // Safe DOM clear: textContent = '' (never innerHTML)
+      scopesContainer.textContent = '';
+
+      if (validScopes.length === 0 && invalidScopes.length === 0) {
+        const emptyItem = document.createElement('div');
+        emptyItem.className = 'scope-item';
+        emptyItem.textContent = 'No scopes requested.';
+        scopesContainer.appendChild(emptyItem);
+      }
+
+      validScopes.forEach(sc => {
         const item = document.createElement('div');
         item.className = 'scope-item';
-        const desc = scopeDescriptions[sc] || 'Authoring capability requested by client.';
-        item.innerHTML = '<span class="scope-badge" id="badge-' + sc + '">' + sc + '</span><div>' + desc + '</div>';
+
+        const badge = document.createElement('span');
+        badge.className = 'scope-badge';
+        badge.id = 'badge-' + sc;
+        badge.textContent = sc;
+
+        const desc = document.createElement('div');
+        desc.textContent = scopeDescriptions[sc] || 'Authoring capability requested by client.';
+
+        item.appendChild(badge);
+        item.appendChild(desc);
         scopesContainer.appendChild(item);
       });
+
+      if (invalidScopes.length > 0) {
+        const warningItem = document.createElement('div');
+        warningItem.className = 'scope-item invalid-scope-warning';
+        warningItem.style.color = '#f87171';
+        warningItem.style.fontSize = '0.75rem';
+        warningItem.textContent = 'Invalid or unauthorized scope requested: ' + invalidScopes.join(', ');
+        scopesContainer.appendChild(warningItem);
+
+        if (allowBtn) {
+          allowBtn.disabled = true;
+          allowBtn.style.opacity = '0.5';
+          allowBtn.style.cursor = 'not-allowed';
+        }
+
+        if (errEl) {
+          errEl.textContent = 'Cannot authorize request with unknown or invalid scopes.';
+          errEl.style.display = 'block';
+        }
+      }
     }
 
     async function submitConsent(accept) {
       const err = document.getElementById('errorMsg');
       if (err) err.style.display = 'none';
+
+      if (accept && invalidScopes.length > 0) {
+        if (err) {
+          err.textContent = 'Cannot authorize request with unknown or invalid scopes.';
+          err.style.display = 'block';
+        }
+        return;
+      }
+
+      if (accept && validScopes.length === 0) {
+        if (err) {
+          err.textContent = 'No valid scopes to authorize.';
+          err.style.display = 'block';
+        }
+        return;
+      }
 
       const oauthQuery = window.location.search.startsWith('?')
         ? window.location.search.substring(1)
@@ -159,7 +232,7 @@ export class AuthViewController {
         const payload = {
           accept,
           oauth_query: oauthQuery,
-          ...(accept ? { scope: requestedScopes.join(' ') } : {}),
+          ...(accept ? { scope: validScopes.join(' ') } : {}),
         };
 
         const res = await fetch('/api/v1/auth/oauth2/consent', {
@@ -182,11 +255,9 @@ export class AuthViewController {
       }
     }
 
-    const allowBtn = document.getElementById('allowBtn');
     if (allowBtn) {
       allowBtn.addEventListener('click', () => submitConsent(true));
     }
-    const denyBtn = document.getElementById('denyBtn');
     if (denyBtn) {
       denyBtn.addEventListener('click', () => submitConsent(false));
     }

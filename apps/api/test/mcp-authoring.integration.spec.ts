@@ -1157,19 +1157,32 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
   // GATE C: EXPLICIT AUDIT DURABILITY & STORAGE FAILURE BEHAVIOR
   // =========================================================================
 
+  function injectTransactionAuditFailure(errorMessage = 'Simulated database/disk failure on audit storage table') {
+    const origTransaction = prisma.$transaction.bind(prisma);
+    const spy = jest.spyOn(prisma, '$transaction').mockImplementation(async (arg: any, ...rest: any[]) => {
+      if (typeof arg === 'function') {
+        return origTransaction(async (tx: any) => {
+          tx.mcpAuditLog.create = async () => {
+            throw new Error(errorMessage);
+          };
+          return arg(tx);
+        }, ...rest);
+      }
+      return origTransaction(arg, ...rest);
+    });
+    return () => spy.mockRestore();
+  }
+
   describe('Gate C — Explicit Audit Durability & Storage Failure Behavior', () => {
     it('mutations require durable audit - audit storage failure rejects the tool call (Error 500)', async () => {
-      const origCreate = prisma.mcpAuditLog.create.bind(prisma.mcpAuditLog);
-      (prisma.mcpAuditLog as any).create = async () => {
-        throw new Error('Simulated database/disk failure on audit storage table');
-      };
+      const restore = injectTransactionAuditFailure('Simulated database/disk failure on audit storage table');
 
       const res = await callMcpTool(userAToken, 'ule_create_private_course', {
         title: 'Un-audited Course Should Fail',
         idempotencyKey: crypto.randomUUID(),
       });
 
-      (prisma.mcpAuditLog as any).create = origCreate;
+      restore();
 
       // Mutation call MUST NOT pretend success when mandatory audit logging fails
       expect(res.isError).toBe(true);
@@ -1468,10 +1481,7 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
     it('8. Injected mandatory audit persistence failure leaves no unaudited committed mutation', async () => {
       const coursesBefore = await prisma.course.count({ where: { ownerId: userAId } });
 
-      const origCreate = prisma.mcpAuditLog.create.bind(prisma.mcpAuditLog);
-      (prisma.mcpAuditLog as any).create = async () => {
-        throw new Error('Simulated database write error during audit commit');
-      };
+      const restore = injectTransactionAuditFailure('Simulated database write error during audit commit');
 
       const auditFailKey = `audit_fail_${Date.now()}`;
       const res = await callMcpTool(userAToken, 'ule_create_private_course', {
@@ -1479,7 +1489,7 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
         idempotencyKey: auditFailKey,
       });
 
-      (prisma.mcpAuditLog as any).create = origCreate;
+      restore();
 
       expect(res.isError).toBe(true);
       expect(res.content[0].text).toContain('[Error 500]');
@@ -1487,6 +1497,43 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
       // CRITICAL INVARIANT: Business mutation did NOT commit!
       const coursesAfter = await prisma.course.count({ where: { ownerId: userAId } });
       expect(coursesAfter).toBe(coursesBefore);
+
+      // Verify idempotency record was not left completed
+      const idemRecord = await prisma.mcpMutationIdempotency.findFirst({
+        where: { idempotencyKey: auditFailKey },
+      });
+      expect(idemRecord).toBeNull();
+
+      // Verify no SUCCESS audit record exists
+      const audits = await prisma.mcpAuditLog.findMany({
+        where: { idempotencyKey: auditFailKey, status: 'SUCCESS' },
+      });
+      expect(audits.length).toBe(0);
+    });
+
+    // 8b. Successful Course creation produces exactly one EXECUTE/SUCCESS record associated with its idempotency key
+    it('8b. Successful Course creation produces exactly one EXECUTE/SUCCESS record associated with its idempotency key', async () => {
+      const singleKey = `audit_single_${Date.now()}`;
+      const res = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: 'Single Audit Target Course',
+        idempotencyKey: singleKey,
+      });
+
+      expect(res.isError).toBeFalsy();
+      const data = JSON.parse(res.content[0].text);
+      expect(data.course?.id).toBeDefined();
+
+      // Exactly ONE audit log must exist for this idempotency key
+      const audits = await prisma.mcpAuditLog.findMany({
+        where: { idempotencyKey: singleKey },
+      });
+
+      expect(audits.length).toBe(1);
+      expect(audits[0].action).toBe('EXECUTE');
+      expect(audits[0].status).toBe('SUCCESS');
+      expect(audits[0].resourceType).toBe('COURSE');
+      expect(audits[0].resourceId).toBe(data.course.id);
+      expect(audits[0].userId).toBe(userAId);
     });
 
     // 9. Successful identical retries return the correct original result

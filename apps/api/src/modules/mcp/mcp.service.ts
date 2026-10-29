@@ -1385,18 +1385,6 @@ export class McpService implements OnModuleInit {
         },
       };
 
-      const testMock = (
-        this.prisma.mcpAuditLog as unknown as {
-          create?: ((args: unknown) => Promise<unknown>) & { isFault?: boolean };
-        }
-      ).create;
-      if (
-        typeof testMock === 'function' &&
-        (testMock.isFault || testMock.toString().includes('Simulated') || testMock.toString().includes('throw new Error'))
-      ) {
-        await testMock({ data: auditData });
-      }
-
       if (txClient) {
         await txClient.mcpAuditLog.create({ data: auditData });
       } else {

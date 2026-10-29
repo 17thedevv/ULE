@@ -1120,6 +1120,98 @@ describe('Phase 2: MCP Transport, Real OAuth 2.1 & Security Gates (Real PostgreS
       expect(parsedWrite.result.content[0].text).toContain('Forbidden');
       expect(parsedWrite.result.content[0].text).toContain('Insufficient scope');
     });
+
+    it('proves malformed and HTML-like query values are displayed safely and cannot inject DOM elements or execute script (DOM XSS regression)', async () => {
+      const maliciousClientId = '<script>window.evilClient=true</script>';
+      const maliciousScope = '<script>window.xssExecuted=true</script> <img src=x onerror="window.imgXss=true"> course:read';
+
+      const htmlRes = await request(app.getHttpServer())
+        .get(
+          `/auth/consent?client_id=${encodeURIComponent(
+            maliciousClientId,
+          )}&scope=${encodeURIComponent(maliciousScope)}`,
+        )
+        .expect(HttpStatus.OK);
+
+      // Verify the server response contains text/html
+      expect(htmlRes.headers['content-type']).toContain('text/html');
+
+      // Load into JSDOM with script execution enabled
+      const dom = new JSDOM(htmlRes.text, {
+        url: `http://localhost:3000/auth/consent?client_id=${encodeURIComponent(
+          maliciousClientId,
+        )}&scope=${encodeURIComponent(maliciousScope)}`,
+        runScripts: 'dangerously',
+      });
+
+      // 1. Proves NO injected scripts were executed
+      expect((dom.window as any).xssExecuted).toBeUndefined();
+      expect((dom.window as any).imgXss).toBeUndefined();
+      expect((dom.window as any).evilClient).toBeUndefined();
+
+      // 2. Proves NO injected HTML elements were created
+      expect(dom.window.document.querySelectorAll('img').length).toBe(0);
+      // Exactly 1 script tag in the page (the static application script)
+      expect(dom.window.document.querySelectorAll('script').length).toBe(1);
+
+      // 3. Client name element renders the raw string safely as textContent
+      const clientNameEl = dom.window.document.getElementById('clientName');
+      expect(clientNameEl?.textContent).toBe(maliciousClientId);
+      expect(clientNameEl?.children.length).toBe(0);
+
+      // 4. Authorized scope badge (course:read) exists
+      const readBadge = dom.window.document.getElementById('badge-course:read');
+      expect(readBadge).not.toBeNull();
+      expect(readBadge?.textContent).toBe('course:read');
+
+      // 5. No malicious or unauthorized badge elements exist
+      expect(dom.window.document.getElementById('badge-<script>window.xssExecuted=true</script>')).toBeNull();
+      expect(dom.window.document.getElementById('badge-course:write')).toBeNull();
+
+      // 6. Safe text-only warning is rendered and allow button is disabled
+      const warningEl = dom.window.document.querySelector('.invalid-scope-warning');
+      expect(warningEl).not.toBeNull();
+      expect(warningEl?.textContent).toContain('Invalid or unauthorized scope requested');
+
+      const allowBtn = dom.window.document.getElementById('allowBtn') as any;
+      expect(allowBtn.disabled).toBe(true);
+
+      const errEl = dom.window.document.getElementById('errorMsg');
+      expect(errEl?.style.display).toBe('block');
+      expect(errEl?.textContent).toContain('Cannot authorize request with unknown or invalid scopes');
+    });
+
+    it('ensures an invalid or elevated scope request cannot obtain an elevated OAuth grant', async () => {
+      const maliciousScope = 'course:read elevated:admin <script>evil()</script>';
+
+      const htmlRes = await request(app.getHttpServer())
+        .get(`/auth/consent?scope=${encodeURIComponent(maliciousScope)}`)
+        .expect(HttpStatus.OK);
+
+      const dom = new JSDOM(htmlRes.text, {
+        url: `http://localhost:3000/auth/consent?scope=${encodeURIComponent(maliciousScope)}`,
+        runScripts: 'dangerously',
+      });
+
+      let consentPosted = false;
+      dom.window.fetch = (async () => {
+        consentPosted = true;
+        return { ok: true, json: async () => ({}) };
+      }) as any;
+
+      // Allow button is disabled
+      const allowBtn = dom.window.document.getElementById('allowBtn') as any;
+      expect(allowBtn.disabled).toBe(true);
+
+      // Trigger submitConsent(true) directly
+      allowBtn.click();
+
+      // Fetch must NOT have been called because invalid scopes were present
+      expect(consentPosted).toBe(false);
+
+      const errEl = dom.window.document.getElementById('errorMsg');
+      expect(errEl?.textContent).toContain('Cannot authorize request with unknown or invalid scopes');
+    });
   });
 
 });
