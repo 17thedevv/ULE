@@ -26,6 +26,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { EvidenceIntakeService } from '../evidence/evidence-intake.service';
+import { QualificationService } from '../quests/qualification.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecuteRunCommandDto } from './dto/execute-run-command.dto';
 import { StartRunDto } from './dto/start-run.dto';
@@ -37,6 +38,7 @@ export class RuntimeService {
     private readonly prisma: PrismaService,
     private readonly registry: BlockTypeRegistry,
     @Optional() private readonly evidenceIntake?: EvidenceIntakeService,
+    @Optional() private readonly qualificationService?: QualificationService,
   ) {}
 
   /**
@@ -630,6 +632,21 @@ export class RuntimeService {
             );
           }
 
+          if (this.qualificationService) {
+            const isDeferred =
+              (pinnedBlock.config as { feedbackPolicy?: string })?.feedbackPolicy === 'DEFERRED';
+            await this.qualificationService.qualifyAttempt(
+              {
+                run,
+                attempt,
+                assessmentResult: assessment,
+                courseVersion: run.courseVersion,
+                isDeferredWithheld: isDeferred,
+              },
+              tx,
+            );
+          }
+
           return this.toRunDto(run, pinnedBlock, attempt, assessment, deliveredHint);
         }
 
@@ -677,6 +694,27 @@ export class RuntimeService {
           // Reconcile learner skill projections on completed run closure (releases deferred feedback)
           if (this.evidenceIntake) {
             await this.evidenceIntake.reconcileProjectionsForRun(updated, tx);
+          }
+
+          // Qualify run completion for course quests (both evaluatable and non-evaluatable)
+          if (this.qualificationService) {
+            await this.qualificationService.qualifyRunCompletion(
+              {
+                run: updated,
+                courseVersion: run.courseVersion,
+              },
+              tx,
+            );
+
+            const isDeferred =
+              (pinnedBlock.config as { feedbackPolicy?: string })?.feedbackPolicy === 'DEFERRED';
+            if (isDeferred) {
+              await this.qualificationService.reconcileDeferredRun(
+                updated,
+                run.courseVersion,
+                tx,
+              );
+            }
           }
 
           const latestAttempt = await tx.aBAttempt.findFirst({

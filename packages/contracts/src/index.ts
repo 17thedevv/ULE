@@ -5,5 +5,6 @@ export * from './course.js';
 export * from './abp.js';
 export * from './mcp.js';
 export * from './evidence.js';
+export * from './quests.js';
 
 export const API_V1_PREFIX = 'api/v1';

@@ -53,6 +53,11 @@ model User {
   learningEvidence    LearningEvidence[]       @relation("UserLearningEvidence")
   skillProjections    LearnerSkillProjection[] @relation("UserSkillProjections")
 
+  // Phase 4 relations
+  enrollments     CourseEnrollment[] @relation("UserEnrollments")
+  questInstances  QuestInstance[]    @relation("UserQuestInstances")
+  qualifyingFacts QualifyingFact[]   @relation("UserQualifyingFacts")
+
   @@map("users")
 }
 
@@ -149,6 +154,7 @@ model CourseDraft {
 
   blocks        DraftBlockInstance[]
   skillMappings DraftSkillMapping[]
+  quests        DraftCourseQuest[]
 
   @@map("course_drafts")
 }
@@ -174,6 +180,9 @@ model CourseVersion {
   accessGrants     CourseAccessGrant[]
   learningEvidence LearningEvidence[]
   skillProjections LearnerSkillProjection[]
+  enrollments      CourseEnrollment[]
+  questInstances   QuestInstance[]
+  qualifyingFacts  QualifyingFact[]
 
   @@unique([courseId, versionNumber])
   @@index([courseId])
@@ -243,6 +252,7 @@ model ABRun {
   attempts          ABAttempt[]
   events            ABEvent[]
   assessmentResults AssessmentResult[]
+  qualifyingFacts   QualifyingFact[]
   learningEvidence  LearningEvidence[]
 
   @@index([userId])
@@ -263,6 +273,7 @@ model ABAttempt {
   createdAt         DateTime          @default(now())
 
   assessmentResult AssessmentResult?
+  qualifyingFacts  QualifyingFact[]
   learningEvidence LearningEvidence[]
 
   @@unique([runId, attemptNumber])
@@ -286,6 +297,7 @@ model AssessmentResult {
   createdAt   DateTime         @default(now())
 
   corrections      AssessmentCorrection[]
+  qualifyingFacts  QualifyingFact[]
   learningEvidence LearningEvidence[]
 
   @@index([runId])
@@ -728,4 +740,179 @@ model LearnerSkillProjection {
   @@unique([courseVersionId, userId, skillId])
   @@index([userId, courseVersionId])
   @@map("learner_skill_projections")
+}
+
+// ----------------------------------------------------
+// Phase 4: Course Gamification, Quest Engine & Journey
+// ----------------------------------------------------
+
+enum EnrollmentStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum QuestStatus {
+  ACTIVE
+  COMPLETED
+  EXPIRED
+  REVOKED
+}
+
+enum QuestScope {
+  COURSE
+  GLOBAL
+}
+
+enum FactType {
+  ACTIVITY_COMPLETED
+  INDEPENDENT_PRACTICE_CONFIRMED
+}
+
+enum FactState {
+  QUALIFIED
+  INELIGIBLE
+  SUPERSEDED
+  REVOKED
+}
+
+model CourseEnrollment {
+  id              String           @id @default(uuid())
+  userId          String
+  user            User             @relation("UserEnrollments", fields: [userId], references: [id], onDelete: Cascade)
+  courseVersionId String
+  courseVersion   CourseVersion    @relation(fields: [courseVersionId], references: [id], onDelete: Cascade)
+  status          EnrollmentStatus @default(ACTIVE)
+  enrolledAt      DateTime         @default(now())
+  lastActivityAt  DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  questInstances QuestInstance[]
+
+  @@unique([userId, courseVersionId])
+  @@index([userId])
+  @@index([courseVersionId])
+  @@map("course_enrollments")
+}
+
+model DraftCourseQuest {
+  id           String      @id @default(uuid())
+  draftId      String
+  draft        CourseDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  questKey     String
+  title        String
+  description  String?
+  templateId   String
+  config       Json
+  rewardPolicy Json?
+  revision     Int         @default(1)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([draftId, questKey])
+  @@index([draftId])
+  @@map("draft_course_quests")
+}
+
+model QualifyingFact {
+  id                 String            @id @default(uuid())
+  sourceKey          String            @unique
+  userId             String
+  user               User              @relation("UserQualifyingFacts", fields: [userId], references: [id], onDelete: Cascade)
+  courseVersionId    String
+  courseVersion      CourseVersion     @relation(fields: [courseVersionId], references: [id], onDelete: Cascade)
+  factType           FactType
+  blockInstanceId    String
+  skillId            String?
+  skillCode          String?
+  runId              String
+  run                ABRun             @relation(fields: [runId], references: [id], onDelete: Cascade)
+  attemptId          String?
+  attempt            ABAttempt?        @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  assessmentResultId String?
+  assessmentResult   AssessmentResult? @relation(fields: [assessmentResultId], references: [id], onDelete: SetNull)
+  evidenceId         String?
+  policyVersion      String            @default("1.0.0")
+  state              FactState         @default(QUALIFIED)
+  metadata           Json?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  consumptions QuestFactConsumption[]
+
+  @@index([userId, courseVersionId])
+  @@index([runId])
+  @@map("qualifying_facts")
+}
+
+model QuestInstance {
+  id                 String            @id @default(uuid())
+  userId             String
+  user               User              @relation("UserQuestInstances", fields: [userId], references: [id], onDelete: Cascade)
+  courseEnrollmentId String?
+  courseEnrollment   CourseEnrollment? @relation(fields: [courseEnrollmentId], references: [id], onDelete: Cascade)
+  courseVersionId    String?
+  courseVersion      CourseVersion?    @relation(fields: [courseVersionId], references: [id], onDelete: Cascade)
+  questKey           String
+  templateId         String
+  title              String
+  description        String?
+  scope              QuestScope        @default(COURSE)
+  definitionRevision Int               @default(1)
+  status             QuestStatus       @default(ACTIVE)
+  occurrence         Int               @default(1)
+  config             Json?
+  rewardPolicy       Json?
+  completedAt        DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  objectives   QuestObjectiveProgress[]
+  consumptions QuestFactConsumption[]
+
+  @@unique([courseEnrollmentId, questKey, occurrence])
+  @@index([userId, scope, status])
+  @@index([courseVersionId])
+  @@index([courseEnrollmentId])
+  @@map("quest_instances")
+}
+
+model QuestObjectiveProgress {
+  id              String        @id @default(uuid())
+  questInstanceId String
+  questInstance   QuestInstance @relation(fields: [questInstanceId], references: [id], onDelete: Cascade)
+  objectiveKey    String
+  currentCount    Int           @default(0)
+  targetCount     Int
+  isCompleted     Boolean       @default(false)
+  completedAt     DateTime?
+  lastEvaluatedAt DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  consumptions QuestFactConsumption[]
+
+  @@unique([questInstanceId, objectiveKey])
+  @@index([questInstanceId])
+  @@map("quest_objective_progress")
+}
+
+model QuestFactConsumption {
+  id                  String                 @id @default(uuid())
+  questInstanceId     String
+  questInstance       QuestInstance          @relation(fields: [questInstanceId], references: [id], onDelete: Cascade)
+  objectiveProgressId String
+  objectiveProgress   QuestObjectiveProgress @relation(fields: [objectiveProgressId], references: [id], onDelete: Cascade)
+  factId              String
+  fact                QualifyingFact         @relation(fields: [factId], references: [id], onDelete: Cascade)
+  factSourceKey       String
+  consumedAt          DateTime               @default(now())
+  status              String                 @default("CONSUMED")
+
+  @@unique([questInstanceId, objectiveProgressId, factSourceKey])
+  @@index([questInstanceId])
+  @@index([factId])
+  @@map("quest_fact_consumptions")
 }
