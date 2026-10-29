@@ -182,5 +182,22 @@
      - Explainable outputs: Plain-language rationale, explicit uncertainty, and missing evidence statements.
      - Minimal action proposals (`LiiActionProposalDto`): `CONTINUE`, `VERIFY` (only if `READY_TO_VERIFY` and verification block present), or fallback.
      - Exclusion of black-box ML (BKT/DKT/CD-CAT), Redis, Kafka, or external AI orchestration.
-- **Consequences**: Complete Phase 3 vertical slice verified by 19 real PostgreSQL automated integration tests (`test/learning-evidence.integration.spec.ts`, 100% pass) and end-to-end frontend studio (`apps/web/src/components/LearnerEvidenceStudio.tsx`). Zero regressions across Phase 1A, Phase 1B, and Phase 2 test suites.
+  7. **Trusted Evidence Integrity Corrections (PR #5 Review Gates)**:
+     - **Gate 1 — Deferred Feedback Leak Prevention**:
+       - Under `DEFERRED` runs that are not `CLOSED COMPLETED`, `GET /evidence` sanitizes `classification` to `PENDING_EVALUATION`, `status` to `PENDING_ASSESSMENT`, `assessmentStatus` to `PENDING`, and blanks `isCorrect`, `score`, `evaluatorId`, `evaluatorVersion`, `assessmentResultId`, and `exclusionReason`.
+       - Learner skill projection calculation withholds unreleased deferred evidence, returning a safe explicitly pending projection (`state: 'INSUFFICIENT_EVIDENCE'`) with plain-language explanations without revealing correctness.
+       - Abandoned runs never release deferred correctness through any endpoint.
+       - Projections are reconciled authoritatively on `RuntimeService.executeCommand` when `FINISH` transitions the run to `CLOSED COMPLETED`.
+     - **Gate 2 — Cross-Run Same-Item Repetition Detection**:
+       - Stable assessment item identity pinned to CourseVersion: `(courseVersionId, blockInstanceId, itemKey)`.
+       - Repetitions are detected across multiple runs belonging to the same learner and CourseVersion: repeated attempts of the same MCQ in separate runs are classified as `SAME_ITEM_REPETITION` and cannot produce multiple qualifying independent observations or cause `READY_TO_VERIFY`.
+       - Projection engine tracks chronological distinct item identities (`seenItems = new Set<string>()`), ensuring duplicate item observations are strictly categorized as repetitions (`repeatedCount++`) and never increment `independentCount`, even under racing concurrent submissions or idempotent reprocessing.
+     - **Gate 3 — Criterion-Level Skill Mapping Enforcement**:
+       - Multiple Choice evaluator outputs aggregate scores without criterion-specific breakdown.
+       - When an assessment item is mapped to multiple skills without criterion-specific evaluator output (`assessmentResult.feedback.criteriaResults`), all ambiguous mappings are excluded (`status: 'EXCLUDED'`, `classification: 'EXCLUDED'`, `exclusionReason: 'AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION'`) and grant zero independent skill credit. Single-item, single-skill Multiple Choice flow remains fully valid.
+     - **Gate 4 — Verification Proposal Hardening**:
+       - Title-based verification detection (`b.title.includes('verification')`) is completely eliminated.
+       - `VERIFY` action proposals are advertised only for an explicitly declared (`config.isVerification === true`), schema-validated, evaluatable (non-video), skill-mapped block present in the pinned `CourseVersion.snapshot`.
+       - If no eligible verification block exists, the projection returns `category: 'CONTINUE'` with `isAvailable: false` and an explicit limitation explanation.
+- **Consequences**: Complete Phase 3 vertical slice verified by 27 real PostgreSQL automated integration tests (`test/learning-evidence.integration.spec.ts`, 100% pass) and 175 total integration tests across the monorepo. Zero regressions across Phase 1A, Phase 1B, Phase 2, and Phase 3 suites.
 

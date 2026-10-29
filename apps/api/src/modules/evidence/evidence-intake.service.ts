@@ -68,14 +68,30 @@ export class EvidenceIntakeService {
       (m) => m.blockInstanceId === run.blockInstanceId,
     );
 
-    // Repetition check: has there been a prior attempt on this run or same item?
-    const isSameItemRepetition = attempt.attemptNumber > 1;
-    const repetitionCount = attempt.attemptNumber;
-
     const results: LearningEvidenceDto[] = [];
     const affectedSkillIds: string[] = [];
 
     if (mappings.length === 0) {
+      // Repetition check for unmapped attempt
+      const priorUnmapped = await tx.learningEvidence.findMany({
+        where: {
+          userId: run.userId,
+          courseVersionId: courseVersion.id,
+          blockInstanceId: run.blockInstanceId,
+          itemKey: 'default',
+          attemptId: { not: attempt.id },
+        },
+        select: { attemptId: true },
+      });
+      const distinctPriorAttemptIds = new Set(
+        priorUnmapped.map((e) => e.attemptId).filter(Boolean),
+      );
+      const isCrossRunRepetition = distinctPriorAttemptIds.size > 0;
+      const isSameItemRepetition = attempt.attemptNumber > 1 || isCrossRunRepetition;
+      const repetitionCount = isCrossRunRepetition
+        ? distinctPriorAttemptIds.size + 1
+        : attempt.attemptNumber;
+
       // Missing or unassigned skill mapping -> record excluded evidence with explicit reason
       const sourceKey = `attempt:${attempt.id}:unmapped:default`;
       const existing = await tx.learningEvidence.findUnique({
@@ -137,12 +153,53 @@ export class EvidenceIntakeService {
         continue;
       }
 
-      // Determine evidence classification
+      // Gate 2: Repetition check across ALL runs belonging to this learner and CourseVersion
+      const priorEvidence = await tx.learningEvidence.findMany({
+        where: {
+          userId: run.userId,
+          courseVersionId: courseVersion.id,
+          blockInstanceId: run.blockInstanceId,
+          itemKey,
+          attemptId: { not: attempt.id },
+        },
+        select: { attemptId: true },
+      });
+
+      const distinctPriorAttemptIds = new Set(
+        priorEvidence.map((e) => e.attemptId).filter(Boolean),
+      );
+      const isCrossRunRepetition = distinctPriorAttemptIds.size > 0;
+      const isSameItemRepetition = attempt.attemptNumber > 1 || isCrossRunRepetition;
+      const repetitionCount = isCrossRunRepetition
+        ? distinctPriorAttemptIds.size + 1
+        : attempt.attemptNumber;
+
+      // Gate 3: Criterion-level skill mapping validation
+      // Check if evaluator provided specific criterion outcome for this criterion
+      const feedbackObj = (assessmentResult?.feedback as Record<string, unknown>) ?? {};
+      const criteriaResults = (feedbackObj.criteriaResults ?? feedbackObj.criteria) as
+        | Record<string, { isCorrect?: boolean; score?: number }>
+        | undefined;
+      const criterionResult = criteriaResults?.[mapping.criterion];
+
+      // Multiple Choice evaluator does not evaluate individual criteria.
+      // An ambiguous multi-skill mapping on a single-criterion evaluator cannot silently establish evidence for all.
+      const isMultiSkillWithoutCriterion = mappings.length > 1 && !criterionResult;
+
+      // Determine evidence classification and status
       let classification: EvidenceClassification = 'EXCLUDED';
       let status: EvidenceStatus = 'ACCEPTED';
       let exclusionReason: string | null = null;
+      let isCorrect: boolean | null = assessmentResult?.isCorrect ?? null;
+      let score: number | null = assessmentResult?.score ?? null;
 
-      if (isSameItemRepetition) {
+      if (isMultiSkillWithoutCriterion) {
+        classification = 'EXCLUDED';
+        status = 'EXCLUDED';
+        exclusionReason = 'AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION';
+        isCorrect = null;
+        score = null;
+      } else if (isSameItemRepetition) {
         classification = 'SAME_ITEM_REPETITION';
         status = 'ACCEPTED';
         exclusionReason = 'SAME_ITEM_REPETITION_NOT_INDEPENDENT';
@@ -150,7 +207,12 @@ export class EvidenceIntakeService {
         classification = 'PENDING_EVALUATION';
         status = 'PENDING_ASSESSMENT';
       } else if (assessmentResult.status === 'EVALUATED') {
-        if (assessmentResult.isCorrect === true) {
+        if (criterionResult) {
+          isCorrect = criterionResult.isCorrect ?? null;
+          score = criterionResult.score ?? null;
+        }
+
+        if (isCorrect === true) {
           const supportCtx = (attempt.supportContext as Record<string, unknown>) || {};
           const isServerObservedHint =
             supportCtx.provenance === 'SERVER_OBSERVED' ||
@@ -195,8 +257,8 @@ export class EvidenceIntakeService {
           assisted: attempt.assisted,
           supportProvenance: (attempt.supportContext as Record<string, unknown>)?.provenance as string ?? null,
           supportContext: attempt.supportContext as Prisma.InputJsonValue ?? undefined,
-          isCorrect: assessmentResult?.isCorrect ?? null,
-          score: assessmentResult?.score ?? null,
+          isCorrect,
+          score,
           classification,
           status,
           exclusionReason,
@@ -279,6 +341,41 @@ export class EvidenceIntakeService {
     });
 
     return this.toEvidenceDto(evidence);
+  }
+
+  /**
+   * Reconciles all skill state projections for a finished run.
+   * Invoked when a run transitions to CLOSED COMPLETED (releasing deferred feedback).
+   */
+  async reconcileProjectionsForRun(
+    run: ABRun,
+    txClient?: Prisma.TransactionClient,
+  ): Promise<void> {
+    const tx = txClient ?? this.prisma;
+    const version = await tx.courseVersion.findUnique({
+      where: { id: run.courseVersionId },
+    });
+    if (!version) return;
+
+    const snapshot = (version.snapshot as {
+      skills?: Array<{ id: string }>;
+      skillMappings?: Array<{ blockInstanceId: string; skillId: string }>;
+    }) || {};
+
+    const blockSkillIds = (snapshot.skillMappings ?? [])
+      .filter((m) => m.blockInstanceId === run.blockInstanceId)
+      .map((m) => m.skillId);
+
+    const distinctSkillIds = Array.from(new Set(blockSkillIds));
+
+    for (const skillId of distinctSkillIds) {
+      await this.projectionService.recomputeProjection(
+        run.userId,
+        run.courseVersionId,
+        skillId,
+        tx,
+      );
+    }
   }
 
   private toEvidenceDto(evidence: LearningEvidence): LearningEvidenceDto {

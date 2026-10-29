@@ -35,6 +35,7 @@ export class LearnerSkillProjectionService {
     const snapshot = (version?.snapshot as {
       blocks?: Array<{
         id: string;
+        blockTypeId: string;
         title: string;
         config?: Record<string, unknown>;
       }>;
@@ -44,6 +45,10 @@ export class LearnerSkillProjectionService {
         name: string;
         description?: string;
       }>;
+      skillMappings?: Array<{
+        blockInstanceId: string;
+        skillId: string;
+      }>;
     }) || {};
 
     const skillInfo = (snapshot.skills ?? []).find((s) => s.id === skillId);
@@ -51,32 +56,65 @@ export class LearnerSkillProjectionService {
     const skillName = skillInfo?.name ?? skillCode;
     const learningObjective = skillInfo?.description ?? null;
 
-    // Load all evidence records for this learner and skill
+    // Load all evidence records for this learner and skill with run context
     const evidenceList = await tx.learningEvidence.findMany({
       where: {
         userId,
         courseVersionId,
         skillId,
       },
+      include: { run: true },
       orderBy: { createdAt: 'asc' },
     });
 
-    const acceptedEvidence = evidenceList.filter((e) => e.status === 'ACCEPTED');
+    const blocks = snapshot.blocks ?? [];
+    let hasUnreleasedDeferred = false;
+
+    // Gate 1: Withhold unreleased deferred evidence from learner-facing skill inference
+    const acceptedEvidence: typeof evidenceList = [];
+
+    for (const e of evidenceList) {
+      if (e.status !== 'ACCEPTED') continue;
+
+      const blockDef = blocks.find((b) => b.id === e.blockInstanceId);
+      const isDeferredPolicy = blockDef?.config?.feedbackPolicy === 'DEFERRED';
+      const isRunCompleted =
+        e.run.status === 'CLOSED' && e.run.closeReason === 'COMPLETED';
+      const isUnreleasedDeferred = isDeferredPolicy && !isRunCompleted;
+
+      if (isUnreleasedDeferred) {
+        hasUnreleasedDeferred = true;
+        continue;
+      }
+
+      acceptedEvidence.push(e);
+    }
 
     let independentCount = 0;
     let assistedCount = 0;
     let incorrectCount = 0;
     let repeatedCount = 0;
 
+    // Gate 2: Stable assessment item identity (blockInstanceId + itemKey).
+    // Ensure that multiple submissions on the same item (across single or multiple runs)
+    // never inflate independentCount.
+    const seenItems = new Set<string>();
+
     for (const e of acceptedEvidence) {
-      if (e.isSameItemRepetition) {
+      const itemIdentity = `${e.blockInstanceId}:${e.itemKey ?? 'default'}`;
+      const isRepetition = e.isSameItemRepetition || seenItems.has(itemIdentity);
+
+      if (isRepetition) {
         repeatedCount++;
-      } else if (e.classification === 'INDEPENDENT_CORRECT') {
-        independentCount++;
-      } else if (e.classification === 'ASSISTED_CORRECT') {
-        assistedCount++;
-      } else if (e.classification === 'INCORRECT') {
-        incorrectCount++;
+      } else {
+        seenItems.add(itemIdentity);
+        if (e.classification === 'INDEPENDENT_CORRECT') {
+          independentCount++;
+        } else if (e.classification === 'ASSISTED_CORRECT') {
+          assistedCount++;
+        } else if (e.classification === 'INCORRECT') {
+          incorrectCount++;
+        }
       }
     }
 
@@ -142,13 +180,24 @@ export class LearnerSkillProjectionService {
       );
     }
 
-    // Determine minimal LII action proposal
-    const blocks = snapshot.blocks ?? [];
-    const verificationBlock = blocks.find(
-      (b) =>
-        b.config?.isVerification === true ||
-        b.title.toLowerCase().includes('verification'),
-    );
+    if (hasUnreleasedDeferred) {
+      reasons.push(
+        'Assessment evaluation results are deferred pending completion of the active assessment run.',
+      );
+      limitations.push(
+        'Assessment feedback is deferred under run policy; evaluation will be integrated upon completed run closure.',
+      );
+    }
+
+    // Gate 4: Advertise VERIFY only for an explicitly declared, schema-validated, skill-appropriate verification capability.
+    // Video blocks or title matches can NEVER qualify as verification assessments.
+    const verificationBlock = blocks.find((b) => {
+      if (b.blockTypeId === 'video') return false;
+      if (b.config?.isVerification !== true) return false;
+      return (snapshot.skillMappings ?? []).some(
+        (m) => m.blockInstanceId === b.id && m.skillId === skillId,
+      );
+    });
 
     let proposedAction: LiiActionProposalDto;
 
@@ -172,11 +221,11 @@ export class LearnerSkillProjectionService {
           category: 'CONTINUE',
           targetSkillId: skillId,
           reason:
-            'Learner demonstrates readiness, but no verification activity is configured in this CourseVersion.',
+            'Learner demonstrates readiness, but no schema-validated verification assessment is configured for this skill in the CourseVersion.',
           sourceEvidenceIds: evidenceIds,
           policyVersion: '1.0.0',
           validityConditions: [
-            'Verification assessment block must be authored and published in CourseVersion snapshot.',
+            'A skill-appropriate evaluatable verification block must be authored and published in the CourseVersion snapshot.',
           ],
           suggestedBlockInstanceId: null,
           isAvailable: false,
@@ -214,11 +263,16 @@ export class LearnerSkillProjectionService {
       proposedAction = {
         category: 'CONTINUE',
         targetSkillId: skillId,
-        reason:
-          'Attempt practice activities associated with this skill to generate initial learning evidence.',
+        reason: hasUnreleasedDeferred
+          ? 'Complete active course activities to release deferred assessment results.'
+          : 'Attempt practice activities associated with this skill to generate initial learning evidence.',
         sourceEvidenceIds: [],
         policyVersion: '1.0.0',
-        validityConditions: ['Must complete evaluatable activity blocks.'],
+        validityConditions: [
+          hasUnreleasedDeferred
+            ? 'Finish active assessment runs.'
+            : 'Must complete evaluatable activity blocks.',
+        ],
         suggestedBlockInstanceId: null,
         isAvailable: true,
       };

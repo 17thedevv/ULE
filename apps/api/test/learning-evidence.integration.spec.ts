@@ -43,18 +43,22 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
   let otherCookie: string;
 
   let learnerId: string;
+  let otherId: string;
 
   let courseAId: string;
   let courseBId: string;
   let skill1Id: string;
+  let skill2Id: string;
   let courseBSkillId: string;
 
   let videoBlockId: string;
   let mcq1BlockId: string;
+  let mcqAssistedBlockId: string;
   let mcq2BlockId: string;
   let mcqDeferredBlockId: string;
   let unmappedMcqBlockId: string;
   let verificationBlockId: string;
+  let multiSkillMcqBlockId: string;
 
   let courseAVersion1Id: string;
   let grantId: string;
@@ -118,7 +122,7 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
     const meOther = await request(app.getHttpServer())
       .get('/api/v1/me')
       .set('Cookie', otherCookie);
-    expect(meOther.body.user.id).toBeDefined();
+    otherId = meOther.body.user.id;
   });
 
   afterAll(async () => {
@@ -161,7 +165,7 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         })
         .expect(HttpStatus.CREATED);
 
-      expect(skill2Res.body.id).toBeDefined();
+      skill2Id = skill2Res.body.id;
 
       // Duplicate skillCode in same course is rejected (409 Conflict)
       await request(app.getHttpServer())
@@ -227,7 +231,31 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         .expect(HttpStatus.CREATED);
       mcq1BlockId = mcq1Res.body.id;
 
-      // 3. Add MCQ Block 2 (practice 2, draft revision 3 -> 4)
+      // 3. Add MCQ Assisted Block (practice with hint, draft revision 3 -> 4)
+      const mcqAssistedRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'multiple-choice',
+          typeVersion: '1.0.0',
+          title: 'Quiz Hint: Assisted Solve Item',
+          config: {
+            question: 'Solve for z: 3z + 9 = 15',
+            options: [
+              { id: 'opt_h1', text: 'z = 2' },
+              { id: 'opt_h2', text: 'z = 3' },
+            ],
+            answerKey: { correctOptionId: 'opt_h1' },
+            allowHints: true,
+            hintText: 'Subtract 9 from both sides first, then divide by 3.',
+            feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
+          },
+          expectedRevision: 3,
+        })
+        .expect(HttpStatus.CREATED);
+      mcqAssistedBlockId = mcqAssistedRes.body.id;
+
+      // 4. Add MCQ Block 2 (practice 2, draft revision 4 -> 5)
       const mcq2Res = await request(app.getHttpServer())
         .post(`/api/v1/courses/${courseAId}/draft/blocks`)
         .set('Cookie', ownerCookie)
@@ -245,12 +273,12 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
             allowHints: false,
             feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
           },
-          expectedRevision: 3,
+          expectedRevision: 4,
         })
         .expect(HttpStatus.CREATED);
       mcq2BlockId = mcq2Res.body.id;
 
-      // 4. Add MCQ Deferred Feedback Block (draft revision 4 -> 5)
+      // 5. Add MCQ Deferred Feedback Block (draft revision 5 -> 6)
       const mcqDefRes = await request(app.getHttpServer())
         .post(`/api/v1/courses/${courseAId}/draft/blocks`)
         .set('Cookie', ownerCookie)
@@ -267,12 +295,12 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
             answerKey: { correctOptionId: 'opt_x' },
             feedbackPolicy: 'DEFERRED',
           },
-          expectedRevision: 4,
+          expectedRevision: 5,
         })
         .expect(HttpStatus.CREATED);
       mcqDeferredBlockId = mcqDefRes.body.id;
 
-      // 5. Add Unmapped MCQ Block (draft revision 5 -> 6)
+      // 6. Add Unmapped MCQ Block (draft revision 6 -> 7)
       const unmappedRes = await request(app.getHttpServer())
         .post(`/api/v1/courses/${courseAId}/draft/blocks`)
         .set('Cookie', ownerCookie)
@@ -288,12 +316,12 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
             ],
             answerKey: { correctOptionId: 'o1' },
           },
-          expectedRevision: 5,
+          expectedRevision: 6,
         })
         .expect(HttpStatus.CREATED);
       unmappedMcqBlockId = unmappedRes.body.id;
 
-      // 6. Add Verification Block (draft revision 6 -> 7)
+      // 7. Add Verification Block (draft revision 7 -> 8)
       const verifRes = await request(app.getHttpServer())
         .post(`/api/v1/courses/${courseAId}/draft/blocks`)
         .set('Cookie', ownerCookie)
@@ -310,12 +338,50 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
             answerKey: { correctOptionId: 'v1' },
             isVerification: true,
           },
-          expectedRevision: 6,
+          expectedRevision: 7,
         })
         .expect(HttpStatus.CREATED);
       verificationBlockId = verifRes.body.id;
 
-      // Map mcq1 to skill1 (draft revision 7 -> 8)
+      // 8. Add Multi-Skill MCQ Block (draft revision 8 -> 9)
+      const multiSkillRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'multiple-choice',
+          typeVersion: '1.0.0',
+          title: 'Quiz Multi-Skill: Graph & Solve',
+          config: {
+            question: 'Solve and graph line: x + y = 5',
+            options: [
+              { id: 'ms_1', text: '(0,5) and (5,0)' },
+              { id: 'ms_2', text: '(0,0)' },
+            ],
+            answerKey: { correctOptionId: 'ms_1' },
+          },
+          expectedRevision: 8,
+        })
+        .expect(HttpStatus.CREATED);
+      multiSkillMcqBlockId = multiSkillRes.body.id;
+
+      // 9. Add Video Block titled "Verification Exam: Video Lecture" (draft revision 9 -> 10)
+      const videoVerifRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'video',
+          typeVersion: '1.0.0',
+          title: 'Verification Exam: Video Lecture',
+          config: {
+            url: 'https://cdn.ule.internal/verif_video.mp4',
+            isVerification: true,
+          },
+          expectedRevision: 9,
+        })
+        .expect(HttpStatus.CREATED);
+      expect(videoVerifRes.body.id).toBeDefined();
+
+      // Map mcq1 to skill1 (draft revision 10 -> 11)
       await request(app.getHttpServer())
         .post(`/api/v1/courses/${courseAId}/draft/skill-mappings`)
         .set('Cookie', ownerCookie)
@@ -324,11 +390,24 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
           skillId: skill1Id,
           criterion: 'CORRECT_RESPONSE',
           weight: 1.0,
-          expectedRevision: 7,
+          expectedRevision: 10,
         })
         .expect(HttpStatus.OK);
 
-      // Map mcq2 to skill1 (draft revision 8 -> 9)
+      // Map mcqAssisted to skill1 (draft revision 11 -> 12)
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/draft/skill-mappings`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockInstanceId: mcqAssistedBlockId,
+          skillId: skill1Id,
+          criterion: 'CORRECT_RESPONSE',
+          weight: 1.0,
+          expectedRevision: 11,
+        })
+        .expect(HttpStatus.OK);
+
+      // Map mcq2 to skill1 (draft revision 12 -> 13)
       await request(app.getHttpServer())
         .post(`/api/v1/courses/${courseAId}/draft/skill-mappings`)
         .set('Cookie', ownerCookie)
@@ -337,18 +416,18 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
           skillId: skill1Id,
           criterion: 'CORRECT_RESPONSE',
           weight: 1.0,
-          expectedRevision: 8,
+          expectedRevision: 12,
         })
         .expect(HttpStatus.OK);
 
-      // Map deferred block to skill1 (draft revision 9 -> 10)
+      // Map deferred block to skill1 (draft revision 13 -> 14)
       await request(app.getHttpServer())
         .post(`/api/v1/courses/${courseAId}/draft/skill-mappings`)
         .set('Cookie', ownerCookie)
         .send({
           blockInstanceId: mcqDeferredBlockId,
           skillId: skill1Id,
-          expectedRevision: 9,
+          expectedRevision: 13,
         })
         .expect(HttpStatus.OK);
 
@@ -363,14 +442,36 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         })
         .expect(HttpStatus.CONFLICT);
 
-      // Map verification block to skill1 (draft revision 10 -> 11)
+      // Map verification block to skill1 (draft revision 14 -> 15)
       await request(app.getHttpServer())
         .post(`/api/v1/courses/${courseAId}/draft/skill-mappings`)
         .set('Cookie', ownerCookie)
         .send({
           blockInstanceId: verificationBlockId,
           skillId: skill1Id,
-          expectedRevision: 10,
+          expectedRevision: 14,
+        })
+        .expect(HttpStatus.OK);
+
+      // Map multiSkill block to skill1 (draft revision 15 -> 16)
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/draft/skill-mappings`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockInstanceId: multiSkillMcqBlockId,
+          skillId: skill1Id,
+          expectedRevision: 15,
+        })
+        .expect(HttpStatus.OK);
+
+      // Map multiSkill block to skill2 (draft revision 16 -> 17)
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/draft/skill-mappings`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockInstanceId: multiSkillMcqBlockId,
+          skillId: skill2Id,
+          expectedRevision: 16,
         })
         .expect(HttpStatus.OK);
     });
@@ -385,9 +486,9 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
       expect(versionRes.body.versionNumber).toBe(1);
 
       const snapshot = versionRes.body.snapshot;
-      expect(snapshot.blocks).toHaveLength(6);
+      expect(snapshot.blocks).toHaveLength(9);
       expect(snapshot.skills).toHaveLength(2);
-      expect(snapshot.skillMappings).toHaveLength(4);
+      expect(snapshot.skillMappings).toHaveLength(7);
     });
   });
 
@@ -674,8 +775,8 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         .set('Cookie', learnerCookie)
         .send({
           courseVersionId: courseAVersion1Id,
-          blockInstanceId: mcq1BlockId,
-          idempotencyKey: `run_bob_mcq1_assisted_${Date.now()}`,
+          blockInstanceId: mcqAssistedBlockId,
+          idempotencyKey: `run_bob_mcq_assisted_${Date.now()}`,
         })
         .expect(HttpStatus.CREATED);
 
@@ -695,8 +796,8 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         .set('Cookie', learnerCookie)
         .send({
           command: 'SUBMIT_RESPONSE',
-          payload: { selectedOptionId: 'opt_a', usedHint: false },
-          idempotencyKey: `submit_mcq1_assisted_${Date.now()}`,
+          payload: { selectedOptionId: 'opt_h1', usedHint: false },
+          idempotencyKey: `submit_mcq_assisted_${Date.now()}`,
         })
         .expect(HttpStatus.OK);
 
@@ -722,7 +823,7 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         })
         .expect(HttpStatus.CREATED);
 
-      // Attempt 1 (correct solve)
+      // Attempt 1 (repeat solve on same item across runs)
       await request(app.getHttpServer())
         .post(`/api/v1/runs/${mcqRun.body.id}/commands`)
         .set('Cookie', learnerCookie)
@@ -752,10 +853,13 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
       const runEvs = evidenceRes.body.filter((e: any) => e.runId === mcqRun.body.id);
       expect(runEvs).toHaveLength(2);
 
-      const repeatEv = runEvs.find((e: any) => e.repetitionCount === 2);
-      expect(repeatEv.isSameItemRepetition).toBe(true);
-      expect(repeatEv.classification).toBe('SAME_ITEM_REPETITION');
-      expect(repeatEv.exclusionReason).toBe('SAME_ITEM_REPETITION_NOT_INDEPENDENT');
+      expect(runEvs[0].isSameItemRepetition).toBe(true);
+      expect(runEvs[0].classification).toBe('SAME_ITEM_REPETITION');
+      expect(runEvs[0].exclusionReason).toBe('SAME_ITEM_REPETITION_NOT_INDEPENDENT');
+
+      expect(runEvs[1].isSameItemRepetition).toBe(true);
+      expect(runEvs[1].classification).toBe('SAME_ITEM_REPETITION');
+      expect(runEvs[1].exclusionReason).toBe('SAME_ITEM_REPETITION_NOT_INDEPENDENT');
     });
 
     it('Unmapped MCQ produces EXCLUDED evidence with clear reason and zero skill credit', async () => {
@@ -833,7 +937,7 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         })
         .expect(HttpStatus.OK);
 
-      // While run is ACTIVE, evidence is returned with deferred: true and redacted score/correctness
+      // While run is ACTIVE, evidence is returned with deferred: true and redacted score/correctness and safe pending classification
       const activeEvidenceRes = await request(app.getHttpServer())
         .get(`/api/v1/learner/courses/${courseAVersion1Id}/evidence`)
         .set('Cookie', learnerCookie)
@@ -843,6 +947,19 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
       expect(deferredEv.deferred).toBe(true);
       expect(deferredEv.isCorrect).toBeNull();
       expect(deferredEv.score).toBeNull();
+      expect(deferredEv.classification).toBe('PENDING_EVALUATION');
+      expect(deferredEv.status).toBe('PENDING_ASSESSMENT');
+      expect(deferredEv.evaluatorId).toBeNull();
+
+      // Skill projections while ACTIVE: deferred results are withheld and do not advance score counts
+      const activeSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/skills`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      const activeSkill1 = activeSkillsRes.body.find((s: any) => s.skillId === skill1Id);
+      expect(activeSkill1.reasons.some((r: string) => r.includes('deferred'))).toBe(true);
+      expect(activeSkill1.proposedAction.category).toBe('CONTINUE');
 
       // Finish the run
       await request(app.getHttpServer())
@@ -863,6 +980,64 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
       const releasedEv = closedEvidenceRes.body.find((e: any) => e.runId === defRun.body.id);
       expect(releasedEv.deferred).toBe(false);
       expect(releasedEv.isCorrect).toBe(true);
+      expect(releasedEv.classification).toBe('INDEPENDENT_CORRECT');
+    });
+
+    it('Deferred feedback is NEVER released for ABANDONED runs', async () => {
+      const abandonRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: courseAVersion1Id,
+          blockInstanceId: mcqDeferredBlockId,
+          idempotencyKey: `run_abandon_def_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${abandonRun.body.id}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_x' },
+          idempotencyKey: `sub_abandon_def_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Abandon the run
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${abandonRun.body.id}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'ABANDON',
+          idempotencyKey: `abandon_def_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // After CLOSED ABANDONED, evidence remains withheld forever
+      const evRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/evidence`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      const abandonedEv = evRes.body.find((e: any) => e.runId === abandonRun.body.id);
+      expect(abandonedEv.deferred).toBe(true);
+      expect(abandonedEv.classification).toBe('PENDING_EVALUATION');
+      expect(abandonedEv.isCorrect).toBeNull();
+      expect(abandonedEv.score).toBeNull();
+
+      // Also verify via run results endpoint: withheld forever
+      const runResults = await request(app.getHttpServer())
+        .get(`/api/v1/runs/${abandonRun.body.id}/results`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      expect(runResults.body.assessments[0].isCorrect).toBeNull();
+      expect(runResults.body.assessments[0].score).toBeNull();
+      expect((runResults.body.assessments[0].feedback as any).deferred).toBe(true);
+      expect((runResults.body.run.latestAssessment.feedback as any).deferred).toBe(true);
+      expect(runResults.body.run.latestAssessment.isCorrect).toBeNull();
+      expect(runResults.body.run.latestAssessment.score).toBeNull();
     });
 
     it('Authorized evaluation correction updates assessment, records auditable history, and reconciles projection', async () => {
@@ -1038,6 +1213,469 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
       expect(bSkillProj.state).toBe('INSUFFICIENT_EVIDENCE');
       expect(bSkillProj.evidenceCount).toBe(0);
       expect(bSkillProj.independentCount).toBe(0);
+    });
+  });
+
+  describe('6. Gate Integrity Corrections (PR #5 Review Gates)', () => {
+    it('Gate 2: Two first attempts in separate Runs of the SAME MCQ do not produce two independent qualifying observations', async () => {
+      // Grant Charlie access to Course A
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: otherId })
+        .expect(HttpStatus.CREATED);
+
+      // Charlie Run 1 on mcq1BlockId
+      const charlieRun1 = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', otherCookie)
+        .send({
+          courseVersionId: courseAVersion1Id,
+          blockInstanceId: mcq1BlockId,
+          idempotencyKey: `charlie_run1_mcq1_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${charlieRun1.body.id}/commands`)
+        .set('Cookie', otherCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_a' },
+          idempotencyKey: `charlie_sub1_mcq1_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Charlie Run 2 on the SAME mcq1BlockId
+      const charlieRun2 = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', otherCookie)
+        .send({
+          courseVersionId: courseAVersion1Id,
+          blockInstanceId: mcq1BlockId,
+          idempotencyKey: `charlie_run2_mcq1_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${charlieRun2.body.id}/commands`)
+        .set('Cookie', otherCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_a' },
+          idempotencyKey: `charlie_sub2_mcq1_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Query Charlie's skills: independentCount must be 1, repeatedCount must be 1. NOT 2!
+      const charlieSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/skills`)
+        .set('Cookie', otherCookie)
+        .expect(HttpStatus.OK);
+
+      const skill1 = charlieSkillsRes.body.find((s: any) => s.skillId === skill1Id);
+      expect(skill1.independentCount).toBe(1);
+      expect(skill1.repeatedCount).toBe(1);
+      expect(skill1.state).toBe('DEVELOPING');
+      expect(skill1.state).not.toBe('READY_TO_VERIFY');
+    });
+
+    it('Gate 2: Two distinct MCQs mapped to the same skill contribute distinct observations', async () => {
+      // Charlie now solves mcq2BlockId (a distinct item mapped to skill1)
+      const charlieRun3 = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', otherCookie)
+        .send({
+          courseVersionId: courseAVersion1Id,
+          blockInstanceId: mcq2BlockId,
+          idempotencyKey: `charlie_run3_mcq2_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${charlieRun3.body.id}/commands`)
+        .set('Cookie', otherCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_1' },
+          idempotencyKey: `charlie_sub3_mcq2_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      const charlieSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/skills`)
+        .set('Cookie', otherCookie)
+        .expect(HttpStatus.OK);
+
+      const skill1 = charlieSkillsRes.body.find((s: any) => s.skillId === skill1Id);
+      // Now Charlie has 2 distinct independent solves!
+      expect(skill1.independentCount).toBe(2);
+      expect(skill1.repeatedCount).toBe(1);
+    });
+
+    it('Gate 2: Concurrent submissions across separate Runs cannot inflate independentCount', async () => {
+      // Start two concurrent runs on mcq1BlockId for Charlie
+      const [cRunA, cRunB] = await Promise.all([
+        request(app.getHttpServer())
+          .post('/api/v1/runs')
+          .set('Cookie', otherCookie)
+          .send({
+            courseVersionId: courseAVersion1Id,
+            blockInstanceId: mcq1BlockId,
+            idempotencyKey: `c_conc_runA_${Date.now()}`,
+          }),
+        request(app.getHttpServer())
+          .post('/api/v1/runs')
+          .set('Cookie', otherCookie)
+          .send({
+            courseVersionId: courseAVersion1Id,
+            blockInstanceId: mcq1BlockId,
+            idempotencyKey: `c_conc_runB_${Date.now()}`,
+          }),
+      ]);
+
+      // Submit concurrently across both runs
+      await Promise.all([
+        request(app.getHttpServer())
+          .post(`/api/v1/runs/${cRunA.body.id}/commands`)
+          .set('Cookie', otherCookie)
+          .send({
+            command: 'SUBMIT_RESPONSE',
+            payload: { selectedOptionId: 'opt_a' },
+            idempotencyKey: `c_conc_subA_${Date.now()}`,
+          }),
+        request(app.getHttpServer())
+          .post(`/api/v1/runs/${cRunB.body.id}/commands`)
+          .set('Cookie', otherCookie)
+          .send({
+            command: 'SUBMIT_RESPONSE',
+            payload: { selectedOptionId: 'opt_a' },
+            idempotencyKey: `c_conc_subB_${Date.now()}`,
+          }),
+      ]);
+
+      const charlieSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/skills`)
+        .set('Cookie', otherCookie)
+        .expect(HttpStatus.OK);
+
+      const skill1 = charlieSkillsRes.body.find((s: any) => s.skillId === skill1Id);
+      // independentCount CANNOT be inflated: still 2 (from distinct mcq1 + mcq2)
+      expect(skill1.independentCount).toBe(2);
+      expect(skill1.repeatedCount).toBeGreaterThanOrEqual(2);
+    });
+
+    it('Gate 2: Reprocessing or correcting evidence does not turn repetitions into novel items', async () => {
+      // Find one of the repeated evidence records for Charlie on mcq1
+      const repeatedEv = await prisma.learningEvidence.findFirst({
+        where: {
+          userId: otherId,
+          blockInstanceId: mcq1BlockId,
+          isSameItemRepetition: true,
+          assessmentResultId: { not: null },
+        },
+      });
+
+      expect(repeatedEv).toBeDefined();
+
+      // Owner corrects this repeated assessment
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: repeatedEv!.assessmentResultId,
+          newIsCorrect: true,
+          newScore: 1.0,
+          reason: 'Reprocessing correction check',
+        })
+        .expect(HttpStatus.OK);
+
+      // Verify the corrected evidence record is still marked as repetition
+      const updatedEv = await prisma.learningEvidence.findUnique({
+        where: { id: repeatedEv!.id },
+      });
+      expect(updatedEv!.isSameItemRepetition).toBe(true);
+
+      const charlieSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/skills`)
+        .set('Cookie', otherCookie)
+        .expect(HttpStatus.OK);
+
+      const skill1 = charlieSkillsRes.body.find((s: any) => s.skillId === skill1Id);
+      expect(skill1.independentCount).toBe(2);
+    });
+
+    it('Gate 2: A single repeated MCQ cannot cause READY_TO_VERIFY', async () => {
+      // Register a brand new test learner Dave
+      const userDave = {
+        email: `dave_${Date.now()}@ule.internal`,
+        password: 'DavePassword123!',
+        name: 'Dave Learner',
+      };
+      const regDave = await request(app.getHttpServer())
+        .post('/api/v1/auth/sign-up/email')
+        .send(userDave);
+      const daveCookie = extractCookies(regDave);
+
+      const meDave = await request(app.getHttpServer())
+        .get('/api/v1/me')
+        .set('Cookie', daveCookie);
+      const daveId = meDave.body.user.id;
+
+      // Grant Dave access to Course A
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: daveId })
+        .expect(HttpStatus.CREATED);
+
+      // Dave runs mcq1BlockId three times in three separate runs, answering correctly every time
+      for (let i = 1; i <= 3; i++) {
+        const dRun = await request(app.getHttpServer())
+          .post('/api/v1/runs')
+          .set('Cookie', daveCookie)
+          .send({
+            courseVersionId: courseAVersion1Id,
+            blockInstanceId: mcq1BlockId,
+            idempotencyKey: `dave_run_${i}_${Date.now()}`,
+          })
+          .expect(HttpStatus.CREATED);
+
+        await request(app.getHttpServer())
+          .post(`/api/v1/runs/${dRun.body.id}/commands`)
+          .set('Cookie', daveCookie)
+          .send({
+            command: 'SUBMIT_RESPONSE',
+            payload: { selectedOptionId: 'opt_a' },
+            idempotencyKey: `dave_sub_${i}_${Date.now()}`,
+          })
+          .expect(HttpStatus.OK);
+      }
+
+      const daveSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/skills`)
+        .set('Cookie', daveCookie)
+        .expect(HttpStatus.OK);
+
+      const daveSkill1 = daveSkillsRes.body.find((s: any) => s.skillId === skill1Id);
+      expect(daveSkill1.independentCount).toBe(1);
+      expect(daveSkill1.repeatedCount).toBe(2);
+      expect(daveSkill1.state).toBe('DEVELOPING');
+      expect(daveSkill1.state).not.toBe('READY_TO_VERIFY');
+      expect(daveSkill1.state).not.toBe('VERIFIED');
+    });
+
+    it('Gate 3: Single MCQ mapped to two distinct skills without criterion evaluation excludes both mappings and prevents silent evidence fabrication', async () => {
+      // Bob executes multiSkillMcqBlockId (mapped to skill1 and skill2)
+      const msRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: courseAVersion1Id,
+          blockInstanceId: multiSkillMcqBlockId,
+          idempotencyKey: `bob_run_multiskill_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${msRun.body.id}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'ms_1' },
+          idempotencyKey: `bob_sub_multiskill_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Inspect Bob's evidence
+      const evRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/evidence`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      const msEvs = evRes.body.filter((e: any) => e.runId === msRun.body.id);
+      expect(msEvs).toHaveLength(2);
+
+      for (const ev of msEvs) {
+        expect(ev.status).toBe('EXCLUDED');
+        expect(ev.classification).toBe('EXCLUDED');
+        expect(ev.exclusionReason).toBe('AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION');
+        expect(ev.isCorrect).toBeNull();
+        expect(ev.score).toBeNull();
+      }
+
+      // Check skill2: must NOT have received any independentCount from this ambiguous MCQ
+      const bobSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${courseAVersion1Id}/skills`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      const skill2 = bobSkillsRes.body.find((s: any) => s.skillId === skill2Id);
+      expect(skill2.independentCount).toBe(0);
+      expect(skill2.state).toBe('INSUFFICIENT_EVIDENCE');
+    });
+
+    it('Gate 4: Renaming or configuring a Video Block with "Verification Exam" cannot make it an eligible verification assessment', async () => {
+      // Create Course C with a skill and ONLY a video block titled "Verification Exam: Advanced Skills"
+      const courseCRes = await request(app.getHttpServer())
+        .post('/api/v1/courses')
+        .set('Cookie', ownerCookie)
+        .send({ title: 'Course C: Video Verification Test' })
+        .expect(HttpStatus.CREATED);
+
+      const courseCId = courseCRes.body.course.id;
+
+      const skillCRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseCId}/skills`)
+        .set('Cookie', ownerCookie)
+        .send({
+          skillCode: 'video-test-skill',
+          name: 'Video Test Skill',
+        })
+        .expect(HttpStatus.CREATED);
+
+      const skillCId = skillCRes.body.id;
+
+      // Add 2 distinct MCQs to allow learner to achieve readiness
+      const mcqC1 = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseCId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'multiple-choice',
+          title: 'Quiz C1',
+          config: {
+            question: '1+1?',
+            options: [{ id: 'a', text: '2' }, { id: 'b', text: '3' }],
+            answerKey: { correctOptionId: 'a' },
+          },
+          expectedRevision: 1,
+        })
+        .expect(HttpStatus.CREATED);
+
+      const mcqC2 = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseCId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'multiple-choice',
+          title: 'Quiz C2',
+          config: {
+            question: '2+2?',
+            options: [{ id: 'a', text: '4' }, { id: 'b', text: '5' }],
+            answerKey: { correctOptionId: 'a' },
+          },
+          expectedRevision: 2,
+        })
+        .expect(HttpStatus.CREATED);
+
+      // Add a Video block explicitly titled "Verification Exam" with isVerification: true
+      const videoVerif = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseCId}/draft/blocks`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockTypeId: 'video',
+          title: 'Verification Exam: Advanced Skills',
+          config: {
+            url: 'https://cdn.ule.internal/verif.mp4',
+            isVerification: true,
+          },
+          expectedRevision: 3,
+        })
+        .expect(HttpStatus.CREATED);
+
+      expect(videoVerif.body.id).toBeDefined();
+
+      // Map C1 and C2 to skillC
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseCId}/draft/skill-mappings`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockInstanceId: mcqC1.body.id,
+          skillId: skillCId,
+          expectedRevision: 4,
+        })
+        .expect(HttpStatus.OK);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseCId}/draft/skill-mappings`)
+        .set('Cookie', ownerCookie)
+        .send({
+          blockInstanceId: mcqC2.body.id,
+          skillId: skillCId,
+          expectedRevision: 5,
+        })
+        .expect(HttpStatus.OK);
+
+      // Publish Course C version 1
+      const cVersion = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseCId}/versions`)
+        .set('Cookie', ownerCookie)
+        .expect(HttpStatus.CREATED);
+
+      // Grant Bob access to Course C
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseCId}/versions/${cVersion.body.id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: learnerId })
+        .expect(HttpStatus.CREATED);
+
+      // Bob solves C1 and C2 independently
+      const r1 = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: cVersion.body.id,
+          blockInstanceId: mcqC1.body.id,
+          idempotencyKey: `c_run1_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${r1.body.id}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'a' },
+          idempotencyKey: `c_sub1_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      const r2 = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: cVersion.body.id,
+          blockInstanceId: mcqC2.body.id,
+          idempotencyKey: `c_run2_${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${r2.body.id}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'a' },
+          idempotencyKey: `c_sub2_${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Check Bob's skill state in Course C: state is READY_TO_VERIFY (2 distinct independent solves)
+      const cSkillsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${cVersion.body.id}/skills`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+
+      const skillCProj = cSkillsRes.body.find((s: any) => s.skillId === skillCId);
+      expect(skillCProj.state).toBe('READY_TO_VERIFY');
+      expect(skillCProj.state).not.toBe('VERIFIED');
+
+      // Crucial Gate 4 Assertion:
+      // The video block titled "Verification Exam" MUST NOT be accepted as a verification assessment!
+      // Proposed action MUST be CONTINUE with isAvailable: false and null suggestedBlockInstanceId!
+      expect(skillCProj.proposedAction.category).toBe('CONTINUE');
+      expect(skillCProj.proposedAction.isAvailable).toBe(false);
+      expect(skillCProj.proposedAction.suggestedBlockInstanceId).toBeNull();
+      expect(skillCProj.proposedAction.reason).toContain('no schema-validated verification assessment is configured');
     });
   });
 });

@@ -669,6 +669,11 @@ export class RuntimeService {
             );
           }
 
+          // Reconcile learner skill projections on completed run closure (releases deferred feedback)
+          if (this.evidenceIntake) {
+            await this.evidenceIntake.reconcileProjectionsForRun(updated, tx);
+          }
+
           const latestAttempt = await tx.aBAttempt.findFirst({
             where: { runId: run.id },
             orderBy: { attemptNumber: 'desc' },
@@ -708,6 +713,10 @@ export class RuntimeService {
               serverTimestamp: now,
             },
           });
+
+          if (this.evidenceIntake) {
+            await this.evidenceIntake.reconcileProjectionsForRun(updated, tx);
+          }
 
           const latestAttempt = await tx.aBAttempt.findFirst({
             where: { runId: run.id },
