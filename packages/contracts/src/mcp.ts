@@ -78,7 +78,7 @@ export interface McpCreatePrivateCourseParams {
   title?: string;
   description?: string;
   summary?: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
 }
 
 export interface McpGetCourseParams {
@@ -91,7 +91,7 @@ export interface McpUpdateCourseDraftParams {
   title?: string;
   description?: string;
   summary?: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
 }
 
 // Draft Block Tool Parameter Types
@@ -107,7 +107,7 @@ export interface McpAddDraftBlockParams {
   title: string;
   orderIndex?: number;
   config: Record<string, unknown>;
-  idempotencyKey?: string;
+  idempotencyKey: string;
 }
 
 export interface McpUpdateDraftBlockParams {
@@ -116,21 +116,21 @@ export interface McpUpdateDraftBlockParams {
   expectedRevision: number;
   title?: string;
   config?: Record<string, unknown>;
-  idempotencyKey?: string;
+  idempotencyKey: string;
 }
 
 export interface McpDeleteDraftBlockParams {
   courseId: string;
   blockId: string;
   expectedRevision: number;
-  idempotencyKey?: string;
+  idempotencyKey: string;
 }
 
 export interface McpReorderDraftBlocksParams {
   courseId: string;
   expectedRevision: number;
-  blockOrders: Array<{ blockId: string; orderIndex: number }>;
-  idempotencyKey?: string;
+  blockIds: string[];
+  idempotencyKey: string;
 }
 
 // Validation & Version Tool Parameter Types
@@ -153,7 +153,7 @@ export interface McpValidationResultDto {
 
 export interface McpCreateCourseVersionParams {
   courseId: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
 }
 
 export interface McpGetCourseVersionParams {

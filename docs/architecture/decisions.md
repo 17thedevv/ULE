@@ -106,8 +106,14 @@
      - RFC 9728 Protected Resource discovery at `/.well-known/oauth-protected-resource` and `/api/v1/mcp/.well-known/oauth-protected-resource`.
      - DNS rebinding and cross-site hijacking protection: Host header validation and Origin validation against configured trusted hosts and CORS origins.
      - Multi-session concurrency: Request-level handler factory ensures each client connection operates on an isolated `McpServer` instance without "Server already initialized" collisions.
-  2. **Identity & OAuth 2.1 Authorization**:
+  2. **Identity, Real OAuth 2.1 & Token Authority (Gate 1)**:
      - Integration with Better Auth (`@better-auth/mcp`, `@better-auth/oauth-provider`, `@better-auth/cimd`, `jwt`) with EdDSA JWT verification via server JWKS (`jose.jwtVerify`).
+     - Real OAuth 2.1 authorization code flow with PKCE (`S256`), dynamic client registration, and explicit user consent.
+     - Functional browser routes for authentication and consent:
+       - `GET /auth/login`: Functional HTML login form posting credentials to `/api/v1/auth/sign-in/email`.
+       - `GET /auth/consent`: Functional HTML OAuth consent page displaying requested scopes and providing Authorize / Deny actions.
+     - Authoritative token validation: Tokens must possess a verified EdDSA signature, valid unexpired lifetime, correct audience and issuer, and an active issuance record in PostgreSQL `oauth_access_tokens` as well as an active user consent grant in `oauth_consents`.
+     - Immediate revocation: Revoking tokens in `oauth_access_tokens` or revoking consent in `oauth_consents` causes subsequent tool invocations to fail closed with HTTP 401 Unauthorized.
      - Minimal fine-grained permission scopes:
        - `course:read`: Authoring capability discovery, block type listing, schema inspection, reading owned courses/drafts/blocks/versions, and draft validation.
        - `course:write`: Private course creation, draft block addition, updating, deletion, reordering, draft metadata updating, and immutable version allocation.
@@ -117,11 +123,15 @@
      - MCP tools do not perform direct, unguarded database writes. Every tool validates inputs via Zod and calls existing domain services (`CoursesService`, `DraftBlocksService`, `BlockTypeRegistry`).
      - Ownership invariants: Course creation strictly derives `ownerId` from authenticated MCP token claims and always creates `visibility: PRIVATE`.
      - Optimistic concurrency: Mandatory `expectedRevision` on all draft block mutations (`ule_add_draft_block`, `ule_update_draft_block`, `ule_delete_draft_block`, `ule_reorder_draft_blocks`) and draft metadata updates (`ule_update_course_draft`), enforced under course row locks.
-  4. **Durable Mutation Idempotency & Audit Trail**:
-     - `mcp_mutation_idempotency` table: Unique constraint on `[userId, toolName, idempotencyKey]`.
-     - Deterministic deduplication: Replaying mutations with identical SHA-256 payload hashes returns cached results without duplicate database side-effects. Reusing idempotency keys with changed payloads yields explicit HTTP 409 Conflict.
-     - `mcp_audit_logs` table: Audits every mutation with `userId`, `clientId`, `toolName`, `action: 'EXECUTE'`, `resourceType`, `resourceId`, `idempotencyKey`, `status`, and server timestamp. Secrets and raw tokens are omitted.
-  5. **Confidentiality & Prohibited Operations**:
-     - Secret answers and evaluators are stripped from discovery schemas and learner-facing outputs.
-     - Prohibitions enforced in registry: Tools for learner attempt submission (`submit_learner_attempt`), mastery alteration (`alter_mastery`), reward grants (`grant_xp_or_rewards`), or public course publication (`publish_course_publicly`) are strictly omitted.
-- **Consequences**: Proven external AI authoring integration that preserves all Phase 1A/1B concurrency guarantees without introducing external LLM costs. Verified via real PostgreSQL automated tests: `test/mcp-auth.integration.spec.ts` (17 tests covering Phase 2A exit gate) and `test/mcp-authoring.integration.spec.ts` (19 tests covering the 13-step scenario, cross-user isolation, idempotency, and audit trails).
+  4. **Durable Mutation Idempotency & Audit Trail (Gates 2 & 4)**:
+     - Mandatory `idempotencyKey` on all 7 mutation tools.
+     - `mcp_mutation_idempotency` table: Unique constraint on `[userId, clientId, toolName, idempotencyKey]`.
+     - Reservation-based concurrency: Atomically inserts an `IN_PROGRESS` row prior to execution to lock concurrent duplicate calls. Winner runs mutation and marks `COMPLETED`; concurrent calls wait and receive cached result. Exactly one Course or CourseVersion is created even under simultaneous parallel requests.
+     - Deterministic deduplication: Replaying mutations with identical payload hashes returns cached results without duplicate database side-effects. Reusing idempotency keys with changed payloads yields explicit HTTP 409 Conflict.
+     - `mcp_audit_logs` table: Audits every tool execution with `userId`, `clientId`, `toolName`, `action: 'EXECUTE'`, `resourceType`, `resourceId`, `idempotencyKey`, `status` (`SUCCESS`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `ERROR`), and `durationMs`. Raw secrets and Bearer tokens are excluded. Internal errors return sanitized `[Error 500]` without leaking Prisma/SQL traces.
+  5. **Least-Privilege Authoring Data Exposure (Gate 3)**:
+     - Discovery schemas and learner-facing endpoints never expose answer keys or evaluator rubrics.
+     - Callers holding only `course:read` tokens receive sanitized block configurations across `ule_get_course_draft`, `ule_list_draft_blocks`, and `ule_get_course_version` (MultipleChoice `answerKey` and `explanation` are omitted).
+     - Full configurations with `answerKey` are restricted to authorized creators holding `course:write` scope.
+     - Prohibitions enforced in registry: Exactly 17 authoring tools are exposed. Tools for learner attempt submission (`submit_learner_attempt`), test runs (`create_test_run`), mastery alteration (`alter_mastery`), reward grants (`grant_xp_or_rewards`), or public course publication (`publish_course_publicly`) are strictly omitted.
+- **Consequences**: Proven external AI authoring integration that preserves all Phase 1A/1B concurrency guarantees without introducing external LLM costs. Verified via real PostgreSQL automated tests: `test/mcp-auth.integration.spec.ts` (22 tests covering discovery, real OAuth 2.1 code flow, PKCE, consent, revocation, and scope gates) and `test/mcp-authoring.integration.spec.ts` (31 tests covering the 13-step scenario, concurrent idempotency, least-privilege answer key protection, and durable audit logs). Manual smoke testing verified with Claude Desktop and Cursor.

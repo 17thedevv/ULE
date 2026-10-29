@@ -18,9 +18,16 @@ async function bootstrap(): Promise<void> {
   const corsOrigin = configService.get<string>('CORS_ORIGIN', 'http://localhost:5173');
   const nodeEnv = configService.get<string>('NODE_ENV', 'development');
 
-  // Set global API versioning prefix (e.g. /api/v1), excluding RFC standard .well-known endpoints
+  // Set global API versioning prefix (e.g. /api/v1), excluding RFC standard .well-known endpoints & auth UI views
   app.setGlobalPrefix(apiPrefix, {
-    exclude: ['/.well-known/(.*)', '.well-known/(.*)'],
+    exclude: [
+      '/.well-known/(.*)',
+      '.well-known/(.*)',
+      'auth/login',
+      '/auth/login',
+      'auth/consent',
+      '/auth/consent',
+    ],
   });
 
   // Configure CORS with explicit trusted origins (wildcards prohibited)

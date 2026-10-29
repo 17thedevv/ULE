@@ -41,6 +41,7 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
   let userBId: string;
   let userAToken: string;
   let userBToken: string;
+  let readOnlyToken: string;
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -111,6 +112,7 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
   async function generateSignedMcpToken(
     userId: string,
     clientId: string,
+    scopes: string[] = ['course:read', 'course:write'],
   ): Promise<string> {
     const aud = authService.getMcpResourceUri();
     const iss = authService.getMcpIssuer();
@@ -123,12 +125,53 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
           sub: userId,
           azp: clientId,
           client_id: clientId,
-          scope: 'course:read course:write',
+          scope: scopes.join(' '),
           aud,
           iss,
           exp: now + 3600,
           jti,
         },
+      },
+    });
+
+    // Ensure client exists
+    await prisma.oauthClient.upsert({
+      where: { clientId },
+      update: {},
+      create: {
+        clientId,
+        clientSecret: 'secret_123',
+        name: `Test Client ${clientId}`,
+        redirectUris: ['http://localhost:5173/oauth/callback'],
+        scopes,
+      },
+    });
+
+    // Ensure consent exists
+    const existingConsent = await prisma.oauthConsent.findFirst({
+      where: { clientId, userId },
+    });
+    if (!existingConsent) {
+      await prisma.oauthConsent.create({
+        data: {
+          clientId,
+          userId,
+          scopes,
+          resources: [aud],
+        },
+      });
+    }
+
+    // Insert active issuance record
+    await prisma.oauthAccessToken.create({
+      data: {
+        token: signed.token,
+        referenceId: jti,
+        clientId,
+        userId,
+        scopes,
+        resources: [aud],
+        expiresAt: new Date((now + 3600) * 1000),
       },
     });
 
@@ -422,6 +465,7 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
         blockTypeId: 'video',
         title: 'Malicious Injected Block',
         config: { url: 'https://evil.com/hacked.mp4', durationSeconds: 10 },
+        idempotencyKey: crypto.randomUUID(),
       });
       expect(addBlockRes.isError).toBe(true);
       expect(addBlockRes.content[0].text).toContain('404');
@@ -432,6 +476,7 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
         'ule_create_private_course_version',
         {
           courseId: createdCourseId,
+          idempotencyKey: crypto.randomUUID(),
         },
       );
       expect(createVersionRes.isError).toBe(true);
@@ -495,6 +540,76 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
       expect(resConflict.content[0].text).toContain('409');
       expect(resConflict.content[0].text).toContain('different payload');
     });
+
+    it('concurrent course creation calls with the SAME idempotencyKey result in exactly ONE course created in PostgreSQL', async () => {
+      const idempotencyKey = crypto.randomUUID();
+      const concurrentTitle = `Concurrent Course ${Date.now()}`;
+      const payload = {
+        title: concurrentTitle,
+        description: 'Testing parallel creation concurrency',
+        idempotencyKey,
+      };
+
+      const [res1, res2] = await Promise.all([
+        callMcpTool(userAToken, 'ule_create_private_course', payload),
+        callMcpTool(userAToken, 'ule_create_private_course', payload),
+      ]);
+
+      expect(res1.isError).toBeFalsy();
+      expect(res2.isError).toBeFalsy();
+
+      const course1 = JSON.parse(res1.content[0].text);
+      const course2 = JSON.parse(res2.content[0].text);
+      expect(course1.course.id).toBe(course2.course.id);
+
+      const dbCount = await prisma.courseDraft.count({
+        where: { title: concurrentTitle },
+      });
+      expect(dbCount).toBe(1);
+    });
+
+    it('concurrent course version creation with SAME idempotencyKey creates exactly ONE CourseVersion', async () => {
+      // First create a new course with a valid block to version
+      const courseRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: `Version Concurrency Course ${Date.now()}`,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      const cId = JSON.parse(courseRes.content[0].text).course.id;
+
+      await callMcpTool(userAToken, 'ule_add_draft_block', {
+        courseId: cId,
+        expectedRevision: 1,
+        blockTypeId: 'video',
+        title: 'Concurrent Version Video',
+        config: { url: 'https://cdn.ule.internal/vid.mp4', durationSeconds: 100 },
+        idempotencyKey: crypto.randomUUID(),
+      });
+
+      const vKey = crypto.randomUUID();
+      const [vRes1, vRes2] = await Promise.all([
+        callMcpTool(userAToken, 'ule_create_private_course_version', {
+          courseId: cId,
+          idempotencyKey: vKey,
+        }),
+        callMcpTool(userAToken, 'ule_create_private_course_version', {
+          courseId: cId,
+          idempotencyKey: vKey,
+        }),
+      ]);
+
+      expect(vRes1.isError).toBeFalsy();
+      expect(vRes2.isError).toBeFalsy();
+
+      const v1 = JSON.parse(vRes1.content[0].text);
+      const v2 = JSON.parse(vRes2.content[0].text);
+      expect(v1.id).toBe(v2.id);
+      expect(v1.versionNumber).toBe(1);
+
+      const totalVersions = await prisma.courseVersion.count({
+        where: { courseId: cId },
+      });
+      expect(totalVersions).toBe(1);
+    });
   });
 
   // =========================================================================
@@ -507,6 +622,7 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
     beforeAll(async () => {
       const res = await callMcpTool(userAToken, 'ule_create_private_course', {
         title: 'Concurrency Course',
+        idempotencyKey: crypto.randomUUID(),
       });
       testCourseId = JSON.parse(res.content[0].text).course.id;
     });
@@ -518,6 +634,7 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
         blockTypeId: 'video',
         title: 'Stale Block',
         config: { url: 'https://cdn.ule.internal/vid.mp4', durationSeconds: 60 },
+        idempotencyKey: crypto.randomUUID(),
       });
 
       expect(res.isError).toBe(true);
@@ -589,24 +706,205 @@ describe('Phase 2B: Secure MCP Authoring End-to-End Scenario (Real PostgreSQL In
   });
 
   // =========================================================================
-  // AUDIT LOGGING VERIFICATION
+  // GATE 3: LEAST-PRIVILEGE AUTHORING DATA EXPOSURE
   // =========================================================================
 
-  describe('Audit Logging Verification', () => {
-    it('verifies that successful mutations record audit log entries in PostgreSQL', async () => {
+  describe('Gate 3 — Least-Privilege Protected Authoring Data Exposure', () => {
+    let gate3CourseId: string;
+    let gate3McqBlockId: string;
+    let gate3VersionId: string;
+
+    beforeAll(async () => {
+      // 1. Issue a read-only token (course:read) for User A
+      readOnlyToken = await generateSignedMcpToken(
+        userAId,
+        'claude_readonly_client',
+        ['course:read'],
+      );
+
+      // 2. User A creates a course with write token
+      const courseRes = await callMcpTool(userAToken, 'ule_create_private_course', {
+        title: `Gate 3 Least Privilege Course ${Date.now()}`,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      gate3CourseId = JSON.parse(courseRes.content[0].text).course.id;
+
+      // 3. User A adds a multiple-choice block with answerKey & explanation
+      const blockRes = await callMcpTool(userAToken, 'ule_add_draft_block', {
+        courseId: gate3CourseId,
+        expectedRevision: 1,
+        blockTypeId: 'multiple-choice',
+        typeVersion: '1.0.0',
+        title: 'Secret Question Block',
+        orderIndex: 0,
+        config: {
+          question: 'What is the answer to everything?',
+          options: [
+            { id: 'opt-42', text: '42' },
+            { id: 'opt-43', text: '43' },
+          ],
+          answerKey: {
+            correctOptionId: 'opt-42',
+            explanation: '42 is the Hitchhikers answer.',
+          },
+        },
+        idempotencyKey: crypto.randomUUID(),
+      });
+      gate3McqBlockId = JSON.parse(blockRes.content[0].text).id;
+
+      // 4. Create version
+      const vRes = await callMcpTool(userAToken, 'ule_create_private_course_version', {
+        courseId: gate3CourseId,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      gate3VersionId = JSON.parse(vRes.content[0].text).id;
+    });
+
+    it('caller with course:read calling ule_get_course_draft gets sanitized block configs (answerKey omitted)', async () => {
+      const res = await callMcpTool(readOnlyToken, 'ule_get_course_draft', {
+        courseId: gate3CourseId,
+      });
+      expect(res.isError).toBeFalsy();
+      const draft = JSON.parse(res.content[0].text);
+      expect(draft.blocks).toBeDefined();
+      const mcq = draft.blocks.find((b: any) => b.id === gate3McqBlockId);
+      expect(mcq).toBeDefined();
+      expect(mcq.config.question).toBe('What is the answer to everything?');
+      expect(mcq.config.options).toBeDefined();
+      expect(mcq.config.answerKey).toBeUndefined();
+      expect(mcq.config.explanation).toBeUndefined();
+    });
+
+    it('caller with course:read calling ule_list_draft_blocks gets sanitized block configs', async () => {
+      const res = await callMcpTool(readOnlyToken, 'ule_list_draft_blocks', {
+        courseId: gate3CourseId,
+      });
+      expect(res.isError).toBeFalsy();
+      const blocks = JSON.parse(res.content[0].text);
+      const mcq = blocks.find((b: any) => b.id === gate3McqBlockId);
+      expect(mcq.config.answerKey).toBeUndefined();
+    });
+
+    it('caller with course:read calling ule_get_course_version gets sanitized snapshot block configs', async () => {
+      const res = await callMcpTool(readOnlyToken, 'ule_get_course_version', {
+        courseId: gate3CourseId,
+        versionId: gate3VersionId,
+      });
+      expect(res.isError).toBeFalsy();
+      const version = JSON.parse(res.content[0].text);
+      const snapshotMcq = version.snapshot.blocks.find((b: any) => b.id === gate3McqBlockId);
+      expect(snapshotMcq).toBeDefined();
+      expect(snapshotMcq.config.answerKey).toBeUndefined();
+    });
+
+    it('authorized creator with course:write retrieves full unsanitized block config with answerKey', async () => {
+      const res = await callMcpTool(userAToken, 'ule_list_draft_blocks', {
+        courseId: gate3CourseId,
+      });
+      expect(res.isError).toBeFalsy();
+      const blocks = JSON.parse(res.content[0].text);
+      const mcq = blocks.find((b: any) => b.id === gate3McqBlockId);
+      expect(mcq.config.answerKey).toBeDefined();
+      expect(mcq.config.answerKey.correctOptionId).toBe('opt-42');
+      expect(mcq.config.answerKey.explanation).toContain('Hitchhikers');
+    });
+
+    it('authorized creator with course:write retrieves full unsanitized snapshot block config with answerKey', async () => {
+      const res = await callMcpTool(userAToken, 'ule_get_course_version', {
+        courseId: gate3CourseId,
+        versionId: gate3VersionId,
+      });
+      expect(res.isError).toBeFalsy();
+      const version = JSON.parse(res.content[0].text);
+      const snapshotMcq = version.snapshot.blocks.find((b: any) => b.id === gate3McqBlockId);
+      expect(snapshotMcq.config.answerKey).toBeDefined();
+      expect(snapshotMcq.config.answerKey.correctOptionId).toBe('opt-42');
+    });
+  });
+
+  // =========================================================================
+  // GATE 4: DURABLE AUDIT LOGGING & ERROR SANITIZATION
+  // =========================================================================
+
+  describe('Gate 4 — Durable Audit Guarantees & Error Sanitization', () => {
+    it('verifies that successful mutations record SUCCESS audit log entries with principal and client', async () => {
       const logs = await prisma.mcpAuditLog.findMany({
-        where: { userId: userAId },
+        where: { userId: userAId, status: 'SUCCESS' },
         orderBy: { createdAt: 'desc' },
       });
 
       expect(logs.length).toBeGreaterThanOrEqual(1);
-      const toolNames = logs.map((l) => l.toolName);
-      expect(toolNames).toContain('ule_create_private_course');
+      const sample = logs[0];
+      expect(sample.userId).toBe(userAId);
+      expect(sample.clientId).toBe('claude_author_client');
+      expect((sample.details as any)?.durationMs).toBeGreaterThanOrEqual(0);
+      expect(sample.createdAt).toBeInstanceOf(Date);
+    });
 
-      const sampleLog = logs[0];
-      expect(sampleLog.userId).toBe(userAId);
-      expect(sampleLog.status).toBe('SUCCESS');
-      expect(sampleLog.createdAt).toBeInstanceOf(Date);
+    it('verifies that cross-user access attempts record NOT_FOUND audit log entries in PostgreSQL', async () => {
+      const notFoundLogs = await prisma.mcpAuditLog.findMany({
+        where: { userId: userBId, status: 'NOT_FOUND' },
+      });
+      expect(notFoundLogs.length).toBeGreaterThanOrEqual(1);
+      const toolNames = notFoundLogs.map((l) => l.toolName);
+      expect(toolNames).toContain('ule_get_my_course');
+      expect(toolNames).toContain('ule_add_draft_block');
+    });
+
+    it('verifies that scope violations record FORBIDDEN audit log entry in PostgreSQL', async () => {
+      // Read-only token attempts to call write tool
+      const res = await callMcpTool(readOnlyToken, 'ule_create_private_course', {
+        title: 'Forbidden Course Attempt',
+        idempotencyKey: crypto.randomUUID(),
+      });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain('Forbidden');
+
+      const forbiddenLogs = await prisma.mcpAuditLog.findMany({
+        where: { userId: userAId, status: 'FORBIDDEN' },
+      });
+      expect(forbiddenLogs.length).toBeGreaterThanOrEqual(1);
+      expect(forbiddenLogs[0].toolName).toBe('ule_create_private_course');
+    });
+
+    it('verifies that revision and idempotency conflicts record CONFLICT audit log entry in PostgreSQL', async () => {
+      const conflictLogs = await prisma.mcpAuditLog.findMany({
+        where: { status: 'CONFLICT' },
+      });
+      expect(conflictLogs.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('verifies that audit log entries NEVER contain raw bearer tokens or passwords', async () => {
+      const allLogs = await prisma.mcpAuditLog.findMany({
+        take: 50,
+      });
+      for (const log of allLogs) {
+        const str = JSON.stringify(log);
+        expect(str).not.toContain('Password123!');
+        expect(str).not.toContain('Bearer eyJ');
+      }
+    });
+
+    it('verifies unexpected internal errors return sanitized [Error 500] without leaking Prisma/SQL trace', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/mcp')
+        .set('Authorization', `Bearer ${userAToken}`)
+        .send({
+          jsonrpc: '2.0',
+          id: 999,
+          method: 'tools/call',
+          params: {
+            name: 'ule_get_course_draft',
+            arguments: { courseId: 'non-existent-random-uuid-00000' },
+          },
+        })
+        .expect(HttpStatus.OK);
+
+      const parsed = parseMcpResponse(res);
+      expect(parsed.result.isError).toBe(true);
+      expect(parsed.result.content[0].text).not.toContain('SELECT');
+      expect(parsed.result.content[0].text).not.toContain('prisma.');
+      expect(parsed.result.content[0].text).not.toContain('node_modules');
     });
   });
 });

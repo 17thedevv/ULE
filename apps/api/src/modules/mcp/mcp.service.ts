@@ -1,8 +1,11 @@
 import {
+  BadRequestException,
   ConflictException,
+  ForbiddenException,
   HttpException,
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
 import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
@@ -133,7 +136,7 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.GET_BLOCK_TYPE_SCHEMA,
       {
         description:
-          'Get creator configuration schema for a specific Activity Block Type. Secret answer keys and evaluators are omitted.',
+          'Get creator configuration schema for a specific Activity Block Type. Explains the required schema for course authoring.',
         inputSchema: z.object({
           blockTypeId: z
             .string()
@@ -181,7 +184,7 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.CREATE_PRIVATE_COURSE,
       {
         description:
-          'Create a new private Course and CourseDraft. Visibility is strictly PRIVATE.',
+          'Create a new private Course and CourseDraft. Visibility is strictly PRIVATE. Requires mandatory idempotencyKey.',
         inputSchema: z.object({
           title: z
             .string()
@@ -201,8 +204,8 @@ export class McpService implements OnModuleInit {
             .describe('Brief summary of the course'),
           idempotencyKey: z
             .string()
-            .optional()
-            .describe('Client idempotency key for durable deduplication'),
+            .min(1)
+            .describe('Mandatory client idempotency key for retry protection and deduplication'),
         }),
       },
       async (args) => {
@@ -270,7 +273,7 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.GET_COURSE_DRAFT,
       {
         description:
-          'Get the active CourseDraft and its current blocks for an owned Course.',
+          'Get the active CourseDraft and its current blocks for an owned Course. Read-only tokens omit protected evaluator answer keys.',
         inputSchema: z.object({
           courseId: z.string().uuid().describe('Course ID'),
         }),
@@ -288,9 +291,10 @@ export class McpService implements OnModuleInit {
               args.courseId,
               auth.userId,
             );
+            const hasWriteScope = auth.scopes.includes(MCP_SCOPES.WRITE);
             return {
               ...draft,
-              blocks,
+              blocks: blocks.map((b) => this.sanitizeBlockForCaller(b, hasWriteScope)),
             };
           },
         );
@@ -301,7 +305,7 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.UPDATE_COURSE_DRAFT,
       {
         description:
-          'Update metadata of a CourseDraft under atomic revision check.',
+          'Update metadata of a CourseDraft under atomic revision check. Requires mandatory idempotencyKey.',
         inputSchema: z.object({
           courseId: z.string().uuid().describe('Course ID'),
           expectedRevision: z
@@ -312,7 +316,10 @@ export class McpService implements OnModuleInit {
           title: z.string().min(1).max(200).optional(),
           description: z.string().max(2000).optional(),
           summary: z.string().max(500).optional(),
-          idempotencyKey: z.string().optional(),
+          idempotencyKey: z
+            .string()
+            .min(1)
+            .describe('Mandatory client idempotency key for retry protection'),
         }),
       },
       async (args) => {
@@ -351,7 +358,8 @@ export class McpService implements OnModuleInit {
     server.registerTool(
       MCP_AUTHORING_TOOLS.LIST_DRAFT_BLOCKS,
       {
-        description: 'List draft block instances in an owned CourseDraft.',
+        description:
+          'List draft block instances in an owned CourseDraft. Read-only tokens omit protected evaluator answer keys.',
         inputSchema: z.object({
           courseId: z.string().uuid().describe('Course ID'),
         }),
@@ -361,10 +369,12 @@ export class McpService implements OnModuleInit {
           MCP_AUTHORING_TOOLS.LIST_DRAFT_BLOCKS,
           MCP_SCOPES.READ,
           async (auth) => {
-            return this.draftBlocksService.listDraftBlocks(
+            const blocks = await this.draftBlocksService.listDraftBlocks(
               args.courseId,
               auth.userId,
             );
+            const hasWriteScope = auth.scopes.includes(MCP_SCOPES.WRITE);
+            return blocks.map((b) => this.sanitizeBlockForCaller(b, hasWriteScope));
           },
         );
       },
@@ -374,7 +384,7 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.ADD_DRAFT_BLOCK,
       {
         description:
-          'Add a validated block instance to a CourseDraft under atomic revision check.',
+          'Add a validated block instance to a CourseDraft under atomic revision check. Requires mandatory idempotencyKey.',
         inputSchema: z.object({
           courseId: z.string().uuid().describe('Course ID'),
           expectedRevision: z
@@ -392,7 +402,10 @@ export class McpService implements OnModuleInit {
           config: z
             .record(z.string(), z.unknown())
             .describe('Block creator configuration matching schema'),
-          idempotencyKey: z.string().optional(),
+          idempotencyKey: z
+            .string()
+            .min(1)
+            .describe('Mandatory client idempotency key for retry protection'),
         }),
       },
       async (args) => {
@@ -430,7 +443,7 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.UPDATE_DRAFT_BLOCK,
       {
         description:
-          'Update an existing draft block instance under atomic revision check.',
+          'Update an existing draft block instance under atomic revision check. Requires mandatory idempotencyKey.',
         inputSchema: z.object({
           courseId: z.string().uuid().describe('Course ID'),
           blockId: z.string().uuid().describe('Block instance ID'),
@@ -441,7 +454,10 @@ export class McpService implements OnModuleInit {
             .describe('Expected draft revision'),
           title: z.string().min(1).max(200).optional(),
           config: z.record(z.string(), z.unknown()).optional(),
-          idempotencyKey: z.string().optional(),
+          idempotencyKey: z
+            .string()
+            .min(1)
+            .describe('Mandatory client idempotency key for retry protection'),
         }),
       },
       async (args) => {
@@ -477,7 +493,7 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.DELETE_DRAFT_BLOCK,
       {
         description:
-          'Delete a draft block instance under atomic revision check.',
+          'Delete a draft block instance under atomic revision check. Requires mandatory idempotencyKey.',
         inputSchema: z.object({
           courseId: z.string().uuid().describe('Course ID'),
           blockId: z.string().uuid().describe('Block instance ID'),
@@ -486,7 +502,10 @@ export class McpService implements OnModuleInit {
             .int()
             .min(1)
             .describe('Expected draft revision'),
-          idempotencyKey: z.string().optional(),
+          idempotencyKey: z
+            .string()
+            .min(1)
+            .describe('Mandatory client idempotency key for retry protection'),
         }),
       },
       async (args) => {
@@ -518,7 +537,7 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.REORDER_DRAFT_BLOCKS,
       {
         description:
-          'Reorder draft block instances in an owned CourseDraft atomically.',
+          'Reorder draft block instances in an owned CourseDraft atomically. Requires mandatory idempotencyKey.',
         inputSchema: z.object({
           courseId: z.string().uuid().describe('Course ID'),
           expectedRevision: z
@@ -532,7 +551,10 @@ export class McpService implements OnModuleInit {
             .describe(
               'Complete list of draft block IDs ordered by intended display sequence',
             ),
-          idempotencyKey: z.string().optional(),
+          idempotencyKey: z
+            .string()
+            .min(1)
+            .describe('Mandatory client idempotency key for retry protection'),
         }),
       },
       async (args) => {
@@ -643,10 +665,13 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.CREATE_PRIVATE_COURSE_VERSION,
       {
         description:
-          'Create an immutable CourseVersion from the current draft snapshot under aggregate row lock.',
+          'Create an immutable CourseVersion from the current draft snapshot under aggregate row lock. Requires mandatory idempotencyKey.',
         inputSchema: z.object({
           courseId: z.string().uuid().describe('Course ID'),
-          idempotencyKey: z.string().optional(),
+          idempotencyKey: z
+            .string()
+            .min(1)
+            .describe('Mandatory client idempotency key for retry protection'),
         }),
       },
       async (args) => {
@@ -698,7 +723,7 @@ export class McpService implements OnModuleInit {
       MCP_AUTHORING_TOOLS.GET_COURSE_VERSION,
       {
         description:
-          'Get a specific immutable CourseVersion and its pinned snapshot.',
+          'Get a specific immutable CourseVersion and its pinned snapshot. Read-only tokens omit protected evaluator answer keys.',
         inputSchema: z.object({
           courseId: z.string().uuid().describe('Course ID'),
           versionId: z.string().uuid().describe('Version ID'),
@@ -709,11 +734,22 @@ export class McpService implements OnModuleInit {
           MCP_AUTHORING_TOOLS.GET_COURSE_VERSION,
           MCP_SCOPES.READ,
           async (auth) => {
-            return this.coursesService.getVersion(
+            const version = await this.coursesService.getVersion(
               args.courseId,
               args.versionId,
               auth.userId,
             );
+            const hasWriteScope = auth.scopes.includes(MCP_SCOPES.WRITE);
+            if (!hasWriteScope && version.snapshot && typeof version.snapshot === 'object') {
+              const snapshot = { ...(version.snapshot as Record<string, unknown>) };
+              if (Array.isArray(snapshot.blocks)) {
+                snapshot.blocks = (snapshot.blocks as Array<Record<string, unknown>>).map((b) =>
+                  this.sanitizeBlockForCaller(b, false),
+                );
+              }
+              return { ...version, snapshot };
+            }
+            return version;
           },
         );
       },
@@ -729,8 +765,23 @@ export class McpService implements OnModuleInit {
     requiredScope: string,
     action: (auth: McpAuthContext) => Promise<T>,
   ) {
+    const startTime = Date.now();
     const auth = mcpContextStorage.getStore();
+
     if (!auth || !auth.userId) {
+      const durationMs = Date.now() - startTime;
+      await this.recordAuditLog(
+        null,
+        'unauthenticated',
+        toolName,
+        'ACCESS',
+        'UNAUTHORIZED',
+        null,
+        undefined,
+        'Authentication required. Missing OAuth Bearer token.',
+        durationMs,
+      );
+
       return {
         isError: true,
         content: [
@@ -743,6 +794,19 @@ export class McpService implements OnModuleInit {
     }
 
     if (!auth.scopes.includes(requiredScope)) {
+      const durationMs = Date.now() - startTime;
+      await this.recordAuditLog(
+        auth.userId,
+        auth.clientId,
+        toolName,
+        'ACCESS',
+        'FORBIDDEN',
+        null,
+        undefined,
+        `Insufficient scope. Required: ${requiredScope}, granted: ${auth.scopes.join(' ')}`,
+        durationMs,
+      );
+
       return {
         isError: true,
         content: [
@@ -756,6 +820,18 @@ export class McpService implements OnModuleInit {
 
     try {
       const result = await action(auth);
+      const durationMs = Date.now() - startTime;
+      await this.recordAuditLog(
+        auth.userId,
+        auth.clientId,
+        toolName,
+        'EXECUTE',
+        'SUCCESS',
+        result,
+        undefined,
+        undefined,
+        durationMs,
+      );
       return {
         content: [
           {
@@ -765,24 +841,56 @@ export class McpService implements OnModuleInit {
         ],
       };
     } catch (err: unknown) {
+      const durationMs = Date.now() - startTime;
       let status = 500;
-      let message = 'An internal error occurred during tool execution.';
+      let userFacingMessage = 'Internal server error occurred during tool execution.';
+      let auditStatus = 'ERROR';
 
-      if (err instanceof HttpException) {
+      if (err instanceof NotFoundException) {
+        status = 404;
+        userFacingMessage = err.message;
+        auditStatus = 'NOT_FOUND';
+      } else if (err instanceof ForbiddenException) {
+        status = 403;
+        userFacingMessage = err.message;
+        auditStatus = 'FORBIDDEN';
+      } else if (err instanceof ConflictException) {
+        status = 409;
+        userFacingMessage = err.message;
+        auditStatus = 'CONFLICT';
+      } else if (err instanceof BadRequestException) {
+        status = 400;
+        userFacingMessage = err.message;
+        auditStatus = 'INVALID_ARGUMENT';
+      } else if (err instanceof HttpException) {
         status = err.getStatus();
-        message = err.message;
+        userFacingMessage = err.message;
+        auditStatus = status >= 400 && status < 500 ? 'CLIENT_ERROR' : 'ERROR';
       } else if (err instanceof Error) {
-        message = err.message;
+        // Internal unhandled errors are logged internally, sanitized for client
+        this.logger.error(`Internal unhandled error in tool '${toolName}': ${err.message}`, err.stack);
+        userFacingMessage = 'An internal error occurred during tool execution.';
+        auditStatus = 'ERROR';
       }
 
-      this.logger.warn(`MCP Tool '${toolName}' failed (${status}): ${message}`);
+      await this.recordAuditLog(
+        auth.userId,
+        auth.clientId,
+        toolName,
+        'EXECUTE',
+        auditStatus,
+        null,
+        undefined,
+        userFacingMessage,
+        durationMs,
+      );
 
       return {
         isError: true,
         content: [
           {
             type: 'text' as const,
-            text: `[Error ${status}] ${message}`,
+            text: `[Error ${status}] ${userFacingMessage}`,
           },
         ],
       };
@@ -790,7 +898,44 @@ export class McpService implements OnModuleInit {
   }
 
   // =========================================================================
-  // DURABLE IDEMPOTENCY & AUDIT LOGGING PIPELINE
+  // LEAST-PRIVILEGE READ SANITIZATION (GATE 3)
+  // =========================================================================
+
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  private sanitizeBlockForCaller(block: any, hasWriteScope: boolean): any {
+    if (hasWriteScope || !block) {
+      return block;
+    }
+
+    const config =
+      block.config && typeof block.config === 'object'
+        ? { ...block.config }
+        : {};
+
+    // For multiple choice blocks or blocks with answer keys, strip answerKey and option explanations
+    if (block.blockTypeId === 'multiple-choice' || config.answerKey) {
+      delete config.answerKey;
+      if (Array.isArray(config.options)) {
+        config.options = config.options.map((opt: any) => {
+          if (!opt || typeof opt !== 'object') return opt;
+          const sanitized = { ...opt };
+          delete sanitized.explanation;
+          return sanitized;
+        });
+      }
+      config._evaluatorNotice =
+        'Protected evaluator answer key omitted for read-only inspection. Requires course:write scope.';
+    }
+
+    return {
+      ...block,
+      config,
+    };
+  }
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  // =========================================================================
+  // DURABLE IDEMPOTENCY & AUDIT LOGGING PIPELINE (GATE 2 & GATE 4)
   // =========================================================================
 
   private async executeWithIdempotency<T>(
@@ -801,91 +946,152 @@ export class McpService implements OnModuleInit {
     clientId: string,
     action: () => Promise<T>,
   ): Promise<T> {
-    if (!idempotencyKey) {
-      const result = await action();
-      await this.recordAuditLog(userId, clientId, toolName, 'EXECUTE', result);
-      return result;
+    if (!idempotencyKey || typeof idempotencyKey !== 'string' || !idempotencyKey.trim()) {
+      throw new BadRequestException(
+        `Idempotency key is mandatory for mutation tool '${toolName}'.`,
+      );
     }
 
+    const key = idempotencyKey.trim();
     const normalizedHash = this.computePayloadHash(rawPayload);
 
-    // 1. Check existing record
-    const existing = await this.prisma.mcpMutationIdempotency.findUnique({
-      where: {
-        userId_toolName_idempotencyKey: {
-          userId,
-          toolName,
-          idempotencyKey,
-        },
-      },
-    });
-
-    if (existing) {
-      if (existing.payloadHash !== normalizedHash) {
-        throw new ConflictException(
-          `Idempotency key '${idempotencyKey}' was already used with different payload data for tool '${toolName}'.`,
-        );
-      }
-      return existing.response as T;
-    }
-
-    // 2. Execute authoritative domain mutation
-    const result = await action();
-
-    // 3. Persist idempotency result
+    // 1. Attempt atomic reservation insertion BEFORE running the authoritative mutation
+    let reservationCreated = false;
     try {
       await this.prisma.mcpMutationIdempotency.create({
         data: {
           userId,
+          clientId,
           toolName,
-          idempotencyKey,
+          idempotencyKey: key,
           payloadHash: normalizedHash,
-          response: result as unknown as Prisma.InputJsonValue,
+          status: 'IN_PROGRESS',
+          response: Prisma.JsonNull,
         },
       });
+      reservationCreated = true;
     } catch (err: unknown) {
-      // Handle concurrent insert collision
-      const duplicate = await this.prisma.mcpMutationIdempotency.findUnique({
+      // Prisma unique constraint violation (P2002) indicates a concurrent or previous call
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        reservationCreated = false;
+      } else {
+        throw err;
+      }
+    }
+
+    // WINNER PATH: This request acquired the reservation and owns execution
+    if (reservationCreated) {
+      try {
+        const result = await action();
+
+        // Update reservation to COMPLETED
+        await this.prisma.mcpMutationIdempotency.update({
+          where: {
+            userId_clientId_toolName_idempotencyKey: {
+              userId,
+              clientId,
+              toolName,
+              idempotencyKey: key,
+            },
+          },
+          data: {
+            status: 'COMPLETED',
+            response: result as unknown as Prisma.InputJsonValue,
+          },
+        });
+
+        return result;
+      } catch (actionErr: unknown) {
+        // On failure, delete reservation so subsequent retries are not stuck
+        await this.prisma.mcpMutationIdempotency
+          .delete({
+            where: {
+              userId_clientId_toolName_idempotencyKey: {
+                userId,
+                clientId,
+                toolName,
+                idempotencyKey: key,
+              },
+            },
+          })
+          .catch(() => {});
+
+        throw actionErr;
+      }
+    }
+
+    // CONCURRENT / RETRY PATH: Wait for the in-progress operation or return cached result
+    const maxWaitMs = 10000;
+    const intervalMs = 50;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < maxWaitMs) {
+      const existing = await this.prisma.mcpMutationIdempotency.findUnique({
         where: {
-          userId_toolName_idempotencyKey: {
+          userId_clientId_toolName_idempotencyKey: {
             userId,
+            clientId,
             toolName,
-            idempotencyKey,
+            idempotencyKey: key,
           },
         },
       });
 
-      if (duplicate) {
-        if (duplicate.payloadHash !== normalizedHash) {
-          throw new ConflictException(
-            `Idempotency key '${idempotencyKey}' was already used with different payload data for tool '${toolName}'.`,
-          );
-        }
-        return duplicate.response as T;
+      if (!existing) {
+        // Winner aborted or failed; retry acquiring reservation
+        return this.executeWithIdempotency(
+          toolName,
+          key,
+          rawPayload,
+          userId,
+          clientId,
+          action,
+        );
       }
-      throw err;
+
+      // Detect mismatched payload under same idempotency key
+      if (existing.payloadHash !== normalizedHash) {
+        throw new ConflictException(
+          `Idempotency key '${key}' was already used with different payload data for tool '${toolName}'.`,
+        );
+      }
+
+      // If winner completed successfully, return the cached result
+      if (existing.status === 'COMPLETED' && existing.response !== null) {
+        await this.recordAuditLog(
+          userId,
+          clientId,
+          toolName,
+          'REPLAY',
+          'SUCCESS',
+          existing.response,
+          key,
+        );
+        return existing.response as T;
+      }
+
+      // Wait before polling again
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    // 4. Record audit log entry
-    await this.recordAuditLog(
-      userId,
-      clientId,
-      toolName,
-      'EXECUTE',
-      result,
-      idempotencyKey,
+    throw new ConflictException(
+      `Concurrent operation in progress for tool '${toolName}' with idempotency key '${key}'. Please retry shortly.`,
     );
-
-    return result;
   }
 
   private async recordAuditLog(
-    userId: string,
+    userId: string | null,
     clientId: string,
     toolName: string,
     action: string,
+    status: string,
     result: unknown,
     idempotencyKey?: string,
+    errorMessage?: string,
+    durationMs?: number,
   ): Promise<void> {
     try {
       const resourceType = 'COURSE';
@@ -904,21 +1110,23 @@ export class McpService implements OnModuleInit {
 
       await this.prisma.mcpAuditLog.create({
         data: {
-          userId,
-          clientId,
+          userId: userId ?? null,
+          clientId: clientId || 'unknown_client',
           toolName,
           action,
           resourceType,
           resourceId,
           idempotencyKey: idempotencyKey ?? null,
-          status: 'SUCCESS',
+          status,
           details: {
             timestamp: new Date().toISOString(),
+            ...(durationMs !== undefined ? { durationMs } : {}),
+            ...(errorMessage ? { error: errorMessage } : {}),
           },
         },
       });
     } catch (e) {
-      this.logger.warn(`Failed to record MCP audit log: ${e}`);
+      this.logger.error(`Critical: Failed to record MCP audit log: ${e}`);
     }
   }
 

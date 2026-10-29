@@ -476,8 +476,8 @@ model OauthClientAssertion {
 
 model McpAuditLog {
   id             String   @id @default(uuid())
-  userId         String
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   clientId       String
   toolName       String
   action         String
@@ -492,6 +492,7 @@ model McpAuditLog {
   @@index([clientId])
   @@index([toolName])
   @@index([idempotencyKey])
+  @@index([status])
   @@map("mcp_audit_logs")
 }
 
@@ -499,13 +500,17 @@ model McpMutationIdempotency {
   id             String   @id @default(uuid())
   userId         String
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientId       String   @default("unknown_client")
   toolName       String
   idempotencyKey String
   payloadHash    String
-  response       Json
+  status         String   @default("COMPLETED")
+  response       Json?
   createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  @@unique([userId, toolName, idempotencyKey])
+  @@unique([userId, clientId, toolName, idempotencyKey])
   @@index([userId])
+  @@index([clientId])
   @@map("mcp_mutation_idempotencies")
 }
