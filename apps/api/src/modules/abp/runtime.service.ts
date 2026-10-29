@@ -1,8 +1,10 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   ABAttemptDto,
@@ -23,6 +25,7 @@ import {
   CourseVersion,
   Prisma,
 } from '@prisma/client';
+import { EvidenceIntakeService } from '../evidence/evidence-intake.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecuteRunCommandDto } from './dto/execute-run-command.dto';
 import { StartRunDto } from './dto/start-run.dto';
@@ -33,68 +36,91 @@ export class RuntimeService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly registry: BlockTypeRegistry,
+    @Optional() private readonly evidenceIntake?: EvidenceIntakeService,
   ) {}
 
   /**
    * Starts a new Activity Block Run against a pinned immutable CourseVersion.
    * Concurrently safe and idempotent: replaying with the same idempotencyKey returns
    * the existing run without duplicate rows, while mismatched parameters return 409 Conflict.
+   * P1: Authorization and run creation execute in the same atomic transaction with
+   * row locking on course_access_grants to prevent race conditions during revocation.
    */
   async startRun(userId: string, dto: StartRunDto): Promise<ABRunDto> {
-    // 1. Authorize course version access and retrieve pinned snapshot
-    const version = await this.prisma.courseVersion.findUnique({
-      where: { id: dto.courseVersionId },
-      include: { course: true },
-    });
-
-    if (!version || version.course.ownerId !== userId) {
-      throw new NotFoundException(
-        `CourseVersion '${dto.courseVersionId}' not found.`,
-      );
-    }
-
-    const snapshot = version.snapshot as {
-      blocks?: BlockInstanceSnapshot[];
-    };
-    const blocks = snapshot.blocks ?? [];
-    const pinnedBlock = blocks.find((b) => b.id === dto.blockInstanceId);
-
-    if (!pinnedBlock) {
-      throw new NotFoundException(
-        `Block instance '${dto.blockInstanceId}' not found in course version '${dto.courseVersionId}'.`,
-      );
-    }
-
-    // 2. Extensibility guard: Coding block execution is strictly unsupported in Phase 1B
-    const def = this.registry.getDefinition(pinnedBlock.blockTypeId, pinnedBlock.typeVersion);
-    if (!def.manifest.capabilities.runtimeExecutionSupported) {
-      throw new BadRequestException(
-        `Block type '${pinnedBlock.blockTypeId}' runtime execution is unsupported until an appropriately isolated execution capability is available.`,
-      );
-    }
-
-    // 3. Sequential idempotency check
-    const existingRun = await this.prisma.aBRun.findUnique({
-      where: { idempotencyKey: dto.idempotencyKey },
-      include: { courseVersion: true },
-    });
-
-    if (existingRun) {
-      if (
-        existingRun.userId === userId &&
-        existingRun.courseVersionId === version.id &&
-        existingRun.blockInstanceId === pinnedBlock.id
-      ) {
-        return this.getRun(existingRun.id, userId);
-      }
-      throw new ConflictException(
-        `Idempotency key '${dto.idempotencyKey}' was already used for a different run request.`,
-      );
-    }
-
-    // 4. Create Run atomically, handling concurrent insertion races via unique constraint catch
     try {
       return await this.prisma.$transaction(async (tx) => {
+        // 1. Authorize course version access and retrieve pinned snapshot under transaction
+        const version = await tx.courseVersion.findUnique({
+          where: { id: dto.courseVersionId },
+          include: { course: true },
+        });
+
+        if (!version) {
+          throw new NotFoundException(
+            `CourseVersion '${dto.courseVersionId}' not found.`,
+          );
+        }
+
+        const isOwner = version.course.ownerId === userId;
+        if (!isOwner) {
+          // Synchronize on grant record with row-level lock (FOR SHARE)
+          const lockedGrants = await tx.$queryRaw<Array<{ id: string; status: string }>>`
+            SELECT id, status FROM course_access_grants
+            WHERE "courseVersionId" = ${version.id} AND "userId" = ${userId}
+            FOR SHARE
+          `;
+
+          if (
+            !lockedGrants ||
+            lockedGrants.length === 0 ||
+            lockedGrants[0].status !== 'ACTIVE'
+          ) {
+            throw new NotFoundException(
+              `CourseVersion '${dto.courseVersionId}' not found.`,
+            );
+          }
+        }
+
+        const snapshot = version.snapshot as {
+          blocks?: BlockInstanceSnapshot[];
+        };
+        const blocks = snapshot.blocks ?? [];
+        const pinnedBlock = blocks.find((b) => b.id === dto.blockInstanceId);
+
+        if (!pinnedBlock) {
+          throw new NotFoundException(
+            `Block instance '${dto.blockInstanceId}' not found in course version '${dto.courseVersionId}'.`,
+          );
+        }
+
+        // 2. Extensibility guard: Coding block execution is strictly unsupported in Phase 1B
+        const def = this.registry.getDefinition(pinnedBlock.blockTypeId, pinnedBlock.typeVersion);
+        if (!def.manifest.capabilities.runtimeExecutionSupported) {
+          throw new BadRequestException(
+            `Block type '${pinnedBlock.blockTypeId}' runtime execution is unsupported until an appropriately isolated execution capability is available.`,
+          );
+        }
+
+        // 3. Sequential idempotency check under transaction
+        const existingRun = await tx.aBRun.findUnique({
+          where: { idempotencyKey: dto.idempotencyKey },
+          include: { courseVersion: true },
+        });
+
+        if (existingRun) {
+          if (
+            existingRun.userId === userId &&
+            existingRun.courseVersionId === version.id &&
+            existingRun.blockInstanceId === pinnedBlock.id
+          ) {
+            return this.getRun(existingRun.id, userId, tx);
+          }
+          throw new ConflictException(
+            `Idempotency key '${dto.idempotencyKey}' was already used for a different run request.`,
+          );
+        }
+
+        // 4. Create Run atomically
         const now = new Date();
         const run = await tx.aBRun.create({
           data: {
@@ -139,8 +165,8 @@ export class RuntimeService {
         if (
           racedRun &&
           racedRun.userId === userId &&
-          racedRun.courseVersionId === version.id &&
-          racedRun.blockInstanceId === pinnedBlock.id
+          racedRun.courseVersionId === dto.courseVersionId &&
+          racedRun.blockInstanceId === dto.blockInstanceId
         ) {
           return this.getRun(racedRun.id, userId);
         }
@@ -156,8 +182,13 @@ export class RuntimeService {
   /**
    * Retrieves permitted runtime state for an owned run.
    */
-  async getRun(runId: string, userId: string): Promise<ABRunDto> {
-    const run = await this.prisma.aBRun.findUnique({
+  async getRun(
+    runId: string,
+    userId: string,
+    txClient?: Prisma.TransactionClient,
+  ): Promise<ABRunDto> {
+    const db = txClient ?? this.prisma;
+    const run = await db.aBRun.findUnique({
       where: { id: runId },
       include: {
         courseVersion: true,
@@ -216,8 +247,24 @@ export class RuntimeService {
 
       const run = await tx.aBRun.findUniqueOrThrow({
         where: { id: runId },
-        include: { courseVersion: true },
+        include: { courseVersion: { include: { course: true } } },
       });
+
+      // Authorization guard: verify active access grant for non-owner learners under row lock
+      const isOwner = run.courseVersion.course.ownerId === userId;
+      if (!isOwner) {
+        const lockedGrants = await tx.$queryRaw<Array<{ id: string; status: string }>>`
+          SELECT id, status FROM course_access_grants
+          WHERE "courseVersionId" = ${run.courseVersionId} AND "userId" = ${userId}
+          FOR SHARE
+        `;
+
+        if (!lockedGrants || lockedGrants.length === 0 || lockedGrants[0].status !== 'ACTIVE') {
+          throw new ForbiddenException(
+            'Course access grant has been revoked or is not active.',
+          );
+        }
+      }
 
       const pinnedBlock = this.extractPinnedBlock(run.courseVersion, run.blockInstanceId);
       const def = this.registry.getDefinition(pinnedBlock.blockTypeId, pinnedBlock.typeVersion);
@@ -570,6 +617,19 @@ export class RuntimeService {
             },
           });
 
+          // Ingest verified ABP attempt into Trusted Evidence Ledger
+          if (this.evidenceIntake) {
+            await this.evidenceIntake.ingestAttempt(
+              {
+                run,
+                attempt,
+                assessmentResult: assessment,
+                courseVersion: run.courseVersion,
+              },
+              tx,
+            );
+          }
+
           return this.toRunDto(run, pinnedBlock, attempt, assessment, deliveredHint);
         }
 
@@ -589,7 +649,7 @@ export class RuntimeService {
             },
           });
 
-          await tx.aBEvent.create({
+          const completedEvent = await tx.aBEvent.create({
             data: {
               runId: run.id,
               eventType: 'RUN_COMPLETED',
@@ -601,6 +661,23 @@ export class RuntimeService {
               serverTimestamp: now,
             },
           });
+
+          // Ingest run completion progress evidence (e.g. video completion)
+          if (this.evidenceIntake && pinnedBlock.blockTypeId === 'video') {
+            await this.evidenceIntake.ingestRunCompletion(
+              {
+                run: updated,
+                event: completedEvent,
+                courseVersion: run.courseVersion,
+              },
+              tx,
+            );
+          }
+
+          // Reconcile learner skill projections on completed run closure (releases deferred feedback)
+          if (this.evidenceIntake) {
+            await this.evidenceIntake.reconcileProjectionsForRun(updated, tx);
+          }
 
           const latestAttempt = await tx.aBAttempt.findFirst({
             where: { runId: run.id },
@@ -641,6 +718,10 @@ export class RuntimeService {
               serverTimestamp: now,
             },
           });
+
+          if (this.evidenceIntake) {
+            await this.evidenceIntake.reconcileProjectionsForRun(updated, tx);
+          }
 
           const latestAttempt = await tx.aBAttempt.findFirst({
             where: { runId: run.id },

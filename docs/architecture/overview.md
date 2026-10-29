@@ -100,3 +100,41 @@ flowchart TD
 7. **Learning Science Invariants**:
    - Video completion is ungraded and produces no score, pass, or mastery.
    - Assisted/hinted attempts retain distinct provenance from independent attempts.
+
+
+## 4. Phase 3: Trusted Learning Evidence & Minimal LII Foundation
+
+```mermaid
+flowchart TD
+    subgraph Access["1. Access Delegation"]
+        Owner["Course Owner"] -->|Explicit Grant (CourseVersion)| Grant["CourseAccessGrant (ACTIVE)"]
+        Learner["Registered Learner"] -->|Authorized via Grant| LearnerRun["Learner ABRun"]
+    end
+
+    subgraph RuntimeEvents["2. Authentic ABP Facts"]
+        LearnerRun -->|Submit Response| Attempt["ABAttempt + AssessmentResult"]
+        LearnerRun -->|Finish Video| Completion["RUN_COMPLETED (ungraded)"]
+    end
+
+    subgraph Ledger["3. Idempotent Evidence Ledger"]
+        Attempt -->|Evaluated Ingestion| Ev1["LearningEvidence (EVALUATED)\nProvenance: SERVER_OBSERVED\nUnique: runId+attemptId+skillId"]
+        Completion -->|Progress Ingestion| Ev2["LearningEvidence (COMPLETION_ONLY)\nNo Graded Score"]
+    end
+
+    subgraph Projections["4. Minimal LII Skill Projections"]
+        Ev1 --> Projection["LearnerSkillProjection\nState: INSUFFICIENT_EVIDENCE\n| DEVELOPING | READY_TO_VERIFY\n(Never Premature Mastery)"]
+        Ev2 -.->|Progress Metrics Only| Progress["Course Progress (0..100%)\nisMastered: false"]
+    end
+```
+
+### Key Boundaries & Invariants
+1. **Explicit Private Learner Access**: Private CourseVersions require explicit owner-issued `CourseAccessGrant` records. Grant revocation immediately prevents starting new runs and rejects in-flight commands (HTTP 403 Forbidden).
+2. **Course-Scoped Skills & Versioned Snapshots**: Skills and block-to-skill mappings are course-scoped and freeze into immutable `CourseVersion.snapshot` upon version creation.
+3. **Evidence Ledger Idempotency & Provenance**: Evidence is ingested deterministically with database uniqueness constraints (`[runId, attemptId, skillId]`). Server-delivered hints strictly enforce `SERVER_OBSERVED` assistance provenance, overriding client claims.
+4. **Pedagogical Distinctions**:
+   - Activity progress $\neq$ submitted attempt $\neq$ assessment result $\neq$ learning evidence $\neq$ skill state $\neq$ verified mastery claim.
+   - Non-evaluatable video completion produces progress metrics only, never graded skill evidence or mastery.
+   - Deferred feedback policy redacts correctness and scores until runs are `CLOSED (COMPLETED)`.
+5. **Conservative Skill State Projections**: Deterministic projections derive `INSUFFICIENT_EVIDENCE`, `DEVELOPING`, or `READY_TO_VERIFY` states with transparent reasoning and missing evidence explanations. `VERIFIED` mastery is strictly out of scope for this slice and is never granted.
+6. **Append-Only Assessment Corrections**: Corrections append an auditable `AssessmentCorrection` record and idempotently re-evaluate affected evidence and skill projections without mutating history.
+

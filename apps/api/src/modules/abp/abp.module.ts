@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { EvidenceModule } from '../evidence/evidence.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BlockTypesController } from './block-types.controller';
 import { DraftBlocksController } from './draft-blocks.controller';
@@ -9,7 +10,7 @@ import { RuntimeController } from './runtime.controller';
 import { RuntimeService } from './runtime.service';
 
 @Module({
-  imports: [PrismaModule, AuthModule],
+  imports: [PrismaModule, AuthModule, EvidenceModule],
   controllers: [
     BlockTypesController,
     DraftBlocksController,

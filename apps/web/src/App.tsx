@@ -2,6 +2,7 @@ import React from 'react';
 import { AbpVerificationStudio } from './components/AbpVerificationStudio';
 import { AuthCourseStudio } from './components/AuthCourseStudio';
 import { HealthStatus } from './components/HealthStatus';
+import { LearnerEvidenceStudio } from './components/LearnerEvidenceStudio';
 import { getApiBaseUrl } from './services/api';
 
 export const App: React.FC = () => {
@@ -16,7 +17,7 @@ export const App: React.FC = () => {
             <div>
               <h1>Universal Learning Engine</h1>
               <p className="subtitle">
-                Phase 1B: Activity Block Protocol &amp; Minimal Runtime
+                Phase 3: Trusted Learning Evidence &amp; Minimal LII Foundation
               </p>
             </div>
           </div>
@@ -26,6 +27,8 @@ export const App: React.FC = () => {
             <span className="tag">Better Auth</span>
             <span className="tag">Prisma 7</span>
             <span className="tag">ABP v0.2</span>
+            <span className="tag">Evidence Ledger</span>
+            <span className="tag">Minimal LII</span>
           </div>
         </div>
       </header>
@@ -33,6 +36,7 @@ export const App: React.FC = () => {
       <main className="main-content">
         <div className="grid">
           <div className="column">
+            <LearnerEvidenceStudio />
             <AuthCourseStudio />
             <AbpVerificationStudio />
           </div>
@@ -41,27 +45,28 @@ export const App: React.FC = () => {
             <HealthStatus />
 
             <section className="card">
-              <h2>ABP Architectural Boundaries</h2>
+              <h2>Phase 3 Evidence &amp; LII Boundaries</h2>
               <ul className="bullet-list">
                 <li>
-                  <strong>Frontend Isolation:</strong> The React application is strictly an API
-                  client of NestJS. Direct database connectivity from the UI is prohibited.
+                  <strong>Private Learner Access:</strong> Course versions remain private and
+                  non-discoverable. Learners execute only explicitly granted immutable CourseVersions.
                 </li>
                 <li>
-                  <strong>Protected Evaluator Configuration:</strong> Multiple Choice answer keys
-                  and option explanations are never returned to learner runtime endpoints.
+                  <strong>Idempotent Evidence Ledger:</strong> Trusted Runtime evaluation facts produce
+                  normalized, traceable evidence keyed to authenticated learner and pinned activity versions.
                 </li>
                 <li>
-                  <strong>Authoritative Evaluation:</strong> Server-side logic assesses submitted
-                  attempts deterministically. Client-supplied scores, passes, or mastery have zero authority.
+                  <strong>Course-Scoped Skill Identity:</strong> Skills are strictly scoped to parent
+                  courses. No cross-course state transfer or ungrounded equivalence.
                 </li>
                 <li>
-                  <strong>Learning Science Invariants:</strong> Video completion is strictly ungraded
-                  and never produces a score or mastery. Assisted and independent attempts retain distinct context.
+                  <strong>Conservative State Projections:</strong> States are derived transparently
+                  (INSUFFICIENT_EVIDENCE &rarr; DEVELOPING &rarr; READY_TO_VERIFY). Same-item repetitions
+                  and hint-assisted responses never count as independent proof of mastery.
                 </li>
                 <li>
-                  <strong>Pinned Immutability:</strong> Runs execute strictly against pinned immutable
-                  CourseVersion snapshots. Subsequent mutable draft edits cannot alter older versions or runs.
+                  <strong>No Premature Verified Mastery:</strong> Formal Verified Mastery claims remain
+                  unavailable until proctored verification criteria and platform standards are verified.
                 </li>
               </ul>
             </section>
@@ -78,7 +83,7 @@ export const App: React.FC = () => {
                   <span className="resource-icon">📚</span>
                   <div>
                     <strong>OpenAPI Documentation (Swagger)</strong>
-                    <p className="resource-desc">Explore canonical /api/v1 endpoints including ABP &amp; Runs</p>
+                    <p className="resource-desc">Explore canonical /api/v1 endpoints including Evidence &amp; Learner</p>
                   </div>
                 </a>
                 <a
@@ -100,7 +105,7 @@ export const App: React.FC = () => {
       </main>
 
       <footer className="footer">
-        <p>Universal Learning Engine (ULE) &bull; Phase 1B Implementation</p>
+        <p>Universal Learning Engine (ULE) &bull; Phase 3 Implementation</p>
       </footer>
     </div>
   );

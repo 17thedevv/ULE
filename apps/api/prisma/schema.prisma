@@ -1,6 +1,8 @@
 // Prisma schema for ULE (Universal Learning Engine)
 // Phase 1A: Course Core, Ownership & Versioning
 // Phase 1B: Activity Block Protocol & Minimal Runtime
+// Phase 2: Model Context Protocol (MCP) Authoring & OAuth 2.1
+// Phase 3: Trusted Learning Evidence & Minimal LII Foundation
 
 datasource db {
   provider = "postgresql"
@@ -33,17 +35,23 @@ model User {
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
-  sessions        Session[]
-  accounts        Account[]
-  courses         Course[]
-  createdVersions CourseVersion[] @relation("UserCreatedVersions")
-  runs            ABRun[]
+  sessions           Session[]
+  accounts           Account[]
+  courses            Course[]
+  createdVersions    CourseVersion[]          @relation("UserCreatedVersions")
+  runs               ABRun[]
   oauthClients       OauthClient[]
   oauthRefreshTokens OauthRefreshToken[]
   oauthAccessTokens  OauthAccessToken[]
   oauthConsents      OauthConsent[]
   mcpAuditLogs       McpAuditLog[]
   mcpIdempotencies   McpMutationIdempotency[]
+
+  // Phase 3 relations
+  learnerGrants       CourseAccessGrant[]      @relation("LearnerGrants")
+  grantedAccessGrants CourseAccessGrant[]      @relation("GrantedByOwner")
+  learningEvidence    LearningEvidence[]       @relation("UserLearningEvidence")
+  skillProjections    LearnerSkillProjection[] @relation("UserSkillProjections")
 
   @@map("users")
 }
@@ -117,8 +125,10 @@ model Course {
   createdAt  DateTime         @default(now())
   updatedAt  DateTime         @updatedAt
 
-  draft      CourseDraft?
-  versions   CourseVersion[]
+  draft        CourseDraft?
+  versions     CourseVersion[]
+  skills       CourseSkill[]
+  accessGrants CourseAccessGrant[]
 
   @@index([ownerId])
   @@map("courses")
@@ -137,7 +147,8 @@ model CourseDraft {
   sourceVersion   CourseVersion?       @relation("DraftSourceVersion", fields: [sourceVersionId], references: [id], onDelete: SetNull)
   updatedAt       DateTime             @updatedAt
 
-  blocks          DraftBlockInstance[]
+  blocks        DraftBlockInstance[]
+  skillMappings DraftSkillMapping[]
 
   @@map("course_drafts")
 }
@@ -158,8 +169,11 @@ model CourseVersion {
   createdBy     User         @relation("UserCreatedVersions", fields: [createdById], references: [id], onDelete: Restrict)
   createdAt     DateTime     @default(now())
 
-  derivedDrafts CourseDraft[] @relation("DraftSourceVersion")
-  runs          ABRun[]
+  derivedDrafts    CourseDraft[]            @relation("DraftSourceVersion")
+  runs             ABRun[]
+  accessGrants     CourseAccessGrant[]
+  learningEvidence LearningEvidence[]
+  skillProjections LearnerSkillProjection[]
 
   @@unique([courseId, versionNumber])
   @@index([courseId])
@@ -185,6 +199,7 @@ enum RunCloseReason {
 }
 
 enum AssessmentStatus {
+  PENDING
   EVALUATED
   SKIPPED
   FAILED
@@ -228,6 +243,7 @@ model ABRun {
   attempts          ABAttempt[]
   events            ABEvent[]
   assessmentResults AssessmentResult[]
+  learningEvidence  LearningEvidence[]
 
   @@index([userId])
   @@index([courseVersionId])
@@ -246,7 +262,8 @@ model ABAttempt {
   idempotencyKey    String?
   createdAt         DateTime          @default(now())
 
-  assessmentResult  AssessmentResult?
+  assessmentResult AssessmentResult?
+  learningEvidence LearningEvidence[]
 
   @@unique([runId, attemptNumber])
   @@unique([runId, idempotencyKey])
@@ -267,6 +284,9 @@ model AssessmentResult {
   evaluatorId String
   evaluatedAt DateTime         @default(now())
   createdAt   DateTime         @default(now())
+
+  corrections      AssessmentCorrection[]
+  learningEvidence LearningEvidence[]
 
   @@index([runId])
   @@map("assessment_results")
@@ -497,21 +517,21 @@ model McpAuditLog {
 }
 
 model McpMutationIdempotency {
-  id             String   @id @default(uuid())
+  id             String    @id @default(uuid())
   userId         String
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  clientId       String   @default("unknown_client")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientId       String    @default("unknown_client")
   toolName       String
   idempotencyKey String
   payloadHash    String
   resourceId     String?
   ownerToken     String?
-  fenceToken     Int      @default(1)
+  fenceToken     Int       @default(1)
   leaseExpiresAt DateTime?
-  status         String   @default("COMPLETED")
+  status         String    @default("COMPLETED")
   response       Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@unique([userId, clientId, toolName, idempotencyKey])
   @@index([userId])
@@ -520,4 +540,192 @@ model McpMutationIdempotency {
   @@index([status, leaseExpiresAt])
   @@index([fenceToken])
   @@map("mcp_mutation_idempotencies")
+}
+
+// ----------------------------------------------------
+// Phase 3: Trusted Learning Evidence & Minimal LII Foundation
+// ----------------------------------------------------
+
+enum AccessGrantStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum EvidenceClassification {
+  UNGRADED_PARTICIPATION
+  INDEPENDENT_CORRECT
+  ASSISTED_CORRECT
+  INCORRECT
+  SAME_ITEM_REPETITION
+  PENDING_EVALUATION
+  EXCLUDED
+}
+
+enum EvidenceStatus {
+  ACCEPTED
+  EXCLUDED
+  PENDING_ASSESSMENT
+  SUPERSEDED
+}
+
+enum LearnerSkillState {
+  INSUFFICIENT_EVIDENCE
+  DEVELOPING
+  READY_TO_VERIFY
+}
+
+model CourseAccessGrant {
+  id              String            @id @default(uuid())
+  courseId        String
+  course          Course            @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  courseVersionId String
+  courseVersion   CourseVersion     @relation(fields: [courseVersionId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User              @relation("LearnerGrants", fields: [userId], references: [id], onDelete: Cascade)
+  grantedById     String
+  grantedBy       User              @relation("GrantedByOwner", fields: [grantedById], references: [id], onDelete: Restrict)
+  status          AccessGrantStatus @default(ACTIVE)
+  revokedAt       DateTime?
+  revokedById     String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@unique([courseVersionId, userId])
+  @@index([userId])
+  @@index([courseVersionId])
+  @@index([courseId])
+  @@map("course_access_grants")
+}
+
+model CourseSkill {
+  id          String   @id @default(uuid())
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  skillCode   String
+  name        String
+  description String?
+  revision    Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  mappings DraftSkillMapping[]
+
+  @@unique([courseId, skillCode])
+  @@index([courseId])
+  @@map("course_skills")
+}
+
+model DraftSkillMapping {
+  id              String      @id @default(uuid())
+  draftId         String
+  draft           CourseDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  blockInstanceId String
+  skillId         String
+  skill           CourseSkill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  itemKey         String?
+  criterion       String      @default("CORRECT_RESPONSE")
+  weight          Float       @default(1.0)
+  revision        Int         @default(1)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@unique([draftId, blockInstanceId, skillId, itemKey])
+  @@index([draftId])
+  @@index([skillId])
+  @@map("draft_skill_mappings")
+}
+
+model LearningEvidence {
+  id                   String                 @id @default(uuid())
+  sourceKey            String                 @unique
+  userId               String
+  user                 User                   @relation("UserLearningEvidence", fields: [userId], references: [id], onDelete: Cascade)
+  courseVersionId      String
+  courseVersion        CourseVersion          @relation(fields: [courseVersionId], references: [id], onDelete: Cascade)
+  skillId              String?
+  skillCode            String?
+  skillRevision        Int?
+  blockInstanceId      String
+  blockTypeId          String
+  typeVersion          String                 @default("1.0.0")
+  runId                String
+  run                  ABRun                  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  attemptId            String?
+  attempt              ABAttempt?             @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  assessmentResultId   String?
+  assessmentResult     AssessmentResult?      @relation(fields: [assessmentResultId], references: [id], onDelete: SetNull)
+  eventId              String?
+  itemKey              String?
+  mappingRevision      Int?
+  evaluatorId          String?
+  evaluatorVersion     String?
+  assessmentStatus     String
+  evaluatedAt          DateTime?
+  assisted             Boolean                @default(false)
+  supportProvenance    String?
+  supportContext       Json?
+  isCorrect            Boolean?
+  score                Float?
+  classification       EvidenceClassification
+  status               EvidenceStatus         @default(ACCEPTED)
+  exclusionReason      String?
+  policyVersion        String                 @default("1.0.0")
+  isSameItemRepetition Boolean                @default(false)
+  repetitionCount      Int                    @default(1)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  @@index([userId, courseVersionId])
+  @@index([userId, skillId])
+  @@index([runId])
+  @@map("learning_evidence")
+}
+
+model AssessmentCorrection {
+  id                 String           @id @default(uuid())
+  assessmentResultId String
+  assessmentResult   AssessmentResult @relation(fields: [assessmentResultId], references: [id], onDelete: Cascade)
+  revision           Int
+  previousStatus     AssessmentStatus
+  newStatus          AssessmentStatus
+  previousIsCorrect  Boolean?
+  newIsCorrect       Boolean?
+  previousScore      Float?
+  newScore           Float?
+  reason             String
+  actorId            String
+  createdAt          DateTime         @default(now())
+
+  @@unique([assessmentResultId, revision])
+  @@index([assessmentResultId])
+  @@map("assessment_corrections")
+}
+
+model LearnerSkillProjection {
+  id               String            @id @default(uuid())
+  userId           String
+  user             User              @relation("UserSkillProjections", fields: [userId], references: [id], onDelete: Cascade)
+  courseVersionId  String
+  courseVersion    CourseVersion     @relation(fields: [courseVersionId], references: [id], onDelete: Cascade)
+  skillId          String
+  skillCode        String
+  state            LearnerSkillState @default(INSUFFICIENT_EVIDENCE)
+  revision         Int               @default(1)
+  policyVersion    String            @default("1.0.0")
+  evidenceCount    Int               @default(0)
+  independentCount Int               @default(0)
+  assistedCount    Int               @default(0)
+  incorrectCount   Int               @default(0)
+  repeatedCount    Int               @default(0)
+  evidenceIds      Json
+  reasons          Json
+  limitations      Json
+  proposedAction   Json?
+  lastEvaluatedAt  DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@unique([courseVersionId, userId, skillId])
+  @@index([userId, courseVersionId])
+  @@map("learner_skill_projections")
 }

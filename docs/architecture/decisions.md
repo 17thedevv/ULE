@@ -141,3 +141,79 @@
       - **Browser OAuth Consent Correctness & DOM XSS Hardening**: `/auth/login` and `/auth/consent` preserve full authorization context and PKCE parameters. `/auth/consent` renders requesting client information and authorized scopes using strict DOM APIs and `textContent` (never untrusted `innerHTML`), completely eliminating DOM XSS vulnerabilities. Unknown or malformed scope query parameters are safely rejected, displaying a safe text warning and disabling the Authorize action to ensure invalid scope requests cannot obtain elevated OAuth grants.
       - **External Client Compatibility**: Desktop GUI clients (Claude Desktop / Cursor) are not installed on headless CI/server environments. Protocol-level external client compatibility is proven via real HTTP/SSE integration tests as well as an official `@modelcontextprotocol/sdk/client` TypeScript SDK (`Client` + `StreamableHTTPClientTransport`) headless smoke test over live HTTP/SSE.
 - **Consequences**: Proven external AI authoring integration that preserves all Phase 1A/1B concurrency guarantees without introducing external LLM costs. Verified via real PostgreSQL automated tests: `test/mcp-auth.integration.spec.ts` (27 tests covering discovery, real OAuth 2.1 code flow, PKCE, browser DOM automation, denial/acceptance, revocation, scope gates, and DOM XSS regression prevention) and `test/mcp-authoring.integration.spec.ts` (49 tests covering the 13-step scenario, shared transaction rollback on audit failure, exactly-once authoritative mutation audit, fencing lease takeover, non-inference of mutation success, concurrent idempotency, least-privilege answer key protection, and official MCP SDK client smoke test).
+
+
+## ADR-011: Phase 3 Trusted Learning Evidence, Idempotent Evidence Ledger & Minimal LII Foundation
+
+- **Status**: Accepted (Phase 3 Verified)
+- **Context**: Authentic learning requires transforming raw runtime attempts and evaluations into traceable, trustworthy evidence without conflating activity completion, quiz performance, and verified skill mastery. Direct learning science requirements mandate that video completion cannot generate evaluatable skill scores, multiple-choice correctness cannot automatically grant mastery, assistance provenance must be server-observed rather than client-trusted, and private CourseVersions require explicit owner-delegated access with active revocation.
+- **Decision**: Implement a dedicated, conservative learning evidence and minimal LII subsystem within the NestJS modular monolith and PostgreSQL:
+  1. **Minimal Private Learner Access Grant Lifecycle**:
+     - Model: `CourseAccessGrant` binds a registered learner (`userId`) to a specific immutable `CourseVersion` (`courseVersionId`), issued explicitly by the course owner (`grantedBy`).
+     - Course visibility remains strictly `PRIVATE`; courses are not public or discoverable.
+     - Runtime authorization gate: `startRun()` requires caller to be either the course owner or hold an `ACTIVE` grant for the requested `courseVersionId`. Unauthorized starts return HTTP 404 (preventing existence leaks).
+     - Explicit revocation policy: Revoking a grant immediately transitions its status to `REVOKED`, prevents starting new runs, and causes any subsequent runtime host commands on existing runs to fail closed with HTTP 403 Forbidden.
+     - Cross-user isolation: Learners cannot access drafts, blocks, answer keys, or other learners' runs or evidence. Course owners cannot use learner endpoints to impersonate learners.
+  2. **Course-Scoped Skill Identity & Versioned Snapshot Mappings**:
+     - `CourseSkill`: Aggregate entity strictly scoped to its parent course (`courseId`, `skillCode`, `name`, `description`, `revision`). Unique constraint `[courseId, skillCode]` ensures skills are never conflated across courses; no cross-course mastery transfer.
+     - `DraftSkillMapping`: Maps a draft block instance to a skill (`courseId`, `blockInstanceId`, `skillId`, `weight`, `mappingRevision`).
+     - Atomic snapshotting: On `CourseVersion` creation under course row-lock, all active draft skills and mappings are validated and frozen immutably into `CourseVersion.snapshot` (`snapshot.skills`, `snapshot.skillMappings`). Existing course versions are never rewritten.
+  3. **Trusted Evidence Intake & Idempotent Ledger**:
+     - Dedicated `EvidenceIntakeService` ingests verified runtime facts directly from `RuntimeService`:
+       - `SUBMIT_RESPONSE`: Ingests evaluated attempt evidence linked to `AssessmentResult`.
+       - `FINISH`: Ingests completion progress evidence (`COMPLETION_ONLY`) for non-evaluatable content.
+     - Normalized `LearningEvidence` schema captures: `userId`, `courseVersionId`, `skillId`, `skillRevision`, `blockInstanceId`, `blockTypeVersion`, `runId`, `attemptId`, `assessmentResultId`, `itemIdentity`, `classification`, `status`, `assistanceProvenance`, `deliveredHint`, `serverObservedHint`, `evidenceSchemaVersion`, and `rejectionReason`.
+     - Database uniqueness enforcing idempotency: Unique constraints on `[runId, attemptId, skillId]` for attempt evidence and `[runId, blockInstanceId, classification]` for completion evidence. Retried commands or duplicate events never produce duplicate ledger entries.
+     - Ledger integrity: Evidence rows form an append-only audit trail and are never edited as aggregate scores. Arbitrary evidence creation is strictly blocked from public REST and MCP endpoints.
+  4. **Pedagogical Invariants, Quality Rules & Feedback Redaction**:
+     - **Video / Ungraded Content**: Generates completion progress evidence (`COMPLETION_ONLY`) and updates course progress metrics. Strictly non-evaluatable; never creates graded skill evidence and never contributes to skill mastery.
+     - **Assistance Provenance**: When the server delivered a hint (`REQUEST_HINT` -> `HINT_DELIVERED`), the ledger authoritatively records `serverObservedHint: true` and `assistanceProvenance: 'SERVER_OBSERVED'`, overriding client claims. Same-item repetitions retain explicit attempt relationships and are classified as repeated observations, not novel independent proof.
+     - **Deferred Feedback Visibility Gate**: Under `DEFERRED` policy runs that are `ACTIVE` or `SUSPENDED`, learner-facing queries (`GET /api/v1/learner/courses/:versionId/evidence`) redact correctness and score (`deferred: true`). Unredacted details are released only after run completion (`CLOSED / COMPLETED`).
+  5. **Evaluation Corrections & Auditable Replay**:
+     - `AssessmentCorrection`: Records append-only correction history (`assessmentResultId`, `correctionRevision`, `previousScore`, `newScore`, `previousIsCorrect`, `newIsCorrect`, `reason`, `authorizedBy`, `appliedAt`).
+     - Atomic correction execution: Updates `AssessmentResult`, transitions affected `LearningEvidence` (`EVALUATED` or `EXCLUDED`), and recalculates affected learner skill projections idempotently without deleting or rewriting historical records.
+  6. **Minimal LII Skill State Projection & Action Proposal**:
+     - Transparent, deterministic read model per `(userId, courseVersionId, skillId)`.
+     - Three conservative states:
+       - `INSUFFICIENT_EVIDENCE`: Less than 2 independent valid observations or only non-evaluatable content.
+       - `DEVELOPING`: Active attempts, hint-assisted solves, repetitions, or uncorrected errors.
+       - `READY_TO_VERIFY`: At least 2 distinct independent unassisted correct observations without active errors, and a verification block exists in the course version.
+     - **Absolute Invariant**: `VERIFIED` mastery is NEVER declared in this slice under any circumstances. No single quiz score or activity completion equals verified mastery.
+     - Explainable outputs: Plain-language rationale, explicit uncertainty, and missing evidence statements.
+     - Minimal action proposals (`LiiActionProposalDto`): `CONTINUE` (with `isAvailable: false` when in `READY_TO_VERIFY` state pending formal verification capability), `SUPPORT`, or fallback.
+     - Exclusion of black-box ML (BKT/DKT/CD-CAT), Redis, Kafka, or external AI orchestration.
+  7. **Trusted Evidence Integrity Corrections & Final Hardening (PR #5 Review Findings)**:
+     - **Confidentiality & Learner-Safe CourseVersion DTO**:
+       - `GET /api/v1/learner/courses` returns dedicated `LearnerCourseVersionDto[]` with sanitized blocks; raw authoring `snapshot` is never returned to learners.
+       - Reuses registered `sanitizeForLearner` methods from `BlockTypeRegistry` to strip `answerKey`, `correctOptionId`, protected explanations, and undisclosed hints. Video and Coding blocks are similarly sanitized. Course owners retain full authoring snapshot access via owner-only endpoints.
+     - **Preserving Evidence Eligibility Across Assessment Corrections**:
+       - Authoritative grading corrections (`POST /api/v1/evaluations/correct`) separate grading outcomes from educational evidence eligibility.
+       - Ineligible evidence (`AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION`, `NO_SKILL_MAPPING_CONFIGURED`, `UNGRADED_CONTENT_COMPLETION_ONLY`) remains strictly `EXCLUDED` even when corrected to `newIsCorrect: true`.
+       - Same-item repetitions (`SAME_ITEM_REPETITION`) remain classified as repetitions and cannot become novel independent observations.
+       - Replaying or retrying corrections preserves append-only revision history without duplicating evidence rows or inflating projections.
+     - **Gate 1 — Deferred Feedback Leak Prevention**:
+       - Under `DEFERRED` runs that are not `CLOSED COMPLETED`, `GET /evidence` sanitizes `classification` to `PENDING_EVALUATION`, `status` to `PENDING_ASSESSMENT`, `assessmentStatus` to `PENDING`, and blanks `isCorrect`, `score`, `evaluatorId`, `evaluatorVersion`, `assessmentResultId`, and `exclusionReason`.
+       - Learner skill projection calculation withholds unreleased deferred evidence, returning a safe explicitly pending projection (`state: 'INSUFFICIENT_EVIDENCE'`) with plain-language explanations without revealing correctness.
+       - Abandoned runs never release deferred correctness through any endpoint.
+       - Projections are reconciled authoritatively on `RuntimeService.executeCommand` when `FINISH` transitions the run to `CLOSED COMPLETED`.
+     - **Gate 2 — Cross-Run Same-Item Repetition Detection**:
+       - Stable assessment item identity pinned to CourseVersion: `(courseVersionId, blockInstanceId, itemKey)`.
+       - Repetitions are detected across multiple runs belonging to the same learner and CourseVersion: repeated attempts of the same MCQ in separate runs are classified as `SAME_ITEM_REPETITION` and cannot produce multiple qualifying independent observations or cause `READY_TO_VERIFY`.
+       - Projection engine tracks chronological distinct item identities (`seenItems = new Set<string>()`), ensuring duplicate item observations are strictly categorized as repetitions (`repeatedCount++`) and never increment `independentCount`, even under racing concurrent submissions or idempotent reprocessing.
+     - **Gate 3 — Criterion-Level Skill Mapping Enforcement**:
+       - Multiple Choice evaluator outputs aggregate scores without criterion-specific breakdown.
+       - When an assessment item is mapped to multiple skills without criterion-specific evaluator output (`assessmentResult.feedback.criteriaResults`), all ambiguous mappings are excluded (`status: 'EXCLUDED'`, `classification: 'EXCLUDED'`, `exclusionReason: 'AMBIGUOUS_MULTI_SKILL_MAPPING_WITHOUT_CRITERION_EVALUATION'`) and grant zero independent skill credit. Single-item, single-skill Multiple Choice flow remains fully valid.
+     - **Gate 4 — Honest Verification Capability Boundary**:
+       - Title-based verification detection and arbitrary unvalidated creator config properties (`isVerification: true`) are eliminated.
+       - In Phase 3, because no registered block type defines or validates a formal runtime verification contract, `READY_TO_VERIFY` projections return the honest minimal fallback: `category: 'CONTINUE'` with `isAvailable: false`.
+       - Conservative `READY_TO_VERIFY` learner state is preserved without issuing premature `VERIFIED` mastery claims.
+     - **P1 — Access Grant Revocation Concurrency Hardening**:
+       - `RuntimeService.startRun` includes course version retrieval, grant verification, and run creation in a single atomic transaction synchronized with a row-level lock (`FOR SHARE`) on `course_access_grants`.
+       - `RuntimeService.executeCommand` synchronizes grant validation under `FOR SHARE` on `course_access_grants`.
+       - `AccessGrantsService.revokeGrant` executes under `FOR UPDATE` row lock on `course_access_grants`.
+       - Racing grant revocations and run starts or attempt submissions are serialized strictly at the database tier; racing operations fail closed immediately (HTTP 404 or HTTP 403).
+     - **P2 — Serialized Skill Projection via Advisory Transaction Locking**:
+       - `LearnerSkillProjectionService.recomputeProjection` synchronizes calculations per `(userId, courseVersionId, skillId)` using PostgreSQL advisory transaction locks (`SELECT pg_advisory_xact_lock(hashtext(...))`).
+       - Concurrent attempt submissions on distinct items mapped to the same skill are strictly serialized across database transactions, ensuring downstream projections compute on committed evidence without undercounting or overwriting each other with stale snapshots.
+- **Consequences**: Complete Phase 3 vertical slice verified by 35 real PostgreSQL automated integration tests (`test/learning-evidence.integration.spec.ts`, 100% pass) and 183 total integration tests across the monorepo. Zero regressions across Phase 1A, Phase 1B, Phase 2, and Phase 3 suites.
+

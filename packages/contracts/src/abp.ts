@@ -204,7 +204,7 @@ export interface ABAttemptDto {
   createdAt: string;
 }
 
-export type AssessmentStatus = 'EVALUATED' | 'SKIPPED' | 'FAILED';
+export type AssessmentStatus = 'PENDING' | 'EVALUATED' | 'SKIPPED' | 'FAILED';
 
 export interface AssessmentResultDto {
   id: string;
