@@ -1,8 +1,10 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   ABAttemptDto,
@@ -23,6 +25,7 @@ import {
   CourseVersion,
   Prisma,
 } from '@prisma/client';
+import { EvidenceIntakeService } from '../evidence/evidence-intake.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecuteRunCommandDto } from './dto/execute-run-command.dto';
 import { StartRunDto } from './dto/start-run.dto';
@@ -33,6 +36,7 @@ export class RuntimeService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly registry: BlockTypeRegistry,
+    @Optional() private readonly evidenceIntake?: EvidenceIntakeService,
   ) {}
 
   /**
@@ -47,7 +51,27 @@ export class RuntimeService {
       include: { course: true },
     });
 
-    if (!version || version.course.ownerId !== userId) {
+    if (!version) {
+      throw new NotFoundException(
+        `CourseVersion '${dto.courseVersionId}' not found.`,
+      );
+    }
+
+    const isOwner = version.course.ownerId === userId;
+    let hasActiveGrant = false;
+    if (!isOwner) {
+      const grant = await this.prisma.courseAccessGrant.findUnique({
+        where: {
+          courseVersionId_userId: {
+            courseVersionId: version.id,
+            userId,
+          },
+        },
+      });
+      hasActiveGrant = grant?.status === 'ACTIVE';
+    }
+
+    if (!isOwner && !hasActiveGrant) {
       throw new NotFoundException(
         `CourseVersion '${dto.courseVersionId}' not found.`,
       );
@@ -216,8 +240,26 @@ export class RuntimeService {
 
       const run = await tx.aBRun.findUniqueOrThrow({
         where: { id: runId },
-        include: { courseVersion: true },
+        include: { courseVersion: { include: { course: true } } },
       });
+
+      // Authorization guard: verify active access grant for non-owner learners
+      const isOwner = run.courseVersion.course.ownerId === userId;
+      if (!isOwner) {
+        const grant = await tx.courseAccessGrant.findUnique({
+          where: {
+            courseVersionId_userId: {
+              courseVersionId: run.courseVersionId,
+              userId,
+            },
+          },
+        });
+        if (!grant || grant.status !== 'ACTIVE') {
+          throw new ForbiddenException(
+            'Course access grant has been revoked or is not active.',
+          );
+        }
+      }
 
       const pinnedBlock = this.extractPinnedBlock(run.courseVersion, run.blockInstanceId);
       const def = this.registry.getDefinition(pinnedBlock.blockTypeId, pinnedBlock.typeVersion);
@@ -570,6 +612,19 @@ export class RuntimeService {
             },
           });
 
+          // Ingest verified ABP attempt into Trusted Evidence Ledger
+          if (this.evidenceIntake) {
+            await this.evidenceIntake.ingestAttempt(
+              {
+                run,
+                attempt,
+                assessmentResult: assessment,
+                courseVersion: run.courseVersion,
+              },
+              tx,
+            );
+          }
+
           return this.toRunDto(run, pinnedBlock, attempt, assessment, deliveredHint);
         }
 
@@ -589,7 +644,7 @@ export class RuntimeService {
             },
           });
 
-          await tx.aBEvent.create({
+          const completedEvent = await tx.aBEvent.create({
             data: {
               runId: run.id,
               eventType: 'RUN_COMPLETED',
@@ -601,6 +656,18 @@ export class RuntimeService {
               serverTimestamp: now,
             },
           });
+
+          // Ingest run completion progress evidence (e.g. video completion)
+          if (this.evidenceIntake && pinnedBlock.blockTypeId === 'video') {
+            await this.evidenceIntake.ingestRunCompletion(
+              {
+                run: updated,
+                event: completedEvent,
+                courseVersion: run.courseVersion,
+              },
+              tx,
+            );
+          }
 
           const latestAttempt = await tx.aBAttempt.findFirst({
             where: { runId: run.id },

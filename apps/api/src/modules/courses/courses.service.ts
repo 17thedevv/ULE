@@ -238,6 +238,42 @@ export class CoursesService {
           });
         }
 
+        // Validate draft skill mappings
+        const draftMappings = tx.draftSkillMapping
+          ? await tx.draftSkillMapping.findMany({
+              where: { draftId: draft.id },
+              include: { skill: true },
+            })
+          : [];
+
+        const courseSkills = tx.courseSkill
+          ? await tx.courseSkill.findMany({
+              where: { courseId },
+            })
+          : [];
+
+        for (const mapping of draftMappings) {
+          const mappedBlockExists = blocks.some((b) => b.id === mapping.blockInstanceId);
+          if (!mappedBlockExists) {
+            validationErrors.push(
+              `Skill mapping '${mapping.id}' references non-existent block instance '${mapping.blockInstanceId}'.`,
+            );
+          }
+          const mappedSkillExists = courseSkills.some((s) => s.id === mapping.skillId);
+          if (!mappedSkillExists) {
+            validationErrors.push(
+              `Skill mapping '${mapping.id}' references non-existent course skill '${mapping.skillId}'.`,
+            );
+          }
+        }
+
+        if (validationErrors.length > 0) {
+          throw new BadRequestException({
+            message: 'Cannot create version: Draft contains invalid activity blocks or skill mappings.',
+            errors: validationErrors,
+          });
+        }
+
         const latestVersion = await tx.courseVersion.findFirst({
           where: { courseId },
           orderBy: { versionNumber: 'desc' },
@@ -254,6 +290,26 @@ export class CoursesService {
           config: b.config as Record<string, unknown>,
         }));
 
+        const skillsSnapshot = courseSkills.map((s) => ({
+          id: s.id,
+          skillCode: s.skillCode,
+          name: s.name,
+          description: s.description,
+          revision: s.revision,
+        }));
+
+        const skillMappingsSnapshot = draftMappings.map((m) => ({
+          id: m.id,
+          blockInstanceId: m.blockInstanceId,
+          skillId: m.skillId,
+          skillCode: m.skill.skillCode,
+          skillName: m.skill.name,
+          itemKey: m.itemKey ?? 'default',
+          criterion: m.criterion,
+          weight: m.weight,
+          revision: m.revision,
+        }));
+
         const snapshotData = {
           courseId,
           versionNumber: nextVersionNumber,
@@ -265,6 +321,8 @@ export class CoursesService {
           createdById: userId,
           createdAt: new Date().toISOString(),
           blocks: blocksSnapshot,
+          skills: skillsSnapshot,
+          skillMappings: skillMappingsSnapshot,
         };
 
         const version = await tx.courseVersion.create({
