@@ -433,6 +433,153 @@ describe('QuestionTypesRegistry Unit Tests', () => {
     });
   });
 
+  describe('P2 REQUIREMENT: Defensive Validation for Malformed Nested Payloads (Null / Non-object / Primitive items)', () => {
+    it('safely rejects SINGLE_CHOICE with null or primitive array elements in options', () => {
+      const res = registry.validateQuestion(
+        'SINGLE_CHOICE',
+        {
+          prompt: 'Question with malformed options',
+          options: [null, undefined, 123, { id: 'opt_1', text: 'Valid Option' }] as any,
+        },
+        { correctOptionId: 'opt_1' },
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes('valid non-null object'))).toBe(true);
+
+      // Verify sanitizeForLearner does not throw TypeError on malformed options
+      const sanitized = registry.sanitizeForLearner('SINGLE_CHOICE', {
+        prompt: 'Question',
+        options: [null, undefined, { id: 'opt_1', text: 'Valid' }, 42] as any,
+      });
+      expect(sanitized.prompt).toBe('Question');
+      expect((sanitized as any).options).toEqual([{ id: 'opt_1', text: 'Valid' }]);
+    });
+
+    it('safely rejects MULTIPLE_CHOICE with non-object elements in options', () => {
+      const res = registry.validateQuestion(
+        'MULTIPLE_CHOICE',
+        {
+          prompt: 'Select primes',
+          options: [null, { id: 'opt_1', text: '2' }, 'invalid_element'] as any,
+        },
+        { correctOptionIds: ['opt_1'] },
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes('valid non-null object'))).toBe(true);
+
+      const sanitized = registry.sanitizeForLearner('MULTIPLE_CHOICE', {
+        prompt: 'Question',
+        options: [null, { id: 'opt_1', text: 'Opt 1' }] as any,
+      });
+      expect((sanitized as any).options).toEqual([{ id: 'opt_1', text: 'Opt 1' }]);
+    });
+
+    it('safely rejects CLOZE with null or primitive elements in targetBlanks', () => {
+      const res = registry.validateQuestion(
+        'CLOZE',
+        {
+          prompt: 'Complete sentence',
+          templateText: 'The sky is {{color}}.',
+          targetBlanks: [null, 42, { blankKey: 'color' }] as any,
+        },
+        { blanks: { color: ['blue'] } },
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes('valid non-null object'))).toBe(true);
+
+      const sanitized = registry.sanitizeForLearner('CLOZE', {
+        prompt: 'Complete',
+        templateText: 'The sky is {{color}}.',
+        targetBlanks: [null, { blankKey: 'color' }] as any,
+      });
+      expect((sanitized as any).targetBlanks).toEqual([{ blankKey: 'color' }]);
+    });
+
+    it('safely rejects MATCHING with null or primitive elements in premises or targets', () => {
+      const resPremise = registry.validateQuestion(
+        'MATCHING',
+        {
+          prompt: 'Match items',
+          premises: [null, { id: 'p1', text: 'Premise 1' }, { id: 'p2', text: 'Premise 2' }] as any,
+          targets: [{ id: 't1', text: 'Target 1' }, { id: 't2', text: 'Target 2' }],
+        },
+        { pairs: { p1: 't1', p2: 't2' } },
+      );
+      expect(resPremise.valid).toBe(false);
+      expect(resPremise.errors.some((e) => e.includes('valid non-null object'))).toBe(true);
+
+      const resTarget = registry.validateQuestion(
+        'MATCHING',
+        {
+          prompt: 'Match items',
+          premises: [{ id: 'p1', text: 'Premise 1' }, { id: 'p2', text: 'Premise 2' }],
+          targets: [null, { id: 't1', text: 'Target 1' }, { id: 't2', text: 'Target 2' }] as any,
+        },
+        { pairs: { p1: 't1', p2: 't2' } },
+      );
+      expect(resTarget.valid).toBe(false);
+      expect(resTarget.errors.some((e) => e.includes('valid non-null object'))).toBe(true);
+
+      // Verify array pairs in answerKey is rejected gracefully without TypeError
+      const resInvalidPairs = registry.validateQuestion(
+        'MATCHING',
+        {
+          prompt: 'Match items',
+          premises: [{ id: 'p1', text: 'Premise 1' }, { id: 'p2', text: 'Premise 2' }],
+          targets: [{ id: 't1', text: 'Target 1' }, { id: 't2', text: 'Target 2' }],
+        },
+        { pairs: ['array', 'instead', 'of', 'object'] } as any,
+      );
+      expect(resInvalidPairs.valid).toBe(false);
+      expect(resInvalidPairs.errors.some((e) => e.includes('must specify pairs object'))).toBe(true);
+
+      const sanitized = registry.sanitizeForLearner('MATCHING', {
+        prompt: 'Match',
+        premises: [null, { id: 'p1', text: 'P1' }] as any,
+        targets: [null, { id: 't1', text: 'T1' }] as any,
+      });
+      expect((sanitized as any).premises).toEqual([{ id: 'p1', text: 'P1' }]);
+      expect((sanitized as any).targets).toEqual([{ id: 't1', text: 'T1' }]);
+    });
+
+    it('safely rejects ORDERING with null or primitive elements in items', () => {
+      const res = registry.validateQuestion(
+        'ORDERING',
+        {
+          prompt: 'Order chronologically',
+          items: [null, { id: 'i1', text: 'First' }, { id: 'i2', text: 'Second' }] as any,
+        },
+        { correctSequence: ['i1', 'i2'] },
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes('valid non-null object'))).toBe(true);
+
+      const sanitized = registry.sanitizeForLearner('ORDERING', {
+        prompt: 'Order',
+        items: [null, { id: 'i1', text: 'Item 1' }, 123] as any,
+      });
+      expect((sanitized as any).items).toEqual([{ id: 'i1', text: 'Item 1' }]);
+    });
+
+    it('safely rejects ESSAY with null or primitive elements in rubric criteria', () => {
+      const res = registry.validateQuestion(
+        'ESSAY',
+        { prompt: 'Write an essay' },
+        null,
+        { criteria: [null, undefined, { id: 'c1', name: 'Analysis', description: 'desc', maxPoints: 10 }] } as any,
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes('valid non-null object'))).toBe(true);
+
+      const sanitized = registry.sanitizeForLearner('ESSAY', {
+        prompt: 'Write',
+        minWords: 50,
+      });
+      expect(sanitized.prompt).toBe('Write');
+      expect((sanitized as any).minWords).toBe(50);
+    });
+  });
+
   it('throws BadRequestException for unallowlisted question types', () => {
     expect(() => registry.getType('NON_EXISTENT_TYPE' as any)).toThrow();
   });

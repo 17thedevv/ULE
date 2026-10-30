@@ -153,6 +153,9 @@ export class AssessmentsService {
     await this.verifyAssessmentOwnership(assessmentId, userId);
 
     return this.prisma.$transaction(async (tx) => {
+      // 1. Strict lock ordering: lock aggregate root FOR UPDATE
+      await tx.$queryRaw`SELECT id FROM assessment_definitions WHERE id = ${assessmentId} FOR UPDATE`;
+
       const section = await tx.assessmentSection.create({
         data: {
           assessmentDefinitionId: assessmentId,
@@ -201,6 +204,9 @@ export class AssessmentsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // 1. Strict lock ordering: lock aggregate root FOR UPDATE
+      await tx.$queryRaw`SELECT id FROM assessment_definitions WHERE id = ${assessmentId} FOR UPDATE`;
+
       const updated = await tx.assessmentSection.update({
         where: { id: sectionId },
         data: {
@@ -250,6 +256,9 @@ export class AssessmentsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // 1. Strict lock ordering: lock aggregate root FOR UPDATE
+      await tx.$queryRaw`SELECT id FROM assessment_definitions WHERE id = ${assessmentId} FOR UPDATE`;
+
       await tx.assessmentSection.delete({
         where: { id: sectionId },
       });
@@ -315,6 +324,9 @@ export class AssessmentsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // 1. Strict lock ordering: lock aggregate root FOR UPDATE
+      await tx.$queryRaw`SELECT id FROM assessment_definitions WHERE id = ${assessmentId} FOR UPDATE`;
+
       const itemRef = await tx.assessmentItemRef.create({
         data: {
           sectionId,
@@ -389,6 +401,9 @@ export class AssessmentsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // 1. Strict lock ordering: lock aggregate root FOR UPDATE
+      await tx.$queryRaw`SELECT id FROM assessment_definitions WHERE id = ${assessmentId} FOR UPDATE`;
+
       const updated = await tx.assessmentItemRef.update({
         where: { id: itemId },
         data: {
@@ -452,6 +467,9 @@ export class AssessmentsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // 1. Strict lock ordering: lock aggregate root FOR UPDATE
+      await tx.$queryRaw`SELECT id FROM assessment_definitions WHERE id = ${assessmentId} FOR UPDATE`;
+
       await tx.assessmentItemRef.delete({
         where: { id: itemId },
       });
@@ -569,6 +587,17 @@ export class AssessmentsService {
           },
         });
         if (existingByKey) {
+          const currentDef = await tx.assessmentDefinition.findUniqueOrThrow({
+            where: { id },
+            select: { revision: true },
+          });
+
+          if (existingByKey.draftRevision !== currentDef.revision) {
+            throw new ConflictException(
+              `Idempotency key '${trimmedIdempotencyKey}' was already used for a different blueprint version (published at draft revision ${existingByKey.draftRevision}, current draft revision is ${currentDef.revision}). Cannot reuse idempotency key for altered blueprint payload.`,
+            );
+          }
+
           this.logger.log(
             `Idempotent publication replay for assessment '${id}', key '${trimmedIdempotencyKey}': returning version v${existingByKey.versionNumber}.`,
           );

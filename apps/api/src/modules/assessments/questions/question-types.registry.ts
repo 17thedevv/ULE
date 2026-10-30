@@ -148,7 +148,11 @@ export class QuestionTypesRegistry {
         } else {
           const ids = new Set<string>();
           for (const opt of options) {
-            if (!opt.id || typeof opt.id !== 'string') {
+            if (!opt || typeof opt !== 'object') {
+              errors.push('Each option must be a valid non-null object.');
+              continue;
+            }
+            if (!opt.id || typeof opt.id !== 'string' || opt.id.trim().length === 0) {
               errors.push('Each option must have a non-empty string id.');
             } else if (ids.has(opt.id)) {
               errors.push(`Duplicate option id '${opt.id}'.`);
@@ -156,7 +160,7 @@ export class QuestionTypesRegistry {
               ids.add(opt.id);
             }
             if (typeof opt.text !== 'string' || opt.text.trim().length === 0) {
-              errors.push(`Option '${opt.id || 'unknown'}' must have non-empty text.`);
+              errors.push(`Option '${opt?.id || 'unknown'}' must have non-empty text.`);
             }
           }
         }
@@ -171,7 +175,10 @@ export class QuestionTypesRegistry {
         if (!correctId || typeof correctId !== 'string') {
           errors.push('SINGLE_CHOICE answerKey must specify correctOptionId.');
         } else {
-          const options = ((content as any)?.options as Array<{ id: string }>) || [];
+          const rawOptions = (content as any)?.options;
+          const options = Array.isArray(rawOptions)
+            ? rawOptions.filter((o) => o && typeof o === 'object')
+            : [];
           if (!options.some((o) => o.id === correctId)) {
             errors.push(`correctOptionId '${correctId}' does not match any configured option id.`);
           }
@@ -179,10 +186,13 @@ export class QuestionTypesRegistry {
         return { valid: errors.length === 0, errors };
       },
       sanitizeForLearner(content) {
-        const options = ((content as any).options as Array<{ id: string; text: string }>) || [];
+        const rawOptions = (content as any)?.options;
+        const options = Array.isArray(rawOptions)
+          ? rawOptions.filter((o) => o && typeof o === 'object')
+          : [];
         return {
           prompt: (content as any).prompt,
-          options: options.map((o) => ({ id: o.id, text: o.text })),
+          options: options.map((o) => ({ id: String(o.id ?? ''), text: String(o.text ?? '') })),
           shuffleOptions: (content as any).shuffleOptions,
         };
       },
@@ -206,7 +216,11 @@ export class QuestionTypesRegistry {
         } else {
           const ids = new Set<string>();
           for (const opt of options) {
-            if (!opt.id || typeof opt.id !== 'string') {
+            if (!opt || typeof opt !== 'object') {
+              errors.push('Each option must be a valid non-null object.');
+              continue;
+            }
+            if (!opt.id || typeof opt.id !== 'string' || opt.id.trim().length === 0) {
               errors.push('Each option must have a non-empty string id.');
             } else if (ids.has(opt.id)) {
               errors.push(`Duplicate option id '${opt.id}'.`);
@@ -214,7 +228,7 @@ export class QuestionTypesRegistry {
               ids.add(opt.id);
             }
             if (typeof opt.text !== 'string' || opt.text.trim().length === 0) {
-              errors.push(`Option '${opt.id || 'unknown'}' must have non-empty text.`);
+              errors.push(`Option '${opt?.id || 'unknown'}' must have non-empty text.`);
             }
           }
         }
@@ -229,7 +243,10 @@ export class QuestionTypesRegistry {
         if (!Array.isArray(correctIds) || correctIds.length === 0) {
           errors.push('MULTIPLE_CHOICE answerKey must specify a non-empty array of correctOptionIds.');
         } else {
-          const options = ((content as any)?.options as Array<{ id: string }>) || [];
+          const rawOptions = (content as any)?.options;
+          const options = Array.isArray(rawOptions)
+            ? rawOptions.filter((o) => o && typeof o === 'object')
+            : [];
           for (const cid of correctIds) {
             if (!options.some((o) => o.id === cid)) {
               errors.push(`correctOptionId '${cid}' does not match any configured option.`);
@@ -239,10 +256,13 @@ export class QuestionTypesRegistry {
         return { valid: errors.length === 0, errors };
       },
       sanitizeForLearner(content) {
-        const options = ((content as any).options as Array<{ id: string; text: string }>) || [];
+        const rawOptions = (content as any)?.options;
+        const options = Array.isArray(rawOptions)
+          ? rawOptions.filter((o) => o && typeof o === 'object')
+          : [];
         return {
           prompt: (content as any).prompt,
-          options: options.map((o) => ({ id: o.id, text: o.text })),
+          options: options.map((o) => ({ id: String(o.id ?? ''), text: String(o.text ?? '') })),
           shuffleOptions: (content as any).shuffleOptions,
         };
       },
@@ -299,7 +319,11 @@ export class QuestionTypesRegistry {
           errors.push('CLOZE content must define at least one blank in targetBlanks.');
         } else {
           for (const b of blanks) {
-            if (!b.blankKey || typeof b.blankKey !== 'string') {
+            if (!b || typeof b !== 'object') {
+              errors.push('Each target blank must be a valid non-null object.');
+              continue;
+            }
+            if (!b.blankKey || typeof b.blankKey !== 'string' || b.blankKey.trim().length === 0) {
               errors.push('Each target blank must have a non-empty string blankKey.');
             } else if (templateText && !templateText.includes(`{{${b.blankKey}}}`)) {
               errors.push(`templateText is missing placeholder '{{${b.blankKey}}}'.`);
@@ -314,10 +338,13 @@ export class QuestionTypesRegistry {
         }
         const errors: string[] = [];
         const blanks = (answerKey as any).blanks;
-        if (!blanks || typeof blanks !== 'object') {
-          errors.push('CLOZE answerKey must include blanks dictionary.');
+        if (!blanks || typeof blanks !== 'object' || Array.isArray(blanks)) {
+          errors.push('CLOZE answerKey must include blanks dictionary object.');
         } else {
-          const targets = ((content as any)?.targetBlanks as Array<{ blankKey: string }>) || [];
+          const rawBlanks = (content as any)?.targetBlanks;
+          const targets = Array.isArray(rawBlanks)
+            ? rawBlanks.filter((t) => t && typeof t === 'object' && typeof t.blankKey === 'string')
+            : [];
           for (const target of targets) {
             const variants = blanks[target.blankKey];
             if (!Array.isArray(variants) || variants.length === 0) {
@@ -334,11 +361,17 @@ export class QuestionTypesRegistry {
         return { valid: errors.length === 0, errors };
       },
       sanitizeForLearner(content) {
-        const blanks = ((content as any).targetBlanks as Array<{ blankKey: string; hint?: string }>) || [];
+        const rawBlanks = (content as any)?.targetBlanks;
+        const blanks = Array.isArray(rawBlanks)
+          ? rawBlanks.filter((b) => b && typeof b === 'object')
+          : [];
         return {
           prompt: (content as any).prompt,
           templateText: (content as any).templateText,
-          targetBlanks: blanks.map((b) => ({ blankKey: b.blankKey, hint: b.hint })),
+          targetBlanks: blanks.map((b) => ({
+            blankKey: String(b.blankKey ?? ''),
+            ...(b.hint ? { hint: String(b.hint) } : {}),
+          })),
         };
       },
     };
@@ -462,19 +495,26 @@ export class QuestionTypesRegistry {
         if (!rubric) {
           return { valid: true, errors: [] };
         }
+        if (typeof rubric !== 'object') {
+          return { valid: false, errors: ['Essay rubric must be a valid non-null object.'] };
+        }
         const errors: string[] = [];
         if (!Array.isArray(rubric.criteria) || rubric.criteria.length === 0) {
           errors.push('Essay rubric must define at least one criterion.');
         } else {
           for (const crit of rubric.criteria) {
-            if (!crit.id || typeof crit.id !== 'string') {
+            if (!crit || typeof crit !== 'object') {
+              errors.push('Each rubric criterion must be a valid non-null object.');
+              continue;
+            }
+            if (typeof crit.id !== 'string' || crit.id.trim().length === 0) {
               errors.push('Each rubric criterion must have a non-empty string id.');
             }
-            if (!crit.name || typeof crit.name !== 'string') {
+            if (typeof crit.name !== 'string' || crit.name.trim().length === 0) {
               errors.push('Each rubric criterion must have a name.');
             }
-            if (typeof crit.maxPoints !== 'number' || crit.maxPoints <= 0) {
-              errors.push(`Criterion '${crit.name || 'unnamed'}' must have maxPoints > 0.`);
+            if (typeof crit.maxPoints !== 'number' || !Number.isFinite(crit.maxPoints) || crit.maxPoints <= 0) {
+              errors.push(`Criterion '${crit?.name || 'unnamed'}' must have positive numeric maxPoints.`);
             }
           }
         }
@@ -505,9 +545,45 @@ export class QuestionTypesRegistry {
         const targets = (content as any).targets;
         if (!Array.isArray(premises) || premises.length < 2) {
           errors.push('MATCHING content must include at least 2 premises.');
+        } else {
+          const premiseIds = new Set<string>();
+          for (const p of premises) {
+            if (!p || typeof p !== 'object') {
+              errors.push('Each premise must be a valid non-null object.');
+              continue;
+            }
+            if (typeof p.id !== 'string' || p.id.trim().length === 0) {
+              errors.push('Each premise must have a non-empty string id.');
+            } else if (premiseIds.has(p.id)) {
+              errors.push(`Duplicate premise id '${p.id}'.`);
+            } else {
+              premiseIds.add(p.id);
+            }
+            if (typeof p.text !== 'string' || p.text.trim().length === 0) {
+              errors.push(`Premise '${p?.id || 'unknown'}' must have non-empty text.`);
+            }
+          }
         }
         if (!Array.isArray(targets) || targets.length < 2) {
           errors.push('MATCHING content must include at least 2 targets.');
+        } else {
+          const targetIds = new Set<string>();
+          for (const t of targets) {
+            if (!t || typeof t !== 'object') {
+              errors.push('Each target must be a valid non-null object.');
+              continue;
+            }
+            if (typeof t.id !== 'string' || t.id.trim().length === 0) {
+              errors.push('Each target must have a non-empty string id.');
+            } else if (targetIds.has(t.id)) {
+              errors.push(`Duplicate target id '${t.id}'.`);
+            } else {
+              targetIds.add(t.id);
+            }
+            if (typeof t.text !== 'string' || t.text.trim().length === 0) {
+              errors.push(`Target '${t?.id || 'unknown'}' must have non-empty text.`);
+            }
+          }
         }
         return { valid: errors.length === 0, errors };
       },
@@ -517,11 +593,17 @@ export class QuestionTypesRegistry {
         }
         const errors: string[] = [];
         const pairs = (answerKey as any).pairs;
-        if (!pairs || typeof pairs !== 'object') {
+        if (!pairs || typeof pairs !== 'object' || Array.isArray(pairs)) {
           errors.push('MATCHING answerKey must specify pairs object.');
         } else {
-          const premises = ((content as any)?.premises as Array<{ id: string }>) || [];
-          const targets = ((content as any)?.targets as Array<{ id: string }>) || [];
+          const rawPremises = (content as any)?.premises;
+          const premises = Array.isArray(rawPremises)
+            ? rawPremises.filter((p) => p && typeof p === 'object' && typeof p.id === 'string')
+            : [];
+          const rawTargets = (content as any)?.targets;
+          const targets = Array.isArray(rawTargets)
+            ? rawTargets.filter((t) => t && typeof t === 'object' && typeof t.id === 'string')
+            : [];
           for (const [premiseId, targetId] of Object.entries(pairs)) {
             if (!premises.some((p) => p.id === premiseId)) {
               errors.push(`Unknown premise id '${premiseId}' in answerKey pairs.`);
@@ -534,8 +616,14 @@ export class QuestionTypesRegistry {
         return { valid: errors.length === 0, errors };
       },
       sanitizeForLearner(content) {
-        const premises = ((content as any)?.premises as Array<{ id: unknown; text: unknown }>) || [];
-        const targets = ((content as any)?.targets as Array<{ id: unknown; text: unknown }>) || [];
+        const rawPremises = (content as any)?.premises;
+        const premises = Array.isArray(rawPremises)
+          ? rawPremises.filter((p) => p && typeof p === 'object')
+          : [];
+        const rawTargets = (content as any)?.targets;
+        const targets = Array.isArray(rawTargets)
+          ? rawTargets.filter((t) => t && typeof t === 'object')
+          : [];
         return {
           ...(typeof (content as any)?.prompt === 'string' ? { prompt: (content as any).prompt } : {}),
           premises: premises.map((p) => ({
@@ -568,12 +656,19 @@ export class QuestionTypesRegistry {
         } else {
           const ids = new Set<string>();
           for (const item of items) {
-            if (!item.id || typeof item.id !== 'string') {
+            if (!item || typeof item !== 'object') {
+              errors.push('Each ordering item must be a valid non-null object.');
+              continue;
+            }
+            if (!item.id || typeof item.id !== 'string' || item.id.trim().length === 0) {
               errors.push('Each ordering item must have a string id.');
             } else if (ids.has(item.id)) {
               errors.push(`Duplicate item id '${item.id}'.`);
             } else {
               ids.add(item.id);
+            }
+            if (typeof item.text !== 'string' || item.text.trim().length === 0) {
+              errors.push(`Ordering item '${item?.id || 'unknown'}' must have non-empty text.`);
             }
           }
         }
@@ -588,7 +683,10 @@ export class QuestionTypesRegistry {
         if (!Array.isArray(seq)) {
           errors.push('ORDERING answerKey must specify correctSequence array.');
         } else {
-          const items = ((content as any)?.items as Array<{ id: string }>) || [];
+          const rawItems = (content as any)?.items;
+          const items = Array.isArray(rawItems)
+            ? rawItems.filter((i) => i && typeof i === 'object' && typeof i.id === 'string')
+            : [];
           if (seq.length !== items.length) {
             errors.push('correctSequence length must match items length.');
           }
@@ -601,7 +699,10 @@ export class QuestionTypesRegistry {
         return { valid: errors.length === 0, errors };
       },
       sanitizeForLearner(content) {
-        const items = ((content as any)?.items as Array<{ id: unknown; text: unknown }>) || [];
+        const rawItems = (content as any)?.items;
+        const items = Array.isArray(rawItems)
+          ? rawItems.filter((i) => i && typeof i === 'object')
+          : [];
         return {
           ...(typeof (content as any)?.prompt === 'string' ? { prompt: (content as any).prompt } : {}),
           items: items.map((i) => ({

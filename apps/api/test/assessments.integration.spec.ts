@@ -394,6 +394,22 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
         })
         .expect(HttpStatus.BAD_REQUEST);
     });
+
+    it('P2 REQUIREMENT: rejects QuestionBankItem with malformed nested payload (e.g. options: [null]) with HTTP 400', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/question-bank')
+        .set('Cookie', aliceCookie)
+        .send({
+          type: 'SINGLE_CHOICE',
+          title: 'Malformed Options Test',
+          prompt: 'Choose one:',
+          content: {
+            options: [null, { id: 'opt_1', text: 'Option 1' }],
+          },
+          answerKey: { correctOptionId: 'opt_1' },
+        })
+        .expect(HttpStatus.BAD_REQUEST);
+    });
   });
 
   describe('Gate 4: QuestionVersion Publishing & Immutable Version Snapshots', () => {
@@ -808,6 +824,86 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
         where: { assessmentDefinitionId: aliceAssessmentId },
       });
       expect(vCount).toBe(1);
+    });
+
+    it('P2 REQUIREMENT: reusing idempotencyKey after assessment draft has mutated triggers HTTP 409 Conflict', async () => {
+      // 1. Fetch current revision of Alice's assessment
+      const currentAss = await request(app.getHttpServer())
+        .get(`/api/v1/assessments/${aliceAssessmentId}`)
+        .set('Cookie', aliceCookie)
+        .expect(HttpStatus.OK);
+
+      const publishedRevision = currentAss.body.revision;
+
+      // 2. Mutate Alice's assessment draft (bump revision by updating description)
+      const updateRes = await request(app.getHttpServer())
+        .put(`/api/v1/assessments/${aliceAssessmentId}`)
+        .set('Cookie', aliceCookie)
+        .send({
+          expectedRevision: publishedRevision,
+          description: 'Updated draft description after v1 publication',
+        })
+        .expect(HttpStatus.OK);
+
+      expect(updateRes.body.revision).toBe(publishedRevision + 1);
+
+      // 3. Reusing the old idempotency key on mutated draft MUST fail with HTTP 409 Conflict
+      const conflictRes = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${aliceAssessmentId}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'midterm-idemp-key-alice-01' })
+        .expect(HttpStatus.CONFLICT);
+
+      expect(conflictRes.body.message).toContain('was already used for a different blueprint version');
+    });
+
+    it('P2 REQUIREMENT: concurrent child mutation and publish operation serialize cleanly via aggregate root locking without deadlocks', async () => {
+      // 1. Create a fresh test assessment with 1 section and 1 item
+      const probeAss = await request(app.getHttpServer())
+        .post('/api/v1/assessments')
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Lock Ordering Concurrency Probe' })
+        .expect(HttpStatus.CREATED);
+
+      const probeSec = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${probeAss.body.id}/sections`)
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Sec 1' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${probeAss.body.id}/sections/${probeSec.body.id}/items`)
+        .set('Cookie', aliceCookie)
+        .send({ questionBankItemId: aliceNumericQuestionId, points: 5.0 })
+        .expect(HttpStatus.CREATED);
+
+      // 2. Dispatch concurrent publish and addItem requests on the same assessment definition
+      const pubReq = request(app.getHttpServer())
+        .post(`/api/v1/assessments/${probeAss.body.id}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'concurrent-lock-pub-1' });
+
+      const addReq = request(app.getHttpServer())
+        .post(`/api/v1/assessments/${probeAss.body.id}/sections/${probeSec.body.id}/items`)
+        .set('Cookie', aliceCookie)
+        .send({ questionBankItemId: aliceMcqQuestionId, points: 5.0 });
+
+      const [pubRes, addRes] = await Promise.all([pubReq, addReq]);
+
+      // 3. Both succeeded cleanly (201 Created) without deadlock or 500 error
+      expect(pubRes.status).toBe(HttpStatus.CREATED);
+      expect(addRes.status).toBe(HttpStatus.CREATED);
+
+      // 4. Verify assessment versions and items in DB
+      const published = await prisma.assessmentVersion.findFirst({
+        where: { assessmentDefinitionId: probeAss.body.id },
+      });
+      expect(published).toBeDefined();
+
+      const finalItemCount = await prisma.assessmentItemRef.count({
+        where: { sectionId: probeSec.body.id },
+      });
+      expect(finalItemCount).toBe(2);
     });
 
     it('subsequent edits to questions in Question Bank do NOT alter published AssessmentVersion snapshot', async () => {
