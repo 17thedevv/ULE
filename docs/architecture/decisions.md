@@ -271,4 +271,36 @@
      - Global Quests consume qualified facts originating from distinct course versions, progressing unified platform milestones (e.g. `polymath-explorer` consuming Math video completion and English reading comprehension) with zero double-counting, replay idempotency, and full two-way reconciliation upon assessment corrections.
 - **Consequences**: Successfully proves that ULE supports radically different learning domains without architectural drift or engine fragmentation. Verified by 26 automated integration tests in `test/multi-domain-proof.integration.spec.ts` (100% pass) and 248 total integration tests across the ULE test suite.
 
+## ADR-014: First-Class Assessment & Examination Engine Foundation
+
+- **Status**: Proposed (Phase 5.5 Proposal)
+- **Context**: ULE requires advancing beyond single-block practice activities (`ABRun`) into a full-scale Assessment & Examination Engine capable of supporting practice quizzes, formative assessments, multi-section midterms, and timed final examinations across diverse question formats (single-select, multiple-select, true/false, Cloze, short text, numeric with tolerance, matching, ordering, and rubric-graded essays). Questions must be reusable across courses and exams, immutable once published, and strictly partitioned between learner-facing prompts, private answer keys, and educator grading rubrics.
+- **Decision**:
+  1. **Subsystem Responsibility Separation**:
+     - Maintain clear separation between per-activity ABP execution (`ABRun`) and multi-item examination orchestration (`AssessmentDefinition` / `AssessmentVersion`).
+     - Activity Block Protocol (ABP) remains the granular runtime for embedded course blocks.
+     - The Assessment & Examination Engine introduces a dedicated, creator-controlled Question Bank and Assessment Blueprint lifecycle.
+  2. **Question Bank & Versioned Immutability Lifecycle**:
+     - `QuestionBankItem`: Stable aggregate root owned by a creator (`ownerId`), optional course linkage (`courseId`), validated item type, metadata tags, and editable working draft payload with optimistic concurrency `revision`.
+     - `QuestionVersion`: Immutable historical snapshot created upon question publication (`versionNumber`). Captures frozen content, answer keys, rubrics, and point defaults.
+     - Relational integrity lock: Once pinned in any published `AssessmentVersion`, a `QuestionVersion` is permanently protected against deletion or modification.
+  3. **Assessment Blueprint Composition & Snapshotting**:
+     - `AssessmentDefinition`: Creator-controlled draft exam blueprint consisting of sections (`AssessmentSection`), ordered question item references (`AssessmentItemRef`), custom point weights, passing criteria, and feedback policies.
+     - `AssessmentVersion`: Immutable published blueprint. Contains a self-contained, canonical `snapshot: Json` of all sections and pinned question version data, alongside relational `AssessmentVersionItem` linkages. Subsequent edits to questions in the question bank do not silently alter published exam blueprints.
+  4. **Domain-Agnostic Item-Type Architecture**:
+     - Closed allowlist of 9 question types with strict schema validation:
+       - Working Auto-Evaluators: `SINGLE_CHOICE` (MCQ), `CLOZE` (normalized fill-in-the-blank), `TRUE_FALSE`.
+       - Authoring Validated: `MULTIPLE_CHOICE` (multi-select), `SHORT_TEXT`, `NUMERIC` (with explicit absolute or percentage tolerance), `MATCHING`, `ORDERING`.
+       - Rubric-Graded: `ESSAY` (free response evaluated strictly by human grading rubrics; naive automated string equality is banned).
+     - Learner Sanitization: All question types enforce `sanitizeForLearner()`, stripping secret answer keys, correct option IDs, tolerances, solution explanations, and grader rubrics before any learner payload is generated.
+  5. **Security, Ownership & Integrity**:
+     - Strict owner-scoped authorization on all mutations (`item.ownerId === user.id`).
+     - Optimistic locking rejecting stale draft revisions (`HTTP 409 Conflict`).
+     - Atomic, transactional publication validating that all referenced questions possess published versions and positive point totals.
+     - Publication emits zero premature Learning Evidence or Quest progress.
+  6. **Future Exam Attempt Sequencing**:
+     - Future runtime execution (`ExamAttempt`, timers, auto-grading aggregation, human rubric grading, and deferred release) will execute exclusively against immutable `AssessmentVersion` blueprints.
+- **Consequences**: Provides the foundational architecture for enterprise-grade academic examinations in ULE while preserving complete backward compatibility with Course, ABP, Evidence, and Quest engines. Verified through unit and PostgreSQL integration tests in Phase 5.5.
+
+
 
