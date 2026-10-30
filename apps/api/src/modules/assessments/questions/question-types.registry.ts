@@ -604,12 +604,20 @@ export class QuestionTypesRegistry {
           const targets = Array.isArray(rawTargets)
             ? rawTargets.filter((t) => t && typeof t === 'object' && typeof t.id === 'string')
             : [];
+
+          // P2 REQUIREMENT: All premises must have an answer mapping
+          for (const premise of premises) {
+            if (!(premise.id in pairs)) {
+              errors.push(`Missing answer mapping for premise '${premise.id}'.`);
+            }
+          }
+
           for (const [premiseId, targetId] of Object.entries(pairs)) {
             if (!premises.some((p) => p.id === premiseId)) {
               errors.push(`Unknown premise id '${premiseId}' in answerKey pairs.`);
             }
-            if (!targets.some((t) => t.id === targetId)) {
-              errors.push(`Unknown target id '${targetId}' in answerKey pairs.`);
+            if (typeof targetId !== 'string' || !targets.some((t) => t.id === targetId)) {
+              errors.push(`Invalid or unknown target id '${targetId}' in answerKey pairs.`);
             }
           }
         }
@@ -690,9 +698,27 @@ export class QuestionTypesRegistry {
           if (seq.length !== items.length) {
             errors.push('correctSequence length must match items length.');
           }
+
+          // P2 REQUIREMENT: Enforce permutation integrity (no duplicate items, no missing items)
+          const seenSeqIds = new Set<string>();
           for (const id of seq) {
+            if (typeof id !== 'string') {
+              errors.push('Each element in correctSequence must be a string item id.');
+              continue;
+            }
+            if (seenSeqIds.has(id)) {
+              errors.push(`Duplicate item id '${id}' in correctSequence.`);
+            } else {
+              seenSeqIds.add(id);
+            }
             if (!items.some((i) => i.id === id)) {
               errors.push(`correctSequence contains unknown item id '${id}'.`);
+            }
+          }
+
+          for (const item of items) {
+            if (!seenSeqIds.has(item.id)) {
+              errors.push(`correctSequence is missing configured item id '${item.id}'.`);
             }
           }
         }

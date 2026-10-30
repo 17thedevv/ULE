@@ -287,6 +287,50 @@ describe('QuestionTypesRegistry Unit Tests', () => {
       );
       expect(res.valid).toBe(true);
     });
+
+    it('P2 REQUIREMENT: rejects ORDERING answerKey with duplicate item IDs (e.g. [a, a])', () => {
+      const res = registry.validateQuestion(
+        'ORDERING',
+        {
+          prompt: 'Order numbers',
+          items: [
+            { id: 'item_1', text: 'First' },
+            { id: 'item_2', text: 'Second' },
+          ],
+        },
+        {
+          correctSequence: ['item_1', 'item_1'],
+        },
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes("Duplicate item id 'item_1'"))).toBe(true);
+      expect(res.errors.some((e) => e.includes("missing configured item id 'item_2'"))).toBe(true);
+    });
+
+    it('P2 REQUIREMENT: rejects MATCHING answerKey when premise is left unmapped', () => {
+      const res = registry.validateQuestion(
+        'MATCHING',
+        {
+          prompt: 'Match countries to capitals:',
+          premises: [
+            { id: 'p_fr', text: 'France' },
+            { id: 'p_jp', text: 'Japan' },
+          ],
+          targets: [
+            { id: 't_paris', text: 'Paris' },
+            { id: 't_tokyo', text: 'Tokyo' },
+          ],
+        },
+        {
+          pairs: {
+            p_fr: 't_paris',
+            // p_jp is missing!
+          },
+        },
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes("Missing answer mapping for premise 'p_jp'"))).toBe(true);
+    });
   });
 
   describe('Learner Payload Sanitization Anti-Leakage', () => {

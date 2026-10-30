@@ -578,33 +578,6 @@ export class AssessmentsService {
         throw new ForbiddenException(`You do not have access to AssessmentDefinition '${id}'.`);
       }
 
-      // Check idempotency under lock
-      if (trimmedIdempotencyKey) {
-        const existingByKey = await tx.assessmentVersion.findFirst({
-          where: {
-            assessmentDefinitionId: id,
-            idempotencyKey: trimmedIdempotencyKey,
-          },
-        });
-        if (existingByKey) {
-          const currentDef = await tx.assessmentDefinition.findUniqueOrThrow({
-            where: { id },
-            select: { revision: true },
-          });
-
-          if (existingByKey.draftRevision !== currentDef.revision) {
-            throw new ConflictException(
-              `Idempotency key '${trimmedIdempotencyKey}' was already used for a different blueprint version (published at draft revision ${existingByKey.draftRevision}, current draft revision is ${currentDef.revision}). Cannot reuse idempotency key for altered blueprint payload.`,
-            );
-          }
-
-          this.logger.log(
-            `Idempotent publication replay for assessment '${id}', key '${trimmedIdempotencyKey}': returning version v${existingByKey.versionNumber}.`,
-          );
-          return this.mapVersionToDto(existingByKey);
-        }
-      }
-
       const definition = await tx.assessmentDefinition.findUniqueOrThrow({
         where: { id },
         include: {
@@ -618,6 +591,66 @@ export class AssessmentsService {
           },
         },
       });
+
+      // Check idempotency under lock with complete fingerprint binding
+      if (trimmedIdempotencyKey) {
+        const existingByKey = await tx.assessmentVersion.findFirst({
+          where: {
+            assessmentDefinitionId: id,
+            idempotencyKey: trimmedIdempotencyKey,
+          },
+          include: {
+            items: {
+              orderBy: { orderIndex: 'asc' },
+            },
+          },
+        });
+        if (existingByKey) {
+          // 1. Blueprint aggregate revision match check
+          if (existingByKey.draftRevision !== definition.revision) {
+            throw new ConflictException(
+              `Idempotency key '${trimmedIdempotencyKey}' was already used for a different blueprint version (published at draft revision ${existingByKey.draftRevision}, current draft revision is ${definition.revision}). Cannot reuse idempotency key for altered blueprint payload.`,
+            );
+          }
+
+          // 2. Resolved QuestionVersions fingerprint match check
+          // For unpinned items, resolve current latest published QuestionVersion
+          const currentResolvedQuestionVersionIds: string[] = [];
+          for (const section of definition.sections) {
+            for (const itemRef of section.items) {
+              if (itemRef.pinnedQuestionVersionId) {
+                currentResolvedQuestionVersionIds.push(itemRef.pinnedQuestionVersionId);
+              } else {
+                const latestVersion = await tx.questionVersion.findFirst({
+                  where: { questionBankItemId: itemRef.questionBankItemId },
+                  orderBy: { versionNumber: 'desc' },
+                  select: { id: true },
+                });
+                if (latestVersion) {
+                  currentResolvedQuestionVersionIds.push(latestVersion.id);
+                }
+              }
+            }
+          }
+
+          const existingQuestionVersionIds = existingByKey.items.map((i) => i.questionVersionId);
+
+          const versionsMatch =
+            currentResolvedQuestionVersionIds.length === existingQuestionVersionIds.length &&
+            currentResolvedQuestionVersionIds.every((vId, idx) => vId === existingQuestionVersionIds[idx]);
+
+          if (!versionsMatch) {
+            throw new ConflictException(
+              `Idempotency key '${trimmedIdempotencyKey}' was already used for a blueprint version with different resolved QuestionVersions. Underlying questions have been republished since previous publish. Cannot reuse idempotency key for altered question versions.`,
+            );
+          }
+
+          this.logger.log(
+            `Idempotent publication replay for assessment '${id}', key '${trimmedIdempotencyKey}': returning version v${existingByKey.versionNumber}.`,
+          );
+          return this.mapVersionToDto(existingByKey);
+        }
+      }
 
       // 2. Structural blueprint validations
       if (definition.sections.length === 0) {

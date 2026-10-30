@@ -877,6 +877,12 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
         .send({ questionBankItemId: aliceNumericQuestionId, points: 5.0 })
         .expect(HttpStatus.CREATED);
 
+      // Fetch revision before the race
+      const preDef = await prisma.assessmentDefinition.findUniqueOrThrow({
+        where: { id: probeAss.body.id },
+        select: { revision: true },
+      });
+
       // 2. Dispatch concurrent publish and addItem requests on the same assessment definition
       const pubReq = request(app.getHttpServer())
         .post(`/api/v1/assessments/${probeAss.body.id}/publish`)
@@ -904,6 +910,89 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
         where: { sectionId: probeSec.body.id },
       });
       expect(finalItemCount).toBe(2);
+
+      // 5. P2 REQUIREMENT: Snapshot integrity and linearizability assertion
+      const snapshot = published!.snapshot as any;
+      if (published!.itemCount === 1) {
+        // Publish won the race and locked root first
+        expect(published!.totalPoints).toBe(5.0);
+        expect(published!.draftRevision).toBe(preDef.revision);
+        expect(snapshot.sections[0].items).toHaveLength(1);
+        expect(snapshot.sections[0].items[0].questionBankItemId).toBe(aliceNumericQuestionId);
+      } else {
+        // AddItem won the race and locked root first
+        expect(published!.itemCount).toBe(2);
+        expect(published!.totalPoints).toBe(10.0);
+        expect(published!.draftRevision).toBe(preDef.revision + 1);
+        expect(snapshot.sections[0].items).toHaveLength(2);
+      }
+    });
+
+    it('P2 REQUIREMENT: rejecting idempotency key replay with HTTP 409 when underlying unpinned QuestionVersion drifts in Question Bank', async () => {
+      // 0. Alice publishes initial QuestionVersion 1 of Cloze question
+      await request(app.getHttpServer())
+        .post(`/api/v1/question-bank/${aliceClozeQuestionId}/versions`)
+        .set('Cookie', aliceCookie)
+        .expect(HttpStatus.CREATED);
+
+      // 1. Alice creates an assessment with an unpinned Question item
+      const driftAss = await request(app.getHttpServer())
+        .post('/api/v1/assessments')
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Question Drift Assessment' })
+        .expect(HttpStatus.CREATED);
+
+      const driftSec = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${driftAss.body.id}/sections`)
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Section A' })
+        .expect(HttpStatus.CREATED);
+
+      // Add unpinned Question item (pinnedQuestionVersionId is omitted!)
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${driftAss.body.id}/sections/${driftSec.body.id}/items`)
+        .set('Cookie', aliceCookie)
+        .send({
+          questionBankItemId: aliceClozeQuestionId,
+          points: 5.0,
+        })
+        .expect(HttpStatus.CREATED);
+
+      // 2. Publish initial version with idempotencyKey
+      const pub1 = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${driftAss.body.id}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'unpinned-drift-key-01' })
+        .expect(HttpStatus.CREATED);
+
+      expect(pub1.body.versionNumber).toBe(1);
+
+      // 3. Replay with exact same state -> idempotent replay succeeds (cached version)
+      const replayOk = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${driftAss.body.id}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'unpinned-drift-key-01' })
+        .expect(HttpStatus.CREATED);
+
+      expect(replayOk.body.id).toBe(pub1.body.id);
+
+      // 4. In Question Bank, publish a NEW version of aliceClozeQuestionId (QuestionVersion 2)
+      // Note: This does NOT increment driftAss revision!
+      await request(app.getHttpServer())
+        .post(`/api/v1/question-bank/${aliceClozeQuestionId}/versions`)
+        .set('Cookie', aliceCookie)
+        .expect(HttpStatus.CREATED);
+
+      // 5. Try to publish again with the SAME idempotency key
+      // The resolved QuestionVersion would now resolve to v2 instead of v1!
+      // Must reject with HTTP 409 Conflict
+      const conflictRes = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${driftAss.body.id}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'unpinned-drift-key-01' })
+        .expect(HttpStatus.CONFLICT);
+
+      expect(conflictRes.body.message).toContain('different resolved QuestionVersions');
     });
 
     it('subsequent edits to questions in Question Bank do NOT alter published AssessmentVersion snapshot', async () => {
