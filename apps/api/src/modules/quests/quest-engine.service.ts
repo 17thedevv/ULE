@@ -21,11 +21,14 @@ export class QuestEngineService {
     fact: QualifyingFact,
     tx: Prisma.TransactionClient,
   ): Promise<void> {
-    // 1. Identify candidate active quest instances
+    // 1. Identify candidate active quest instances (both course-scoped and global-scoped)
     const candidateInstances = await tx.questInstance.findMany({
       where: {
         userId: fact.userId,
-        courseVersionId: fact.courseVersionId,
+        OR: [
+          { courseVersionId: fact.courseVersionId, scope: 'COURSE' },
+          { scope: 'GLOBAL', courseVersionId: null },
+        ],
         status: 'ACTIVE',
       },
       select: { id: true },

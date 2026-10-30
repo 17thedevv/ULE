@@ -12,6 +12,7 @@ import {
 import { CodingBlockDefinition } from './types/coding.block';
 import { MultipleChoiceBlockDefinition } from './types/multiple-choice.block';
 import { VideoBlockDefinition } from './types/video.block';
+import { ClozeBlockDefinition } from './types/cloze.block';
 
 @Injectable()
 export class BlockTypeRegistry {
@@ -22,6 +23,7 @@ export class BlockTypeRegistry {
     this.register(new VideoBlockDefinition());
     this.register(new MultipleChoiceBlockDefinition());
     this.register(new CodingBlockDefinition());
+    this.register(new ClozeBlockDefinition());
   }
 
   register(definition: IBlockTypeDefinition): void {

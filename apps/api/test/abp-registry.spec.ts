@@ -11,12 +11,13 @@ describe('ABP BlockTypeRegistry Unit Tests', () => {
   describe('Registry Manifest Discovery', () => {
     it('lists all registered block type manifests', () => {
       const manifests = registry.listManifests();
-      expect(manifests).toHaveLength(3);
+      expect(manifests).toHaveLength(4);
 
       const ids = manifests.map((m) => m.id);
       expect(ids).toContain('video');
       expect(ids).toContain('multiple-choice');
       expect(ids).toContain('coding');
+      expect(ids).toContain('cloze');
     });
 
     it('retrieves valid definition for known type', () => {
