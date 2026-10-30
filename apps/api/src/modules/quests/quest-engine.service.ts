@@ -117,8 +117,11 @@ export class QuestEngineService {
           continue;
         }
 
-        // Distinct block check: for Complete Distinct Activities, each block instance counts at most once
+        // Distinct block check & cross-course constraints for Complete Distinct Activities
         if (instance.templateId === 'COMPLETE_DISTINCT_ACTIVITIES') {
+          const config = instance.config as CompleteDistinctActivitiesConfig | null;
+
+          // Invariant 1: each distinct block instance counts at most once per objective
           const alreadyConsumedBlock = await tx.questFactConsumption.findFirst({
             where: {
               questInstanceId: instance.id,
@@ -131,6 +134,27 @@ export class QuestEngineService {
           });
           if (alreadyConsumedBlock) {
             continue;
+          }
+
+          // Invariant 2: Cross-course constraint (requireDistinctCourses or maxPerCourse)
+          if (
+            config?.requireDistinctCourses === true ||
+            (typeof config?.maxPerCourse === 'number' && config.maxPerCourse > 0)
+          ) {
+            const maxAllowed = config.requireDistinctCourses === true ? 1 : config.maxPerCourse!;
+            const sameCourseConsumptions = await tx.questFactConsumption.count({
+              where: {
+                questInstanceId: instance.id,
+                objectiveProgressId: objective.id,
+                status: 'CONSUMED',
+                fact: {
+                  courseVersionId: fact.courseVersionId,
+                },
+              },
+            });
+            if (sameCourseConsumptions >= maxAllowed) {
+              continue;
+            }
           }
         }
 
@@ -221,6 +245,25 @@ export class QuestEngineService {
       if (config?.skillCode && config.skillCode !== fact.skillCode) {
         return false;
       }
+
+      // ADR-012/013 Invariant: Global Quests require verified evidence.
+      // Unverified practice (UNVERIFIED_PRACTICE / SELF_REPORTED_INDEPENDENT) cannot satisfy Global Quests.
+      const metadata = (fact.metadata as Record<string, unknown> | null) ?? {};
+      if (instance.scope === 'GLOBAL') {
+        if (
+          metadata.verificationLevel === 'UNVERIFIED_PRACTICE' ||
+          metadata.provenance === 'SELF_REPORTED_INDEPENDENT'
+        ) {
+          return false;
+        }
+      }
+
+      if (config?.minVerificationLevel === 'VERIFIED_ASSESSMENT') {
+        if (metadata.verificationLevel !== 'VERIFIED_ASSESSMENT') {
+          return false;
+        }
+      }
+
       return true;
     }
 

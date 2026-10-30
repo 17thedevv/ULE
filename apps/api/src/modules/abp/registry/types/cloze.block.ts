@@ -179,9 +179,25 @@ export class ClozeBlockDefinition implements IBlockTypeDefinition {
                 errors.push(
                   `answerKey.blanks must provide at least one accepted string variant for '${blank.blankKey}'.`,
                 );
+              } else {
+                for (let vIdx = 0; vIdx < variants.length; vIdx++) {
+                  const v = variants[vIdx];
+                  if (typeof v !== 'string' || v.trim().length === 0) {
+                    errors.push(
+                      `answerKey.blanks['${blank.blankKey}'][${vIdx}] must be a non-empty string.`,
+                    );
+                  }
+                }
               }
             }
           }
+        }
+
+        if (
+          cfg.answerKey.explanation !== undefined &&
+          typeof cfg.answerKey.explanation !== 'string'
+        ) {
+          errors.push('answerKey.explanation must be a string if provided.');
         }
       }
     }
@@ -271,7 +287,10 @@ export class ClozeBlockDefinition implements IBlockTypeDefinition {
     let correctCount = 0;
 
     for (const blank of targetBlanks) {
-      const submittedRaw = answersRaw[blank.blankKey] ?? '';
+      const submittedRaw =
+        typeof answersRaw[blank.blankKey] === 'string'
+          ? (answersRaw[blank.blankKey] as string)
+          : '';
       const normalizedSubmitted = normalizeClozeToken(submittedRaw);
 
       const acceptedVariants = keyBlanks[blank.blankKey] ?? [];

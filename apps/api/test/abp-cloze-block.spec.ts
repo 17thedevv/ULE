@@ -97,6 +97,43 @@ describe('ABP Cloze Block Definition & Evaluator Unit Tests', () => {
         "answerKey.blanks must provide at least one accepted string variant for 'blank_1'.",
       );
     });
+
+    it('rejects non-string or whitespace-only variants in answerKey.blanks', () => {
+      const result = cloze.validateConfig({
+        prompt: 'Fill in the blank.',
+        templateText: 'Sentence with {{blank_1}}.',
+        targetBlanks: [{ id: 'b_1', blankKey: 'blank_1' }],
+        answerKey: {
+          blanks: { blank_1: [123, '   ', null] as any },
+        },
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain(
+        "answerKey.blanks['blank_1'][0] must be a non-empty string.",
+      );
+      expect(result.errors).toContain(
+        "answerKey.blanks['blank_1'][1] must be a non-empty string.",
+      );
+      expect(result.errors).toContain(
+        "answerKey.blanks['blank_1'][2] must be a non-empty string.",
+      );
+    });
+
+    it('rejects non-string explanation in answerKey', () => {
+      const result = cloze.validateConfig({
+        prompt: 'Fill in the blank.',
+        templateText: 'Sentence with {{blank_1}}.',
+        targetBlanks: [{ id: 'b_1', blankKey: 'blank_1' }],
+        answerKey: {
+          blanks: { blank_1: ['correct'] },
+          explanation: 9999 as any,
+        },
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain('answerKey.explanation must be a string if provided.');
+    });
   });
 
   describe('Learner Sanitization', () => {
@@ -207,6 +244,23 @@ describe('ABP Cloze Block Definition & Evaluator Unit Tests', () => {
 
       expect(outcome.isCorrect).toBe(false);
       expect(outcome.score).toBe(0.5); // 1 out of 2 correct
+    });
+
+    it('handles malformed non-string submitted answer values defensively without throwing', async () => {
+      const outcome = await cloze.evaluate(
+        {
+          answers: {
+            blank_1: 12345 as any,
+            blank_2: null as any,
+          },
+        },
+        config,
+        {} as any,
+      );
+
+      expect(outcome.status).toBe('EVALUATED');
+      expect(outcome.isCorrect).toBe(false);
+      expect(outcome.score).toBe(0.0);
     });
 
     it('respects DEFERRED feedback policy by withholding detailed answers from active attempt', async () => {

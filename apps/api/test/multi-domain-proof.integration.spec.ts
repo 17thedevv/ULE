@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import * as fs from 'fs';
+import * as path from 'path';
 import { HttpStatus, INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
@@ -52,16 +54,24 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
     name: 'Learner Eva (Gate 4 Cloze Verification)',
   };
 
+  const userLearnerFrank = {
+    email: `frank_multidomain_${Date.now()}@ule.internal`,
+    password: 'LearnerPassword123!',
+    name: 'Learner Frank (Active Quest Deduplication)',
+  };
+
   let ownerCookie: string;
   let bobCookie: string;
   let charlieCookie: string;
   let davidCookie: string;
   let evaCookie: string;
+  let frankCookie: string;
 
   let bobId: string;
   let charlieId: string;
   let davidId: string;
   let evaId: string;
+  let frankId: string;
 
   // Domain A (Mathematics) Identifiers
   let mathCourseId: string;
@@ -163,6 +173,19 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
       .set('Cookie', evaCookie)
       .expect(HttpStatus.OK);
     evaId = evaMe.body.user.id;
+
+    // 6. Register Learner Frank
+    const frankRegRes = await request(app.getHttpServer())
+      .post('/api/v1/auth/sign-up/email')
+      .set('Origin', trustedOrigin)
+      .send(userLearnerFrank)
+      .expect(HttpStatus.OK);
+    frankCookie = extractCookies(frankRegRes);
+    const frankMe = await request(app.getHttpServer())
+      .get('/api/v1/me')
+      .set('Cookie', frankCookie)
+      .expect(HttpStatus.OK);
+    frankId = frankMe.body.user.id;
   });
 
   afterAll(async () => {
@@ -991,6 +1014,120 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
       const engPractice = engQuests.body.find((q: any) => q.questKey === 'eng-practice');
       expect(engPractice.objectives[0].currentCount).toBe(1);
     });
+
+    it('deduplicates activity replays while Course Quest is still ACTIVE (no premature increment)', async () => {
+      // 1. Grant Frank access and enroll in Math course
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${mathCourseId}/versions/${mathVersionId}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: frankId })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/learner/courses/${mathVersionId}/enroll`)
+        .set('Cookie', frankCookie)
+        .expect(HttpStatus.CREATED);
+
+      // 2. Frank completes Math Video activity
+      const run1 = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', frankCookie)
+        .send({
+          courseVersionId: mathVersionId,
+          blockInstanceId: mathVideoBlockId,
+          idempotencyKey: `run-frank-video-1-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${run1.body.id}/commands`)
+        .set('Cookie', frankCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-frank-video-finish-1-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Verify quest is ACTIVE with progress 1/2
+      let quests = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${mathVersionId}/quests`)
+        .set('Cookie', frankCookie)
+        .expect(HttpStatus.OK);
+      let distinctQuest = quests.body.find((q: any) => q.questKey === 'math-distinct');
+      expect(distinctQuest.status).toBe('ACTIVE');
+      expect(distinctQuest.objectives[0].currentCount).toBe(1);
+      expect(distinctQuest.objectives[0].isCompleted).toBe(false);
+
+      // 3. Frank replays/repeats the same Video activity with a new run
+      const run2 = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', frankCookie)
+        .send({
+          courseVersionId: mathVersionId,
+          blockInstanceId: mathVideoBlockId,
+          idempotencyKey: `run-frank-video-2-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${run2.body.id}/commands`)
+        .set('Cookie', frankCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-frank-video-finish-2-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // INVARIANT: Quest count REMAINS 1/2, quest REMAINS ACTIVE (no premature increment on repeated block)
+      quests = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${mathVersionId}/quests`)
+        .set('Cookie', frankCookie)
+        .expect(HttpStatus.OK);
+      distinctQuest = quests.body.find((q: any) => q.questKey === 'math-distinct');
+      expect(distinctQuest.status).toBe('ACTIVE');
+      expect(distinctQuest.objectives[0].currentCount).toBe(1);
+      expect(distinctQuest.objectives[0].isCompleted).toBe(false);
+
+      // 4. Frank completes a second distinct activity (Math MCQ)
+      const mcqRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', frankCookie)
+        .send({
+          courseVersionId: mathVersionId,
+          blockInstanceId: mathMcqPracticeBlockId,
+          idempotencyKey: `run-frank-mcq-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${mcqRun.body.id}/commands`)
+        .set('Cookie', frankCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_5' },
+          idempotencyKey: `cmd-frank-mcq-sub-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${mcqRun.body.id}/commands`)
+        .set('Cookie', frankCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-frank-mcq-finish-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Verify quest now transitions to COMPLETED exactly once
+      quests = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${mathVersionId}/quests`)
+        .set('Cookie', frankCookie)
+        .expect(HttpStatus.OK);
+      distinctQuest = quests.body.find((q: any) => q.questKey === 'math-distinct');
+      expect(distinctQuest.status).toBe('COMPLETED');
+      expect(distinctQuest.objectives[0].currentCount).toBe(2);
+      expect(distinctQuest.objectives[0].isCompleted).toBe(true);
+    });
   });
 
   describe('Gate 8: Assistance Tracking Distinction in Both Domains', () => {
@@ -1247,7 +1384,10 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
           description: 'Complete 2 distinct activities across disparate learning domains.',
           scope: 'GLOBAL',
           status: 'ACTIVE',
-          config: { targetCount: 2 },
+          config: {
+            targetCount: 2,
+            requireDistinctCourses: true,
+          },
           rewardPolicy: { platformXp: 100 },
           objectives: {
             create: [
@@ -1287,6 +1427,49 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
         .expect(HttpStatus.OK);
 
       // Verify Global Quest progress is now 1/2
+      const updatedGlobalQuest = await prisma.questInstance.findUniqueOrThrow({
+        where: { id: globalQuestId },
+        include: { objectives: true },
+      });
+
+      expect(updatedGlobalQuest.status).toBe('ACTIVE');
+      expect(updatedGlobalQuest.objectives[0].currentCount).toBe(1);
+      expect(updatedGlobalQuest.objectives[0].isCompleted).toBe(false);
+    });
+
+    it('negative check: completing a second distinct activity in the SAME Math course does NOT increment Global Quest', async () => {
+      // David completes a 2nd distinct activity in the SAME Math course (Algebraic MCQ)
+      const mathMcqRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', davidCookie)
+        .send({
+          courseVersionId: mathVersionId,
+          blockInstanceId: mathMcqPracticeBlockId,
+          idempotencyKey: `run-david-math-mcq-same-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${mathMcqRun.body.id}/commands`)
+        .set('Cookie', davidCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_5' },
+          idempotencyKey: `cmd-david-math-sub-same-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${mathMcqRun.body.id}/commands`)
+        .set('Cookie', davidCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-david-math-fin-same-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Invariant: requireDistinctCourses disallows two activities from the same course
+      // Progress MUST REMAIN 1/2, quest MUST REMAIN ACTIVE
       const updatedGlobalQuest = await prisma.questInstance.findUniqueOrThrow({
         where: { id: globalQuestId },
         include: { objectives: true },
@@ -1341,6 +1524,71 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
 
       // Verify consumptions trace back to both courses
       expect(updatedGlobalQuest.consumptions.length).toBe(2);
+    });
+
+    it('negative check: rejects unverified course practice facts from qualifying Global Quests', async () => {
+      // Seed a Global Quest with INDEPENDENT_PRACTICE template
+      const globalPracticeQuest = await prisma.questInstance.create({
+        data: {
+          userId: davidId,
+          questKey: 'global-unverified-rejected',
+          templateId: 'INDEPENDENT_PRACTICE',
+          title: 'Global Verified Practice Milestone',
+          scope: 'GLOBAL',
+          status: 'ACTIVE',
+          config: {
+            skillCode: 'SKILL_ENG_SYNTAX',
+            targetCount: 1,
+          },
+          objectives: {
+            create: [
+              {
+                objectiveKey: 'independent_practice',
+                targetCount: 1,
+                currentCount: 0,
+                isCompleted: false,
+              },
+            ],
+          },
+        },
+        include: { objectives: true },
+      });
+
+      // David completes unassisted Cloze in English course (provenance: SELF_REPORTED_INDEPENDENT, UNVERIFIED_PRACTICE)
+      const clozeRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', davidCookie)
+        .send({
+          courseVersionId: engVersionId,
+          blockInstanceId: engClozePracticeBlockId,
+          idempotencyKey: `run-david-cloze-unverified-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${clozeRun.body.id}/commands`)
+        .set('Cookie', davidCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { answers: { capital: 'Paris', language: 'French' } },
+          idempotencyKey: `cmd-david-cloze-unverified-sub-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Course-level practice fact exists with UNVERIFIED_PRACTICE
+      const courseFact = await prisma.qualifyingFact.findFirst({
+        where: { runId: clozeRun.body.id, factType: 'INDEPENDENT_PRACTICE_CONFIRMED' },
+      });
+      expect(courseFact).toBeDefined();
+
+      // INVARIANT: Global Quest rejects UNVERIFIED_PRACTICE provenance and remains at count 0
+      const updatedGlobalPracticeQuest = await prisma.questInstance.findUniqueOrThrow({
+        where: { id: globalPracticeQuest.id },
+        include: { objectives: true },
+      });
+      expect(updatedGlobalPracticeQuest.status).toBe('ACTIVE');
+      expect(updatedGlobalPracticeQuest.objectives[0].currentCount).toBe(0);
+      expect(updatedGlobalPracticeQuest.objectives[0].isCompleted).toBe(false);
     });
 
     it('replaying an activity in either domain does not double count Global Quest progress', async () => {
@@ -1549,6 +1797,35 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
 
         const offendingFields = modelDef!.fields.filter((f) => domainRegex.test(f.name));
         expect(offendingFields).toEqual([]);
+      }
+    });
+
+    it('verifies zero domain-specific conditionals in canonical domain and engine source files', () => {
+      const coreFiles = [
+        'src/modules/courses/courses.service.ts',
+        'src/modules/quests/quest-engine.service.ts',
+        'src/modules/quests/qualification.service.ts',
+        'src/modules/abp/runtime.service.ts',
+        'src/modules/evidence/evidence-intake.service.ts',
+      ];
+
+      const forbiddenPatterns = [
+        /\bdomain\s*===/i,
+        /\.domain\s*===/i,
+        /\bsubject\s*===/i,
+        /\bisMath\b/i,
+        /\bisEnglish\b/i,
+      ];
+
+      for (const relPath of coreFiles) {
+        const fullPath = path.resolve(__dirname, '..', relPath);
+        expect(fs.existsSync(fullPath)).toBe(true);
+        const content = fs.readFileSync(fullPath, 'utf8');
+
+        for (const pattern of forbiddenPatterns) {
+          const match = content.match(pattern);
+          expect(match).toBeNull();
+        }
       }
     });
   });
