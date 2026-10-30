@@ -267,9 +267,40 @@ export class CoursesService {
           }
         }
 
+        // Validate draft quests
+        const draftQuests = tx.draftCourseQuest
+          ? await tx.draftCourseQuest.findMany({
+              where: { draftId: draft.id },
+              orderBy: { createdAt: 'asc' },
+            })
+          : [];
+
+        for (const quest of draftQuests) {
+          if (quest.templateId === 'COMPLETE_DISTINCT_ACTIVITIES') {
+            const c = quest.config as { targetCount?: number; requiredBlockInstanceIds?: string[] };
+            if (c.requiredBlockInstanceIds) {
+              for (const reqBlockId of c.requiredBlockInstanceIds) {
+                if (!blocks.some((b) => b.id === reqBlockId)) {
+                  validationErrors.push(
+                    `Quest '${quest.title}' references non-existent block instance '${reqBlockId}'.`,
+                  );
+                }
+              }
+            }
+          } else if (quest.templateId === 'INDEPENDENT_PRACTICE') {
+            const c = quest.config as { skillCode?: string; targetCount?: number };
+            const mappedSkill = courseSkills.find((s) => s.skillCode === c.skillCode);
+            if (!mappedSkill) {
+              validationErrors.push(
+                `Quest '${quest.title}' references non-existent skill code '${c.skillCode}'.`,
+              );
+            }
+          }
+        }
+
         if (validationErrors.length > 0) {
           throw new BadRequestException({
-            message: 'Cannot create version: Draft contains invalid activity blocks or skill mappings.',
+            message: 'Cannot create version: Draft contains invalid activity blocks, skill mappings, or quests.',
             errors: validationErrors,
           });
         }
@@ -310,6 +341,17 @@ export class CoursesService {
           revision: m.revision,
         }));
 
+        const questsSnapshot = draftQuests.map((q) => ({
+          id: q.id,
+          questKey: q.questKey,
+          title: q.title,
+          description: q.description,
+          templateId: q.templateId,
+          config: q.config as Record<string, unknown>,
+          rewardPolicy: q.rewardPolicy as Record<string, unknown> | null,
+          revision: q.revision,
+        }));
+
         const snapshotData = {
           courseId,
           versionNumber: nextVersionNumber,
@@ -323,6 +365,7 @@ export class CoursesService {
           blocks: blocksSnapshot,
           skills: skillsSnapshot,
           skillMappings: skillMappingsSnapshot,
+          quests: questsSnapshot,
         };
 
         const version = await tx.courseVersion.create({

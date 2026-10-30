@@ -13,6 +13,7 @@ import { McpModule } from './modules/mcp/mcp.module';
 import { MeModule } from './modules/me/me.module';
 import { PrismaModule } from './modules/prisma/prisma.module';
 import { SkillsModule } from './modules/skills/skills.module';
+import { QuestsModule } from './modules/quests/quests.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { SkillsModule } from './modules/skills/skills.module';
     LearnerModule,
     McpModule,
     HealthModule,
+    QuestsModule,
   ],
 })
 export class AppModule {}

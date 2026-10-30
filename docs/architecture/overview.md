@@ -138,3 +138,67 @@ flowchart TD
 5. **Conservative Skill State Projections**: Deterministic projections derive `INSUFFICIENT_EVIDENCE`, `DEVELOPING`, or `READY_TO_VERIFY` states with transparent reasoning and missing evidence explanations. `VERIFIED` mastery is strictly out of scope for this slice and is never granted.
 6. **Append-Only Assessment Corrections**: Corrections append an auditable `AssessmentCorrection` record and idempotently re-evaluate affected evidence and skill projections without mutating history.
 
+## 5. Phase 4: Course Gamification, Economy Isolation & Deterministic Journey MVP
+
+```mermaid
+flowchart TD
+    subgraph Enrollment["1. Enrollment & Authorization"]
+        Grant["CourseAccessGrant (ACTIVE)\nOwner-Delegated Auth Gate"]
+        Enrollment["CourseEnrollment\nLearner Journey Lifecycle\n(ACTIVE | PAUSED | COMPLETED)"]
+        Grant -->|Authorizes| Enrollment
+    end
+
+    subgraph Facts["2. Fact Qualification Pipeline"]
+        ABEvent["ABP Runtime Event\n(RUN_COMPLETED / SUBMIT_RESPONSE)"]
+        Evidence["LearningEvidence\n(EVALUATED / COMPLETION_ONLY)"]
+        QualService["QualificationService\n(Closed Fact Allowlist)"]
+        Fact["QualifyingFact\nACTIVITY_COMPLETED\nINDEPENDENT_PRACTICE_CONFIRMED\nUnique: sourceKey"]
+
+        ABEvent --> QualService
+        Evidence --> QualService
+        QualService --> Fact
+    end
+
+    subgraph Quests["3. Quest Engine & Progress"]
+        Fact --> Engine["QuestEngine (Idempotent Ingestion)"]
+        PinnedDef["CourseVersion.snapshot.quests\n(Immutable Quest Definitions)"]
+        PinnedDef --> Engine
+        Instance["QuestInstance\nScope: COURSE | GLOBAL\nUnique: enrollmentId + questKey + occurrence"]
+        Progress["QuestObjectiveProgress\n(Target Count / Completion)"]
+        Consumption["QuestFactConsumption\n(Exactly-Once Deduplication)"]
+
+        Engine --> Instance
+        Instance --> Progress
+        Engine --> Consumption
+    end
+
+    subgraph Economy["4. Dual-Ledger Economy Isolation"]
+        CourseReward["CourseRewardGrant / Adjustment\n(Course XP Only)"]
+        PlatformReward["PlatformRewardGrant / Adjustment\n(Platform-Owned Rewards Only)"]
+        Instance -->|Course Scope| CourseReward
+        Instance -->|Global Scope| PlatformReward
+    end
+
+    subgraph Agency["5. Deterministic Journey Planner"]
+        Goal["Explicit Learner Goal"] --> Planner["JourneyPlanner\nDeterministic Filter & Multi-Factor Rank"]
+        Planner --> DAG["Short-Horizon DAG\n(REQUIRED, OPTIONAL, CHOICE, FALLBACK)\nRevisions R0-R3"]
+    end
+```
+
+### Key Boundaries & Invariants
+1. **Enrollment vs. Access Grant**: `CourseAccessGrant` controls authorization; `CourseEnrollment` tracks participation context. Revoking a grant immediately suspends runtime and quest progression; re-granting resumes active enrollment.
+2. **Pedagogical Integrity**:
+   - Quest completion is participation and practice achievement, **never verified skill mastery**.
+   - Video completion qualifies `ACTIVITY_COMPLETED` (participation-only) and never satisfies independent practice.
+   - Assisted attempts, repetitions, and unreleased `DEFERRED` feedback never qualify for practice quests.
+3. **Dual Economy Isolation**:
+   - Zero exchange rate, zero currency conversion between Course XP and Platform XP.
+   - Course creators cannot configure global quests or mint platform rewards.
+   - Adjustments resulting from `AssessmentCorrection` append compensating entries; historical grants are never deleted.
+4. **Deterministic Concurrency & Lock Hierarchy**:
+   - Strict lock acquisition order prevents deadlocks: `Grant FOR SHARE` -> `Run FOR UPDATE` -> `Skill Advisory Lock` -> `QuestInstance FOR UPDATE (sorted ASC)` -> `Reward Append`.
+5. **Learner Agency**:
+   - Journey Planner presents bounded candidate options with transparent reason codes.
+   - Journey does not act as a Course Flow Resolver and never hijacks ABP runtime navigation.
+
+

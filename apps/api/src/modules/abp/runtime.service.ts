@@ -26,6 +26,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { EvidenceIntakeService } from '../evidence/evidence-intake.service';
+import { QualificationService } from '../quests/qualification.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecuteRunCommandDto } from './dto/execute-run-command.dto';
 import { StartRunDto } from './dto/start-run.dto';
@@ -37,6 +38,7 @@ export class RuntimeService {
     private readonly prisma: PrismaService,
     private readonly registry: BlockTypeRegistry,
     @Optional() private readonly evidenceIntake?: EvidenceIntakeService,
+    @Optional() private readonly qualificationService?: QualificationService,
   ) {}
 
   /**
@@ -235,8 +237,47 @@ export class RuntimeService {
       );
     }
 
-    // 2. Execute under exclusive row lock on the ab_runs record
+    // 2. Identify run and courseVersion before transaction to preserve strict lock hierarchy
+    const preliminaryRun = await this.prisma.aBRun.findUnique({
+      where: { id: runId },
+      select: {
+        id: true,
+        userId: true,
+        courseVersionId: true,
+        courseVersion: {
+          select: {
+            course: { select: { ownerId: true } },
+          },
+        },
+      },
+    });
+
+    if (!preliminaryRun || preliminaryRun.userId !== userId) {
+      throw new NotFoundException(`Run '${runId}' not found.`);
+    }
+
+    const isOwner = preliminaryRun.courseVersion.course.ownerId === userId;
+    const courseVersionId = preliminaryRun.courseVersionId;
+
+    // Execute under transaction following strict ADR-012 hierarchy:
+    // CourseAccessGrant (FOR SHARE) -> ABRun (FOR UPDATE) -> QuestInstance (FOR UPDATE)
     return this.prisma.$transaction(async (tx) => {
+      // Step 1: Synchronize on grant record first (FOR SHARE) for non-owner learners
+      if (!isOwner) {
+        const lockedGrants = await tx.$queryRaw<Array<{ id: string; status: string }>>`
+          SELECT id, status FROM course_access_grants
+          WHERE "courseVersionId" = ${courseVersionId} AND "userId" = ${userId}
+          FOR SHARE
+        `;
+
+        if (!lockedGrants || lockedGrants.length === 0 || lockedGrants[0].status !== 'ACTIVE') {
+          throw new ForbiddenException(
+            'Course access grant has been revoked or is not active.',
+          );
+        }
+      }
+
+      // Step 2: Lock ab_runs record (FOR UPDATE)
       const lockedRuns = await tx.$queryRaw<{ id: string; userId: string; status: RunStatus }[]>`
         SELECT id, "userId" AS "userId", status FROM ab_runs WHERE id = ${runId} FOR UPDATE
       `;
@@ -249,22 +290,6 @@ export class RuntimeService {
         where: { id: runId },
         include: { courseVersion: { include: { course: true } } },
       });
-
-      // Authorization guard: verify active access grant for non-owner learners under row lock
-      const isOwner = run.courseVersion.course.ownerId === userId;
-      if (!isOwner) {
-        const lockedGrants = await tx.$queryRaw<Array<{ id: string; status: string }>>`
-          SELECT id, status FROM course_access_grants
-          WHERE "courseVersionId" = ${run.courseVersionId} AND "userId" = ${userId}
-          FOR SHARE
-        `;
-
-        if (!lockedGrants || lockedGrants.length === 0 || lockedGrants[0].status !== 'ACTIVE') {
-          throw new ForbiddenException(
-            'Course access grant has been revoked or is not active.',
-          );
-        }
-      }
 
       const pinnedBlock = this.extractPinnedBlock(run.courseVersion, run.blockInstanceId);
       const def = this.registry.getDefinition(pinnedBlock.blockTypeId, pinnedBlock.typeVersion);
@@ -630,6 +655,21 @@ export class RuntimeService {
             );
           }
 
+          if (this.qualificationService) {
+            const isDeferred =
+              (pinnedBlock.config as { feedbackPolicy?: string })?.feedbackPolicy === 'DEFERRED';
+            await this.qualificationService.qualifyAttempt(
+              {
+                run,
+                attempt,
+                assessmentResult: assessment,
+                courseVersion: run.courseVersion,
+                isDeferredWithheld: isDeferred,
+              },
+              tx,
+            );
+          }
+
           return this.toRunDto(run, pinnedBlock, attempt, assessment, deliveredHint);
         }
 
@@ -677,6 +717,27 @@ export class RuntimeService {
           // Reconcile learner skill projections on completed run closure (releases deferred feedback)
           if (this.evidenceIntake) {
             await this.evidenceIntake.reconcileProjectionsForRun(updated, tx);
+          }
+
+          // Qualify run completion for course quests (both evaluatable and non-evaluatable)
+          if (this.qualificationService) {
+            await this.qualificationService.qualifyRunCompletion(
+              {
+                run: updated,
+                courseVersion: run.courseVersion,
+              },
+              tx,
+            );
+
+            const isDeferred =
+              (pinnedBlock.config as { feedbackPolicy?: string })?.feedbackPolicy === 'DEFERRED';
+            if (isDeferred) {
+              await this.qualificationService.reconcileDeferredRun(
+                updated,
+                run.courseVersion,
+                tx,
+              );
+            }
           }
 
           const latestAttempt = await tx.aBAttempt.findFirst({

@@ -217,3 +217,33 @@
        - Concurrent attempt submissions on distinct items mapped to the same skill are strictly serialized across database transactions, ensuring downstream projections compute on committed evidence without undercounting or overwriting each other with stale snapshots.
 - **Consequences**: Complete Phase 3 vertical slice verified by 35 real PostgreSQL automated integration tests (`test/learning-evidence.integration.spec.ts`, 100% pass) and 183 total integration tests across the monorepo. Zero regressions across Phase 1A, Phase 1B, Phase 2, and Phase 3 suites.
 
+## ADR-012: Course Quests, Economy Separation, Reward Ledger & Deterministic Journey MVP
+
+- **Status**: Accepted (Phase 4 Foundation)
+- **Context**: ULE requires a gamification and journey layer that increases learner motivation and agency without compromising learning science or pedagogical integrity. Quests must never conflate participation with verified skill mastery, event replays must be strictly idempotent, course economies must be completely isolated from platform economies, and journey recommendations must be explainable and deterministic rather than opaque or engagement-driven.
+- **Decision**: Implement a modular, trusted Quest, Reward, and Journey subsystem within the NestJS backend and PostgreSQL:
+  1. **CourseEnrollment Lifecycle & Authorization Distinction**:
+     - Model: `CourseEnrollment` tracks learner participation context per immutable `CourseVersion` (`userId`, `courseVersionId`, `status: 'ACTIVE' | 'PAUSED' | 'COMPLETED'`).
+     - Distinct authorization boundary: `CourseAccessGrant` remains the authoritative owner-issued access gate. Revoking a grant immediately suspends runtime execution and quest progression. Re-granting resumes the existing active enrollment.
+     - Course quest instances are uniquely keyed by `(courseEnrollmentId, questKey, occurrence)`.
+  2. **Qualified Fact Pipeline & Pedagogical Boundaries**:
+     - Dedicated `QualificationService` maps authoritative ABP runtime events and evaluated evidence into normalized `QualifyingFact` projections.
+     - Closed allowlist for MVP:
+       - `ACTIVITY_COMPLETED`: Emitted when an evaluatable or non-evaluatable block run reaches `CLOSED` with `closeReason === 'COMPLETED'`. Satisfies participation-only quest objectives (`CompleteDistinctActivities`). Strictly excluded from skill mastery.
+       - `INDEPENDENT_PRACTICE_CONFIRMED`: Emitted when an evaluatable attempt satisfies `isCorrect === true`, unassisted (`assisted === false`, no hint used, non-assisted provenance), `isSameItemRepetition === false`, unambiguous single-skill mapping, and released feedback (`CLOSED COMPLETED` under `DEFERRED` policy). In MVP course-scoped practice milestones, client/in-browser attempts record `provenance: 'SELF_REPORTED_INDEPENDENT'` with `verificationLevel: 'UNVERIFIED_PRACTICE'`. This is sufficient for course quest engagement milestones, but is explicitly non-authoritative for verified skill mastery in the intelligence layer or cross-course Global Quests (Phase 4 PR #8).
+     - Strict anti-leak rule: Unreleased `DEFERRED` feedback is withheld from qualification; abandoned or active deferred runs never qualify practice milestones.
+     - Absolute invariant: Quest completion is never equivalent to verified skill mastery.
+  3. **Dual-Ledger Economy Isolation & Append-Only Adjustments**:
+     - Strict database and domain isolation between Course XP (`CourseRewardGrant` + `CourseRewardAdjustment`) and Platform XP (`PlatformRewardGrant` + `PlatformRewardAdjustment`).
+     - Zero exchange rate, zero currency conversion, zero leakage. Platform rewards are governed exclusively by ULE-owned global quests.
+     - Retroactive grading corrections (`AssessmentCorrection`) append compensating adjustments with audit lineages, never mutating historical grant rows.
+  4. **Deterministic Journey Planner**:
+     - Explicit learner goal capture with hard constraint filtering (prerequisites, availability, permissions).
+     - Deterministic multi-factor ranking (goal fit > availability > continuity > effort preference).
+     - Short-horizon DAG output with 4 edge kinds (`REQUIRED`, `OPTIONAL`, `CHOICE`, `FALLBACK`) and R0-R3 revision lifecycles.
+     - Agency boundary: Journey provides user choices; it does not force runtime navigation or claim Course Flow authority.
+  5. **Transaction Lock Hierarchy**:
+     - Strict 5-tier lock hierarchy (`Grant FOR SHARE` -> `Run FOR UPDATE` -> `Advisory Lock` -> `Quest Instance FOR UPDATE (sorted ASC)` -> `Reward Append`) preventing deadlocks.
+- **Consequences**: Proven, concurrency-safe gamification and learner agency vertical slice. Verified via real PostgreSQL tests across 5 staged pull requests (PR #6 to PR #10) meeting Gates G1-G7.
+
+

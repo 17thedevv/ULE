@@ -2,7 +2,9 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { QualificationService } from '../quests/qualification.service';
 import { AssessmentCorrectionDto } from '@ule/contracts';
 import { AssessmentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,6 +16,7 @@ export class AssessmentCorrectionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly projectionService: LearnerSkillProjectionService,
+    @Optional() private readonly qualificationService?: QualificationService,
   ) {}
 
   /**
@@ -211,6 +214,18 @@ export class AssessmentCorrectionService {
           assessment.run.userId,
           assessment.run.courseVersionId,
           sId,
+          tx,
+        );
+      }
+
+      // 5. Reconcile QualifyingFacts and Quest progress
+      if (this.qualificationService) {
+        await this.qualificationService.reconcileAssessmentCorrection(
+          {
+            assessmentResultId: assessment.id,
+            targetIsCorrect,
+            targetStatus,
+          },
           tx,
         );
       }
