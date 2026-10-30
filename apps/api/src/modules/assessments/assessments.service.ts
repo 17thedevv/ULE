@@ -76,53 +76,56 @@ export class AssessmentsService {
   /**
    * Updates an AssessmentDefinition with optimistic concurrency check.
    */
+  /**
+   * Updates an AssessmentDefinition with atomic compare-and-swap optimistic concurrency check.
+   */
   async updateAssessment(
     id: string,
     userId: string,
     dto: UpdateAssessmentDefinitionDto,
   ): Promise<AssessmentDefinitionDto> {
-    const existing = await this.prisma.assessmentDefinition.findUnique({
-      where: { id },
-      include: {
-        sections: {
-          include: {
-            items: true,
-          },
-        },
-      },
-    });
-
-    if (!existing) {
-      throw new NotFoundException(`AssessmentDefinition '${id}' not found.`);
-    }
-
-    if (existing.ownerId !== userId) {
-      throw new ForbiddenException(`You do not have access to AssessmentDefinition '${id}'.`);
-    }
-
-    if (existing.revision !== dto.expectedRevision) {
-      throw new ConflictException(
-        `Stale revision: expected revision ${dto.expectedRevision} does not match current revision ${existing.revision}.`,
-      );
-    }
-
-    if (dto.courseId && dto.courseId !== existing.courseId) {
+    if (dto.courseId) {
       await this.verifyCourseOwnership(dto.courseId, userId);
     }
 
-    const updated = await this.prisma.assessmentDefinition.update({
-      where: { id },
-      data: {
-        title: dto.title !== undefined ? dto.title.trim() : existing.title,
-        description: dto.description !== undefined ? (dto.description?.trim() || null) : existing.description,
-        instructions: dto.instructions !== undefined ? (dto.instructions?.trim() || null) : existing.instructions,
-        durationMinutes: dto.durationMinutes !== undefined ? dto.durationMinutes : existing.durationMinutes,
-        passingScore: dto.passingScore !== undefined ? dto.passingScore : existing.passingScore,
-        maxAttempts: dto.maxAttempts !== undefined ? dto.maxAttempts : existing.maxAttempts,
-        feedbackPolicy: dto.feedbackPolicy ?? existing.feedbackPolicy,
-        courseId: dto.courseId !== undefined ? dto.courseId : existing.courseId,
-        revision: existing.revision + 1,
+    const updateData: Prisma.AssessmentDefinitionUncheckedUpdateManyInput = {
+      revision: { increment: 1 },
+      updatedAt: new Date(),
+    };
+
+    if (dto.title !== undefined) updateData.title = dto.title.trim();
+    if (dto.description !== undefined) updateData.description = dto.description?.trim() || null;
+    if (dto.instructions !== undefined) updateData.instructions = dto.instructions?.trim() || null;
+    if (dto.durationMinutes !== undefined) updateData.durationMinutes = dto.durationMinutes;
+    if (dto.passingScore !== undefined) updateData.passingScore = dto.passingScore;
+    if (dto.maxAttempts !== undefined) updateData.maxAttempts = dto.maxAttempts;
+    if (dto.feedbackPolicy !== undefined) updateData.feedbackPolicy = dto.feedbackPolicy;
+    if (dto.courseId !== undefined) updateData.courseId = dto.courseId;
+
+    const result = await this.prisma.assessmentDefinition.updateMany({
+      where: {
+        id,
+        ownerId: userId,
+        revision: dto.expectedRevision,
       },
+      data: updateData,
+    });
+
+    if (result.count === 0) {
+      const current = await this.prisma.assessmentDefinition.findUnique({ where: { id } });
+      if (!current) {
+        throw new NotFoundException(`AssessmentDefinition '${id}' not found.`);
+      }
+      if (current.ownerId !== userId) {
+        throw new ForbiddenException(`You do not have access to AssessmentDefinition '${id}'.`);
+      }
+      throw new ConflictException(
+        `Stale revision: expected revision ${dto.expectedRevision} does not match current revision ${current.revision}.`,
+      );
+    }
+
+    const updated = await this.prisma.assessmentDefinition.findUniqueOrThrow({
+      where: { id },
       include: {
         sections: {
           orderBy: { orderIndex: 'asc' },
@@ -140,7 +143,7 @@ export class AssessmentsService {
   }
 
   /**
-   * Adds a section to the assessment definition.
+   * Adds a section to the assessment definition, incrementing parent aggregate revision.
    */
   async addSection(
     assessmentId: string,
@@ -149,23 +152,30 @@ export class AssessmentsService {
   ): Promise<AssessmentSectionDto> {
     await this.verifyAssessmentOwnership(assessmentId, userId);
 
-    const section = await this.prisma.assessmentSection.create({
-      data: {
-        assessmentDefinitionId: assessmentId,
-        title: dto.title.trim(),
-        description: dto.description?.trim() || null,
-        orderIndex: dto.orderIndex ?? 0,
-      },
-      include: {
-        items: true,
-      },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const section = await tx.assessmentSection.create({
+        data: {
+          assessmentDefinitionId: assessmentId,
+          title: dto.title.trim(),
+          description: dto.description?.trim() || null,
+          orderIndex: dto.orderIndex ?? 0,
+        },
+        include: {
+          items: true,
+        },
+      });
 
-    return this.mapSectionToDto(section);
+      await tx.assessmentDefinition.update({
+        where: { id: assessmentId },
+        data: { revision: { increment: 1 } },
+      });
+
+      return this.mapSectionToDto(section);
+    });
   }
 
   /**
-   * Updates an existing section in the assessment.
+   * Updates an existing section in the assessment with parent-chain verification.
    */
   async updateSection(
     assessmentId: string,
@@ -173,64 +183,88 @@ export class AssessmentsService {
     userId: string,
     dto: UpdateAssessmentSectionDto,
   ): Promise<AssessmentSectionDto> {
-    await this.verifyAssessmentOwnership(assessmentId, userId);
-
     const section = await this.prisma.assessmentSection.findFirst({
-      where: { id: sectionId, assessmentDefinitionId: assessmentId },
+      where: {
+        id: sectionId,
+        assessmentDefinitionId: assessmentId,
+        assessmentDefinition: {
+          ownerId: userId,
+        },
+      },
     });
 
     if (!section) {
+      await this.verifyAssessmentOwnership(assessmentId, userId);
       throw new NotFoundException(
         `Section '${sectionId}' not found in assessment '${assessmentId}'.`,
       );
     }
 
-    const updated = await this.prisma.assessmentSection.update({
-      where: { id: sectionId },
-      data: {
-        title: dto.title !== undefined ? dto.title.trim() : section.title,
-        description: dto.description !== undefined ? (dto.description?.trim() || null) : section.description,
-        orderIndex: dto.orderIndex ?? section.orderIndex,
-      },
-      include: {
-        items: {
-          orderBy: { orderIndex: 'asc' },
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.assessmentSection.update({
+        where: { id: sectionId },
+        data: {
+          title: dto.title !== undefined ? dto.title.trim() : section.title,
+          description: dto.description !== undefined ? (dto.description?.trim() || null) : section.description,
+          orderIndex: dto.orderIndex ?? section.orderIndex,
         },
-      },
-    });
+        include: {
+          items: {
+            orderBy: { orderIndex: 'asc' },
+          },
+        },
+      });
 
-    return this.mapSectionToDto(updated);
+      await tx.assessmentDefinition.update({
+        where: { id: assessmentId },
+        data: { revision: { increment: 1 } },
+      });
+
+      return this.mapSectionToDto(updated);
+    });
   }
 
   /**
-   * Deletes a section and its item references.
+   * Deletes a section and its item references with parent-chain verification.
    */
   async deleteSection(
     assessmentId: string,
     sectionId: string,
     userId: string,
   ): Promise<{ deleted: boolean; sectionId: string }> {
-    await this.verifyAssessmentOwnership(assessmentId, userId);
-
     const section = await this.prisma.assessmentSection.findFirst({
-      where: { id: sectionId, assessmentDefinitionId: assessmentId },
+      where: {
+        id: sectionId,
+        assessmentDefinitionId: assessmentId,
+        assessmentDefinition: {
+          ownerId: userId,
+        },
+      },
     });
 
     if (!section) {
+      await this.verifyAssessmentOwnership(assessmentId, userId);
       throw new NotFoundException(
         `Section '${sectionId}' not found in assessment '${assessmentId}'.`,
       );
     }
 
-    await this.prisma.assessmentSection.delete({
-      where: { id: sectionId },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      await tx.assessmentSection.delete({
+        where: { id: sectionId },
+      });
 
-    return { deleted: true, sectionId };
+      await tx.assessmentDefinition.update({
+        where: { id: assessmentId },
+        data: { revision: { increment: 1 } },
+      });
+
+      return { deleted: true, sectionId };
+    });
   }
 
   /**
-   * Adds a QuestionBankItem reference to a section.
+   * Adds a QuestionBankItem reference to a section with parent-chain verification.
    */
   async addItem(
     assessmentId: string,
@@ -238,13 +272,18 @@ export class AssessmentsService {
     userId: string,
     dto: AddAssessmentItemDto,
   ): Promise<AssessmentItemRefDto> {
-    await this.verifyAssessmentOwnership(assessmentId, userId);
-
     const section = await this.prisma.assessmentSection.findFirst({
-      where: { id: sectionId, assessmentDefinitionId: assessmentId },
+      where: {
+        id: sectionId,
+        assessmentDefinitionId: assessmentId,
+        assessmentDefinition: {
+          ownerId: userId,
+        },
+      },
     });
 
     if (!section) {
+      await this.verifyAssessmentOwnership(assessmentId, userId);
       throw new NotFoundException(
         `Section '${sectionId}' not found in assessment '${assessmentId}'.`,
       );
@@ -275,34 +314,41 @@ export class AssessmentsService {
       }
     }
 
-    const itemRef = await this.prisma.assessmentItemRef.create({
-      data: {
-        sectionId,
-        questionBankItemId: dto.questionBankItemId,
-        pinnedQuestionVersionId: dto.pinnedQuestionVersionId ?? null,
-        orderIndex: dto.orderIndex ?? 0,
-        points: dto.points ?? questionItem.defaultPoints,
-        isRequired: dto.isRequired ?? true,
-      },
-      include: {
-        questionBankItem: {
-          select: {
-            id: true,
-            title: true,
-            type: true,
-            prompt: true,
-            defaultPoints: true,
-            skillCode: true,
+    return this.prisma.$transaction(async (tx) => {
+      const itemRef = await tx.assessmentItemRef.create({
+        data: {
+          sectionId,
+          questionBankItemId: dto.questionBankItemId,
+          pinnedQuestionVersionId: dto.pinnedQuestionVersionId ?? null,
+          orderIndex: dto.orderIndex ?? 0,
+          points: dto.points ?? questionItem.defaultPoints,
+          isRequired: dto.isRequired ?? true,
+        },
+        include: {
+          questionBankItem: {
+            select: {
+              id: true,
+              title: true,
+              type: true,
+              prompt: true,
+              defaultPoints: true,
+              skillCode: true,
+            },
           },
         },
-      },
-    });
+      });
 
-    return this.mapItemRefToDto(itemRef);
+      await tx.assessmentDefinition.update({
+        where: { id: assessmentId },
+        data: { revision: { increment: 1 } },
+      });
+
+      return this.mapItemRefToDto(itemRef);
+    });
   }
 
   /**
-   * Updates an item reference within a section.
+   * Updates an item reference within a section with full parent-chain authorization.
    */
   async updateItem(
     assessmentId: string,
@@ -311,14 +357,24 @@ export class AssessmentsService {
     userId: string,
     dto: UpdateAssessmentItemDto,
   ): Promise<AssessmentItemRefDto> {
-    await this.verifyAssessmentOwnership(assessmentId, userId);
-
     const itemRef = await this.prisma.assessmentItemRef.findFirst({
-      where: { id: itemId, sectionId },
+      where: {
+        id: itemId,
+        sectionId: sectionId,
+        section: {
+          assessmentDefinitionId: assessmentId,
+          assessmentDefinition: {
+            ownerId: userId,
+          },
+        },
+      },
     });
 
     if (!itemRef) {
-      throw new NotFoundException(`AssessmentItemRef '${itemId}' not found in section '${sectionId}'.`);
+      await this.verifyAssessmentOwnership(assessmentId, userId);
+      throw new NotFoundException(
+        `AssessmentItemRef '${itemId}' not found in section '${sectionId}' of assessment '${assessmentId}'.`,
+      );
     }
 
     if (dto.pinnedQuestionVersionId) {
@@ -332,35 +388,42 @@ export class AssessmentsService {
       }
     }
 
-    const updated = await this.prisma.assessmentItemRef.update({
-      where: { id: itemId },
-      data: {
-        pinnedQuestionVersionId: dto.pinnedQuestionVersionId !== undefined
-          ? dto.pinnedQuestionVersionId
-          : itemRef.pinnedQuestionVersionId,
-        points: dto.points ?? itemRef.points,
-        orderIndex: dto.orderIndex ?? itemRef.orderIndex,
-        isRequired: dto.isRequired ?? itemRef.isRequired,
-      },
-      include: {
-        questionBankItem: {
-          select: {
-            id: true,
-            title: true,
-            type: true,
-            prompt: true,
-            defaultPoints: true,
-            skillCode: true,
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.assessmentItemRef.update({
+        where: { id: itemId },
+        data: {
+          pinnedQuestionVersionId: dto.pinnedQuestionVersionId !== undefined
+            ? dto.pinnedQuestionVersionId
+            : itemRef.pinnedQuestionVersionId,
+          points: dto.points ?? itemRef.points,
+          orderIndex: dto.orderIndex ?? itemRef.orderIndex,
+          isRequired: dto.isRequired ?? itemRef.isRequired,
+        },
+        include: {
+          questionBankItem: {
+            select: {
+              id: true,
+              title: true,
+              type: true,
+              prompt: true,
+              defaultPoints: true,
+              skillCode: true,
+            },
           },
         },
-      },
-    });
+      });
 
-    return this.mapItemRefToDto(updated);
+      await tx.assessmentDefinition.update({
+        where: { id: assessmentId },
+        data: { revision: { increment: 1 } },
+      });
+
+      return this.mapItemRefToDto(updated);
+    });
   }
 
   /**
-   * Removes an item reference from a section.
+   * Removes an item reference from a section with full parent-chain authorization.
    */
   async removeItem(
     assessmentId: string,
@@ -368,21 +431,38 @@ export class AssessmentsService {
     itemId: string,
     userId: string,
   ): Promise<{ deleted: boolean; itemId: string }> {
-    await this.verifyAssessmentOwnership(assessmentId, userId);
-
     const itemRef = await this.prisma.assessmentItemRef.findFirst({
-      where: { id: itemId, sectionId },
+      where: {
+        id: itemId,
+        sectionId: sectionId,
+        section: {
+          assessmentDefinitionId: assessmentId,
+          assessmentDefinition: {
+            ownerId: userId,
+          },
+        },
+      },
     });
 
     if (!itemRef) {
-      throw new NotFoundException(`AssessmentItemRef '${itemId}' not found in section '${sectionId}'.`);
+      await this.verifyAssessmentOwnership(assessmentId, userId);
+      throw new NotFoundException(
+        `AssessmentItemRef '${itemId}' not found in section '${sectionId}' of assessment '${assessmentId}'.`,
+      );
     }
 
-    await this.prisma.assessmentItemRef.delete({
-      where: { id: itemId },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      await tx.assessmentItemRef.delete({
+        where: { id: itemId },
+      });
 
-    return { deleted: true, itemId };
+      await tx.assessmentDefinition.update({
+        where: { id: assessmentId },
+        data: { revision: { increment: 1 } },
+      });
+
+      return { deleted: true, itemId };
+    });
   }
 
   /**
@@ -456,14 +536,15 @@ export class AssessmentsService {
   }
 
   /**
-   * Validates the assessment blueprint and publishes an immutable AssessmentVersion snapshot.
+   * Validates the assessment blueprint and publishes an immutable AssessmentVersion snapshot with idempotency.
    */
   async publishAssessment(
     id: string,
     userId: string,
     idempotencyKey?: string,
   ): Promise<AssessmentVersionDto> {
-    void idempotencyKey;
+    const trimmedIdempotencyKey = idempotencyKey?.trim() || null;
+
     return this.prisma.$transaction(async (tx) => {
       // 1. Lock the assessment definition row FOR UPDATE
       const lockedDefs = await tx.$queryRaw<{ id: string; ownerId: string }[]>`
@@ -477,6 +558,22 @@ export class AssessmentsService {
 
       if (lockedDefs[0].ownerId !== userId) {
         throw new ForbiddenException(`You do not have access to AssessmentDefinition '${id}'.`);
+      }
+
+      // Check idempotency under lock
+      if (trimmedIdempotencyKey) {
+        const existingByKey = await tx.assessmentVersion.findFirst({
+          where: {
+            assessmentDefinitionId: id,
+            idempotencyKey: trimmedIdempotencyKey,
+          },
+        });
+        if (existingByKey) {
+          this.logger.log(
+            `Idempotent publication replay for assessment '${id}', key '${trimmedIdempotencyKey}': returning version v${existingByKey.versionNumber}.`,
+          );
+          return this.mapVersionToDto(existingByKey);
+        }
       }
 
       const definition = await tx.assessmentDefinition.findUniqueOrThrow({
@@ -555,6 +652,19 @@ export class AssessmentsService {
             }
           }
 
+          // Strict publishability validation
+          const pubVal = this.questionTypesRegistry.validatePublishability(
+            resolvedVersion.type,
+            resolvedVersion.content as Record<string, unknown>,
+            resolvedVersion.answerKey as Record<string, unknown> | null,
+            resolvedVersion.rubric as any,
+          );
+          if (!pubVal.valid) {
+            throw new BadRequestException(
+              `Cannot publish assessment: Question '${resolvedVersion.title}' (v${resolvedVersion.versionNumber}) is not publishable: ${pubVal.errors.join(' ')}`,
+            );
+          }
+
           totalPoints += itemRef.points;
 
           sectionItemsSnapshot.push({
@@ -625,6 +735,7 @@ export class AssessmentsService {
         data: {
           assessmentDefinitionId: id,
           versionNumber: nextVersionNumber,
+          idempotencyKey: trimmedIdempotencyKey,
           title: definition.title,
           description: definition.description,
           instructions: definition.instructions,
@@ -713,12 +824,28 @@ export class AssessmentsService {
 
   /**
    * Generates a sanitized learner-facing assessment preview.
+   * In Phase 5.5, restricted to the creator who owns the assessment definition.
    * Strips all secret answer keys, correct option IDs, and educator-only rubrics.
    */
   async getSanitizedLearnerPreview(
     assessmentId: string,
     versionNumber: number,
+    userId: string,
   ): Promise<SanitizedLearnerAssessmentPreviewDto> {
+    const definition = await this.prisma.assessmentDefinition.findUnique({
+      where: { id: assessmentId },
+    });
+
+    if (!definition) {
+      throw new NotFoundException(`AssessmentDefinition '${assessmentId}' not found.`);
+    }
+
+    if (definition.ownerId !== userId) {
+      throw new ForbiddenException(
+        `Learner examination preview is not released. Only assessment creator can preview unreleased blueprints.`,
+      );
+    }
+
     const version = await this.prisma.assessmentVersion.findUnique({
       where: {
         assessmentDefinitionId_versionNumber: {
@@ -875,6 +1002,7 @@ export class AssessmentsService {
       id: v.id,
       assessmentDefinitionId: v.assessmentDefinitionId,
       versionNumber: v.versionNumber,
+      idempotencyKey: v.idempotencyKey ?? null,
       title: v.title,
       description: v.description,
       instructions: v.instructions,

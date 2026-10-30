@@ -1090,6 +1090,7 @@ model AssessmentVersion {
   assessmentDefinitionId String
   assessmentDefinition   AssessmentDefinition @relation(fields: [assessmentDefinitionId], references: [id], onDelete: Cascade)
   versionNumber          Int
+  idempotencyKey         String?
   title                  String
   description            String?
   instructions           String?
@@ -1108,8 +1109,10 @@ model AssessmentVersion {
   items AssessmentVersionItem[]
 
   @@unique([assessmentDefinitionId, versionNumber])
+  @@unique([assessmentDefinitionId, idempotencyKey])
   @@index([assessmentDefinitionId])
   @@index([createdById])
+  @@index([idempotencyKey])
   @@map("assessment_versions")
 }
 

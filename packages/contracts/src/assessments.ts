@@ -334,6 +334,7 @@ export interface AssessmentVersionDto {
   id: string;
   assessmentDefinitionId: string;
   versionNumber: number;
+  idempotencyKey?: string | null;
   title: string;
   description: string | null;
   instructions: string | null;

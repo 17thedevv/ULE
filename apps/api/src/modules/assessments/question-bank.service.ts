@@ -135,8 +135,9 @@ export class QuestionBankService {
       );
     }
 
-    const updateData: Prisma.QuestionBankItemUpdateInput = {
-      revision: existing.revision + 1,
+    const updateData: Prisma.QuestionBankItemUncheckedUpdateManyInput = {
+      revision: { increment: 1 },
+      updatedAt: new Date(),
     };
 
     if (dto.title !== undefined) updateData.title = dto.title.trim();
@@ -163,15 +164,33 @@ export class QuestionBankService {
     if (dto.skillCode !== undefined) updateData.skillCode = dto.skillCode?.trim() || null;
     if (dto.difficulty !== undefined) updateData.difficulty = dto.difficulty?.trim() || null;
     if (dto.tags !== undefined) updateData.tags = dto.tags;
-    if (dto.courseId !== undefined) {
-      updateData.course = dto.courseId
-        ? { connect: { id: dto.courseId } }
-        : { disconnect: true };
+    if (dto.courseId !== undefined) updateData.courseId = dto.courseId;
+
+    // Atomic CAS update
+    const result = await this.prisma.questionBankItem.updateMany({
+      where: {
+        id,
+        ownerId: userId,
+        revision: dto.expectedRevision,
+      },
+      data: updateData,
+    });
+
+    if (result.count === 0) {
+      const current = await this.prisma.questionBankItem.findUnique({ where: { id } });
+      if (!current) {
+        throw new NotFoundException(`QuestionBankItem '${id}' not found.`);
+      }
+      if (current.ownerId !== userId) {
+        throw new ForbiddenException(`You do not have access to QuestionBankItem '${id}'.`);
+      }
+      throw new ConflictException(
+        `Stale revision: expected revision ${dto.expectedRevision} does not match current revision ${current.revision}.`,
+      );
     }
 
-    const updated = await this.prisma.questionBankItem.update({
+    const updated = await this.prisma.questionBankItem.findUniqueOrThrow({
       where: { id },
-      data: updateData,
     });
 
     this.logger.log(`Updated QuestionBankItem '${id}' to revision ${updated.revision}.`);
@@ -201,16 +220,16 @@ export class QuestionBankService {
         where: { id },
       });
 
-      // 2. Validate current item payload before snapshotting
-      const validation = this.questionTypesRegistry.validateQuestion(
+      // 2. Validate publishability before snapshotting (auto-evaluators require answerKey, essays require rubric)
+      const publishValidation = this.questionTypesRegistry.validatePublishability(
         item.type,
         item.content as Record<string, unknown>,
         item.answerKey as Record<string, unknown> | null,
         item.rubric as EssayRubric | null,
       );
-      if (!validation.valid) {
+      if (!publishValidation.valid) {
         throw new BadRequestException(
-          `Cannot publish QuestionVersion: question is invalid: ${validation.errors.join(' ')}`,
+          `Cannot publish QuestionVersion: question is not publishable: ${publishValidation.errors.join(' ')}`,
         );
       }
 

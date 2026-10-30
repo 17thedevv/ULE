@@ -230,14 +230,15 @@ export class AssessmentsController {
 
   @Get(':id/versions/:versionNumber/preview')
   @ApiOperation({
-    summary: 'Get sanitized learner-facing assessment preview (secret answer keys stripped)',
+    summary: 'Get sanitized learner-facing assessment preview (restricted to creator in Phase 5.5)',
   })
   @ApiParam({ name: 'id', description: 'AssessmentDefinition UUID' })
   @ApiParam({ name: 'versionNumber', description: 'Version number integer' })
   async getSanitizedLearnerPreview(
+    @CurrentUser() user: AuthUser,
     @Param('id') id: string,
     @Param('versionNumber', ParseIntPipe) versionNumber: number,
   ): Promise<SanitizedLearnerAssessmentPreviewDto> {
-    return this.assessmentsService.getSanitizedLearnerPreview(id, versionNumber);
+    return this.assessmentsService.getSanitizedLearnerPreview(id, versionNumber, user.id);
   }
 }

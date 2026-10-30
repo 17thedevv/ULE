@@ -274,6 +274,46 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
       expect(updateRes.body.revision).toBe(2);
       expect(updateRes.body.prompt).toContain('x^2 - 16 = 0');
     });
+
+    it('P2 REQUIREMENT: atomically rejects concurrent conflicting updates to QuestionBankItem (compare-and-swap)', async () => {
+      // Alice creates a question with revision: 1
+      const qRes = await request(app.getHttpServer())
+        .post('/api/v1/question-bank')
+        .set('Cookie', aliceCookie)
+        .send({
+          type: 'TRUE_FALSE',
+          title: 'Concurrency Probe Question',
+          prompt: 'Is atomic CAS race-free?',
+          content: { statement: 'Atomic CAS prevents lost updates.' },
+          answerKey: { correctValue: true },
+        })
+        .expect(HttpStatus.CREATED);
+
+      const qId = qRes.body.id;
+      expect(qRes.body.revision).toBe(1);
+
+      // Launch 2 simultaneous updates both expecting revision: 1
+      const req1 = request(app.getHttpServer())
+        .put(`/api/v1/question-bank/${qId}`)
+        .set('Cookie', aliceCookie)
+        .send({ expectedRevision: 1, title: 'Winner A' });
+
+      const req2 = request(app.getHttpServer())
+        .put(`/api/v1/question-bank/${qId}`)
+        .set('Cookie', aliceCookie)
+        .send({ expectedRevision: 1, title: 'Winner B' });
+
+      const [res1, res2] = await Promise.all([req1, req2]);
+      const statuses = [res1.status, res2.status].sort();
+      expect(statuses).toEqual([HttpStatus.OK, HttpStatus.CONFLICT]);
+
+      // Verify that in the database, the revision is exactly 2
+      const finalItem = await request(app.getHttpServer())
+        .get(`/api/v1/question-bank/${qId}`)
+        .set('Cookie', aliceCookie)
+        .expect(HttpStatus.OK);
+      expect(finalItem.body.revision).toBe(2);
+    });
   });
 
   describe('Gate 2: Unauthorized Cross-Creator Access Rejection', () => {
@@ -413,6 +453,25 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
       expect(fetchedV1.body.prompt).toContain('x^2 - 16 = 0');
       expect(fetchedV1.body.content.options[0].text).toBe('x = 4');
     });
+
+    it('P2 REQUIREMENT: rejects publishing QuestionBankItem if answerKey is missing for auto-evaluable type', async () => {
+      const draftMcq = await request(app.getHttpServer())
+        .post('/api/v1/question-bank')
+        .set('Cookie', aliceCookie)
+        .send({
+          type: 'SINGLE_CHOICE',
+          title: 'Draft MCQ Without Answer Key',
+          prompt: 'Unfinished question',
+          content: { options: [{ id: '1', text: 'A' }, { id: '2', text: 'B' }] },
+          // No answerKey!
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/question-bank/${draftMcq.body.id}/versions`)
+        .set('Cookie', aliceCookie)
+        .expect(HttpStatus.BAD_REQUEST);
+    });
   });
 
   describe('Gate 5: AssessmentDefinition Draft Creation & Optimistic Concurrency', () => {
@@ -459,6 +518,37 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
 
       expect(updated.body.revision).toBe(2);
       expect(updated.body.passingScore).toBe(75.0);
+    });
+
+    it('P2 REQUIREMENT: atomically rejects concurrent conflicting updates to AssessmentDefinition (compare-and-swap)', async () => {
+      const probeAss = await request(app.getHttpServer())
+        .post('/api/v1/assessments')
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Assessment Concurrency Probe' })
+        .expect(HttpStatus.CREATED);
+
+      const assId = probeAss.body.id;
+      expect(probeAss.body.revision).toBe(1);
+
+      const req1 = request(app.getHttpServer())
+        .put(`/api/v1/assessments/${assId}`)
+        .set('Cookie', aliceCookie)
+        .send({ expectedRevision: 1, title: 'Assessment Winner A' });
+
+      const req2 = request(app.getHttpServer())
+        .put(`/api/v1/assessments/${assId}`)
+        .set('Cookie', aliceCookie)
+        .send({ expectedRevision: 1, title: 'Assessment Winner B' });
+
+      const [res1, res2] = await Promise.all([req1, req2]);
+      const statuses = [res1.status, res2.status].sort();
+      expect(statuses).toEqual([HttpStatus.OK, HttpStatus.CONFLICT]);
+
+      const finalAss = await request(app.getHttpServer())
+        .get(`/api/v1/assessments/${assId}`)
+        .set('Cookie', aliceCookie)
+        .expect(HttpStatus.OK);
+      expect(finalAss.body.revision).toBe(2);
     });
   });
 
@@ -535,6 +625,88 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
         })
         .expect(HttpStatus.FORBIDDEN);
     });
+
+    it('P1 REQUIREMENT: strictly blocks cross-creator mutation and mismatched parent/section/item IDs', async () => {
+      // 1. Bob creates his own assessment, section, and item
+      const bobAss = await request(app.getHttpServer())
+        .post('/api/v1/assessments')
+        .set('Cookie', bobCookie)
+        .send({ title: "Bob's Independent Assessment" })
+        .expect(HttpStatus.CREATED);
+
+      const bobSec = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${bobAss.body.id}/sections`)
+        .set('Cookie', bobCookie)
+        .send({ title: "Bob's Section 1" })
+        .expect(HttpStatus.CREATED);
+
+      const bobQ = await prisma.questionBankItem.create({
+        data: {
+          ownerId: bobId,
+          type: 'TRUE_FALSE',
+          title: "Bob's TF Question",
+          prompt: 'Is this Bob question?',
+          content: { statement: 'Yes' },
+          answerKey: { correctValue: true },
+          revision: 1,
+        },
+      });
+
+      const bobItem = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${bobAss.body.id}/sections/${bobSec.body.id}/items`)
+        .set('Cookie', bobCookie)
+        .send({
+          questionBankItemId: bobQ.id,
+          points: 3.0,
+        })
+        .expect(HttpStatus.CREATED);
+
+      // Attack 1: Alice attempts to update Bob's item using Alice's assessment & section
+      await request(app.getHttpServer())
+        .put(`/api/v1/assessments/${aliceAssessmentId}/sections/${section1Id}/items/${bobItem.body.id}`)
+        .set('Cookie', aliceCookie)
+        .send({ points: 99.0 })
+        .expect(HttpStatus.NOT_FOUND);
+
+      // Attack 2: Alice attempts to delete Bob's item using Alice's assessment & section
+      await request(app.getHttpServer())
+        .delete(`/api/v1/assessments/${aliceAssessmentId}/sections/${section1Id}/items/${bobItem.body.id}`)
+        .set('Cookie', aliceCookie)
+        .expect(HttpStatus.NOT_FOUND);
+
+      // Attack 3: Alice attempts to update her own item passing Bob's section ID
+      await request(app.getHttpServer())
+        .put(`/api/v1/assessments/${aliceAssessmentId}/sections/${bobSec.body.id}/items/${section1Item1Id}`)
+        .set('Cookie', aliceCookie)
+        .send({ points: 99.0 })
+        .expect(HttpStatus.NOT_FOUND);
+
+      // Attack 4: Bob attempts to update Alice's item in Alice's assessment
+      await request(app.getHttpServer())
+        .put(`/api/v1/assessments/${aliceAssessmentId}/sections/${section1Id}/items/${section1Item1Id}`)
+        .set('Cookie', bobCookie)
+        .send({ points: 0.1 })
+        .expect(HttpStatus.FORBIDDEN);
+
+      // Attack 5: Bob attempts to delete Alice's item in Alice's assessment
+      await request(app.getHttpServer())
+        .delete(`/api/v1/assessments/${aliceAssessmentId}/sections/${section1Id}/items/${section1Item1Id}`)
+        .set('Cookie', bobCookie)
+        .expect(HttpStatus.FORBIDDEN);
+
+      // Attack 6: Alice attempts to update Bob's section passing Alice's assessment ID
+      await request(app.getHttpServer())
+        .put(`/api/v1/assessments/${aliceAssessmentId}/sections/${bobSec.body.id}`)
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Hijacked Title' })
+        .expect(HttpStatus.NOT_FOUND);
+
+      // Attack 7: Alice attempts to delete Bob's section passing Alice's assessment ID
+      await request(app.getHttpServer())
+        .delete(`/api/v1/assessments/${aliceAssessmentId}/sections/${bobSec.body.id}`)
+        .set('Cookie', aliceCookie)
+        .expect(HttpStatus.NOT_FOUND);
+    });
   });
 
   describe('Gate 7: Structural Blueprint Validation Failures', () => {
@@ -599,15 +771,17 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
   describe('Gate 8: AssessmentVersion Publishing & Blueprint Snapshot Integrity', () => {
     let publishedVersionId: string;
 
-    it('validates entire blueprint, aggregates points, and creates immutable AssessmentVersion snapshot', async () => {
+    it('validates entire blueprint, aggregates points, and creates immutable AssessmentVersion snapshot with idempotency', async () => {
       const pubRes = await request(app.getHttpServer())
         .post(`/api/v1/assessments/${aliceAssessmentId}/publish`)
         .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'midterm-idemp-key-alice-01' })
         .expect(HttpStatus.CREATED);
 
       publishedVersionId = pubRes.body.id;
       expect(publishedVersionId).toBeDefined();
       expect(pubRes.body.versionNumber).toBe(1);
+      expect(pubRes.body.idempotencyKey).toBe('midterm-idemp-key-alice-01');
       expect(pubRes.body.totalPoints).toBe(15.0); // 5.0 (MCQ) + 10.0 (Numeric)
       expect(pubRes.body.itemCount).toBe(2);
       expect(pubRes.body.snapshot).toBeDefined();
@@ -616,6 +790,24 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
       expect(snapshot.sections.length).toBe(2);
       expect(snapshot.sections[0].items[0].questionVersionId).toBe(aliceMcqVersion1Id);
       expect(snapshot.sections[1].items[0].questionVersionId).toBe(aliceNumericVersion1Id);
+    });
+
+    it('P2 REQUIREMENT: repeating publish request with same idempotencyKey returns existing version without duplicating snapshot', async () => {
+      const retryRes = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${aliceAssessmentId}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'midterm-idemp-key-alice-01' })
+        .expect(HttpStatus.CREATED);
+
+      expect(retryRes.body.id).toBe(publishedVersionId);
+      expect(retryRes.body.versionNumber).toBe(1);
+      expect(retryRes.body.idempotencyKey).toBe('midterm-idemp-key-alice-01');
+
+      // Verify DB count remains exactly 1 version
+      const vCount = await prisma.assessmentVersion.count({
+        where: { assessmentDefinitionId: aliceAssessmentId },
+      });
+      expect(vCount).toBe(1);
     });
 
     it('subsequent edits to questions in Question Bank do NOT alter published AssessmentVersion snapshot', async () => {
@@ -696,11 +888,29 @@ describe('Phase 5.5: Assessment & Examination Engine Foundation Integration Test
     });
   });
 
-  describe('Gate 10: Learner Payload Sanitization Anti-Leakage', () => {
-    it('strips all secret answer keys, correct option IDs, and rubrics from learner preview', async () => {
-      const previewRes = await request(app.getHttpServer())
+  describe('Gate 10: Learner Payload Sanitization Anti-Leakage & Preview Protection', () => {
+    it('P1 REQUIREMENT: strictly forbids unauthorized learners from previewing unreleased exam blueprints', async () => {
+      // 1. Charlie (authenticated learner) attempts preview -> HTTP 403 Forbidden
+      await request(app.getHttpServer())
         .get(`/api/v1/assessments/${aliceAssessmentId}/versions/1/preview`)
         .set('Cookie', charlieCookie)
+        .expect(HttpStatus.FORBIDDEN);
+
+      // 2. Bob (authenticated educator/user) attempts preview -> HTTP 403 Forbidden
+      await request(app.getHttpServer())
+        .get(`/api/v1/assessments/${aliceAssessmentId}/versions/1/preview`)
+        .set('Cookie', bobCookie)
+        .expect(HttpStatus.FORBIDDEN);
+
+      // 3. Unauthenticated request -> HTTP 401 Unauthorized
+      await request(app.getHttpServer())
+        .get(`/api/v1/assessments/${aliceAssessmentId}/versions/1/preview`)
+        .expect(HttpStatus.UNAUTHORIZED);
+
+      // 4. Alice (the creator) accesses preview -> HTTP 200 OK
+      const previewRes = await request(app.getHttpServer())
+        .get(`/api/v1/assessments/${aliceAssessmentId}/versions/1/preview`)
+        .set('Cookie', aliceCookie)
         .expect(HttpStatus.OK);
 
       expect(previewRes.body.title).toBe('Mathematics Comprehensive Midterm Examination');

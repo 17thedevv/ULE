@@ -310,6 +310,127 @@ describe('QuestionTypesRegistry Unit Tests', () => {
       expect((sanitized as any).correctOptionId).toBeUndefined();
       expect((sanitized as any).explanation).toBeUndefined();
     });
+
+    it('P1 REQUIREMENT: strictly strips nested secret metadata from MATCHING premises and targets', () => {
+      const matchingContent = {
+        prompt: 'Match country to capital',
+        premises: [
+          { id: 'p_fr', text: 'France', correctTargetId: 't_paris', secretData: 'FR_SECRET' },
+          { id: 'p_es', text: 'Spain', correctTargetId: 't_madrid', internalTag: 'ES_TAG' },
+        ],
+        targets: [
+          { id: 't_paris', text: 'Paris', pairedPremiseId: 'p_fr', weight: 10 },
+          { id: 't_madrid', text: 'Madrid', pairedPremiseId: 'p_es', weight: 10 },
+        ],
+      };
+
+      const sanitized = registry.sanitizeForLearner('MATCHING', matchingContent);
+      expect(sanitized.prompt).toBe('Match country to capital');
+      expect((sanitized as any).premises).toEqual([
+        { id: 'p_fr', text: 'France' },
+        { id: 'p_es', text: 'Spain' },
+      ]);
+      expect((sanitized as any).targets).toEqual([
+        { id: 't_paris', text: 'Paris' },
+        { id: 't_madrid', text: 'Madrid' },
+      ]);
+
+      // Assert nested leaked keys do NOT exist anywhere in projected items
+      for (const p of (sanitized as any).premises) {
+        expect(p.correctTargetId).toBeUndefined();
+        expect(p.secretData).toBeUndefined();
+        expect(p.internalTag).toBeUndefined();
+      }
+      for (const t of (sanitized as any).targets) {
+        expect(t.pairedPremiseId).toBeUndefined();
+        expect(t.weight).toBeUndefined();
+      }
+    });
+
+    it('P1 REQUIREMENT: strictly strips nested sequence index or leaked metadata from ORDERING items', () => {
+      const orderingContent = {
+        prompt: 'Order chronologically',
+        items: [
+          { id: 'step_1', text: 'First Step', correctPosition: 0, internalRank: 1 },
+          { id: 'step_2', text: 'Second Step', correctPosition: 1, internalRank: 2 },
+          { id: 'step_3', text: 'Third Step', correctPosition: 2, internalRank: 3 },
+        ],
+      };
+
+      const sanitized = registry.sanitizeForLearner('ORDERING', orderingContent);
+      expect(sanitized.prompt).toBe('Order chronologically');
+      expect((sanitized as any).items).toEqual([
+        { id: 'step_1', text: 'First Step' },
+        { id: 'step_2', text: 'Second Step' },
+        { id: 'step_3', text: 'Third Step' },
+      ]);
+
+      for (const item of (sanitized as any).items) {
+        expect(item.correctPosition).toBeUndefined();
+        expect(item.internalRank).toBeUndefined();
+      }
+    });
+  });
+
+  describe('P2 REQUIREMENT: Publishability Validation', () => {
+    it('rejects publication of auto-evaluable question without answerKey', () => {
+      const res = registry.validatePublishability(
+        'SINGLE_CHOICE',
+        {
+          prompt: 'Question without answer key',
+          options: [{ id: '1', text: 'A' }, { id: '2', text: 'B' }],
+        },
+        null,
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors[0]).toContain('must include a valid answerKey before publication');
+    });
+
+    it('accepts publication of auto-evaluable question with valid answerKey', () => {
+      const res = registry.validatePublishability(
+        'SINGLE_CHOICE',
+        {
+          prompt: 'Valid Question',
+          options: [{ id: '1', text: 'A' }, { id: '2', text: 'B' }],
+        },
+        { correctOptionId: '1' },
+      );
+      expect(res.valid).toBe(true);
+      expect(res.errors).toHaveLength(0);
+    });
+
+    it('rejects publication of ESSAY question if rubric is missing or has zero criteria', () => {
+      const res = registry.validatePublishability(
+        'ESSAY',
+        { prompt: 'Write an essay', minWords: 100 },
+        null,
+        null,
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors[0]).toContain('valid grading rubric with at least one criterion is required');
+    });
+
+    it('rejects publication of ESSAY question if automated answerKey is attached', () => {
+      const res = registry.validatePublishability(
+        'ESSAY',
+        { prompt: 'Write an essay', minWords: 100 },
+        { text: 'Sample answer' },
+        { criteria: [{ id: 'c1', name: 'Analysis', description: 'desc', maxPoints: 10 }] },
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors.join(' ')).toContain('automated answerKey');
+    });
+
+    it('accepts publication of ESSAY question with valid rubric and no automated answerKey', () => {
+      const res = registry.validatePublishability(
+        'ESSAY',
+        { prompt: 'Write an essay', minWords: 100 },
+        null,
+        { criteria: [{ id: 'c1', name: 'Analysis', description: 'desc', maxPoints: 10 }] },
+      );
+      expect(res.valid).toBe(true);
+      expect(res.errors).toHaveLength(0);
+    });
   });
 
   it('throws BadRequestException for unallowlisted question types', () => {

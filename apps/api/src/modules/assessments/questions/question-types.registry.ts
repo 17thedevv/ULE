@@ -87,6 +87,41 @@ export class QuestionTypesRegistry {
     };
   }
 
+  /**
+   * Enforces publishability requirements.
+   * Auto-evaluable questions MUST have a valid answerKey.
+   * Rubric-graded questions (ESSAY) MUST have a valid rubric with at least one criterion, and NO automated answerKey.
+   */
+  public validatePublishability(
+    type: QuestionType,
+    content: Record<string, unknown>,
+    answerKey?: Record<string, unknown> | null,
+    rubric?: EssayRubric | null,
+  ): { valid: boolean; errors: string[] } {
+    const baseValidation = this.validateQuestion(type, content, answerKey, rubric);
+    const errors = [...baseValidation.errors];
+
+    if (type === 'ESSAY') {
+      if (!rubric || !Array.isArray(rubric.criteria) || rubric.criteria.length === 0) {
+        errors.push('Cannot publish ESSAY question: a valid grading rubric with at least one criterion is required.');
+      }
+      if (answerKey && Object.keys(answerKey).length > 0) {
+        errors.push('Cannot publish ESSAY question: automated answerKey is prohibited.');
+      }
+    } else {
+      if (!answerKey || (typeof answerKey === 'object' && Object.keys(answerKey).length === 0)) {
+        errors.push(
+          `Cannot publish question of type '${type}': question must include a valid answerKey before publication.`,
+        );
+      }
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+    };
+  }
+
   public sanitizeForLearner(type: QuestionType, content: Record<string, unknown>): Record<string, unknown> {
     const def = this.getType(type);
     return def.sanitizeForLearner(content);
@@ -499,10 +534,18 @@ export class QuestionTypesRegistry {
         return { valid: errors.length === 0, errors };
       },
       sanitizeForLearner(content) {
+        const premises = ((content as any)?.premises as Array<{ id: unknown; text: unknown }>) || [];
+        const targets = ((content as any)?.targets as Array<{ id: unknown; text: unknown }>) || [];
         return {
-          prompt: (content as any).prompt,
-          premises: (content as any).premises,
-          targets: (content as any).targets,
+          ...(typeof (content as any)?.prompt === 'string' ? { prompt: (content as any).prompt } : {}),
+          premises: premises.map((p) => ({
+            id: String(p.id ?? ''),
+            text: String(p.text ?? ''),
+          })),
+          targets: targets.map((t) => ({
+            id: String(t.id ?? ''),
+            text: String(t.text ?? ''),
+          })),
         };
       },
     };
@@ -558,9 +601,13 @@ export class QuestionTypesRegistry {
         return { valid: errors.length === 0, errors };
       },
       sanitizeForLearner(content) {
+        const items = ((content as any)?.items as Array<{ id: unknown; text: unknown }>) || [];
         return {
-          prompt: (content as any).prompt,
-          items: (content as any).items,
+          ...(typeof (content as any)?.prompt === 'string' ? { prompt: (content as any).prompt } : {}),
+          items: items.map((i) => ({
+            id: String(i.id ?? ''),
+            text: String(i.text ?? ''),
+          })),
         };
       },
     };
