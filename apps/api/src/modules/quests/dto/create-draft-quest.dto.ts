@@ -1,8 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  CourseQuestRewardPolicyDto,
   CreateDraftCourseQuestRequest,
   QuestObjectiveConfig,
-  QuestRewardPolicyDto,
   QuestTemplateId,
 } from '@ule/contracts';
 import {
@@ -65,10 +65,10 @@ export class CreateDraftQuestDto implements CreateDraftCourseQuestRequest {
   config!: QuestObjectiveConfig;
 
   @ApiPropertyOptional({
-    description: 'Course-scoped reward policy (e.g. course XP)',
+    description: 'Course-scoped reward policy (e.g. course XP, badgeKey)',
     example: { courseXp: 50 },
   })
   @IsObject()
   @IsOptional()
-  rewardPolicy?: QuestRewardPolicyDto;
+  rewardPolicy?: CourseQuestRewardPolicyDto;
 }

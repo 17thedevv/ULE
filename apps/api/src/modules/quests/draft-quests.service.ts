@@ -6,10 +6,10 @@ import {
 } from '@nestjs/common';
 import {
   CompleteDistinctActivitiesConfig,
+  CourseQuestRewardPolicyDto,
   DraftCourseQuestDto,
   IndependentPracticeConfig,
   QuestObjectiveConfig,
-  QuestRewardPolicyDto,
   QuestTemplateId,
 } from '@ule/contracts';
 import { DraftCourseQuest, Prisma } from '@prisma/client';
@@ -49,6 +49,8 @@ export class DraftQuestsService {
       if (!this.registry.hasTemplate(dto.templateId)) {
         throw new BadRequestException(`Unsupported quest template '${dto.templateId}'.`);
       }
+
+      this.validateRewardPolicy(dto.rewardPolicy);
 
       const validation = this.registry.validateConfig(dto.templateId, dto.config);
       if (!validation.valid) {
@@ -162,7 +164,9 @@ export class DraftQuestsService {
         );
       }
 
-      const newConfig = dto.config ?? (quest.config as unknown as QuestObjectiveConfig);
+      if (dto.rewardPolicy !== undefined) {
+        this.validateRewardPolicy(dto.rewardPolicy);
+      }
 
       if (dto.config) {
         const validation = this.registry.validateConfig(quest.templateId, dto.config);
@@ -299,6 +303,26 @@ export class DraftQuestsService {
     }
   }
 
+  private validateRewardPolicy(rewardPolicy?: unknown): void {
+    if (!rewardPolicy) {
+      return;
+    }
+    if (typeof rewardPolicy !== 'object' || Array.isArray(rewardPolicy)) {
+      throw new BadRequestException('Reward policy must be a valid object.');
+    }
+    const policy = rewardPolicy as Record<string, unknown>;
+    if (policy.platformXp !== undefined) {
+      throw new BadRequestException(
+        'Course quests cannot configure platform-scoped rewards (platformXp). Platform rewards are strictly platform-owned.',
+      );
+    }
+    if (policy.courseXp !== undefined) {
+      if (typeof policy.courseXp !== 'number' || policy.courseXp < 0 || !Number.isFinite(policy.courseXp)) {
+        throw new BadRequestException('Course quest courseXp reward must be a non-negative number.');
+      }
+    }
+  }
+
   private toDraftQuestDto(quest: DraftCourseQuest): DraftCourseQuestDto {
     return {
       id: quest.id,
@@ -308,7 +332,7 @@ export class DraftQuestsService {
       description: quest.description,
       templateId: quest.templateId as QuestTemplateId,
       config: quest.config as unknown as QuestObjectiveConfig,
-      rewardPolicy: quest.rewardPolicy as unknown as QuestRewardPolicyDto | null,
+      rewardPolicy: quest.rewardPolicy as unknown as CourseQuestRewardPolicyDto | null,
       revision: quest.revision,
       createdAt: quest.createdAt.toISOString(),
       updatedAt: quest.updatedAt.toISOString(),

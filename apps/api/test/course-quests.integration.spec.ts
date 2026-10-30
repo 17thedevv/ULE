@@ -43,7 +43,6 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
   let otherCookie: string;
 
   let learnerId: string;
-  let otherId: string;
 
   let courseId: string;
   let version1Id: string;
@@ -112,11 +111,10 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
       .send(userOther)
       .expect(HttpStatus.OK);
     otherCookie = extractCookies(otherRegRes);
-    const otherMe = await request(app.getHttpServer())
+    await request(app.getHttpServer())
       .get('/api/v1/me')
       .set('Cookie', otherCookie)
       .expect(HttpStatus.OK);
-    otherId = otherMe.body.user.id;
 
     // 4. Create Course
     const courseRes = await request(app.getHttpServer())
@@ -411,6 +409,40 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
       practiceSkillQuestId = res.body.id;
     });
 
+    it('rejects quest creation containing platformXp in rewardPolicy with HTTP 400 Bad Request', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/draft/quests`)
+        .set('Cookie', ownerCookie)
+        .send({
+          questKey: 'illegal-platform-xp',
+          title: 'Illegal Platform Reward Quest',
+          templateId: 'COMPLETE_DISTINCT_ACTIVITIES',
+          config: { targetCount: 1 },
+          rewardPolicy: {
+            courseXp: 10,
+            platformXp: 100,
+          },
+        })
+        .expect(HttpStatus.BAD_REQUEST);
+
+      expect(res.body.message).toContain('platform-scoped rewards (platformXp)');
+    });
+
+    it('rejects quest update containing platformXp in rewardPolicy with HTTP 400 Bad Request', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/courses/${courseId}/draft/quests/${practiceSkillQuestId}`)
+        .set('Cookie', ownerCookie)
+        .send({
+          expectedRevision: 1,
+          rewardPolicy: {
+            platformXp: 50,
+          },
+        })
+        .expect(HttpStatus.BAD_REQUEST);
+
+      expect(res.body.message).toContain('platform-scoped rewards (platformXp)');
+    });
+
     it('enforces optimistic locking on quest updates: rejects stale revision with HTTP 409', async () => {
       await request(app.getHttpServer())
         .patch(`/api/v1/courses/${courseId}/draft/quests/${distinctActivitiesQuestId}`)
@@ -588,7 +620,6 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
 
   describe('Gate 2 & Gate 3: Complete Distinct Activities Quest (Participation)', () => {
     let videoRunId: string;
-    let mcq2RunId: string;
 
     it('completing Video activity increments Complete Distinct Activities quest progress by 1', async () => {
       // 1. Start Video Run
@@ -917,7 +948,7 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
       const defRunId = startRes.body.id;
 
       // 2. Submit response
-      const subRes = await request(app.getHttpServer())
+      await request(app.getHttpServer())
         .post(`/api/v1/runs/${defRunId}/commands`)
         .set('Cookie', learnerCookie)
         .send({
@@ -946,6 +977,10 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
   });
 
   describe('P1: Assessment Correction Reconciliation Lifecycle', () => {
+    let targetAssessmentResultId: string;
+    let targetFactId: string;
+    let initialCount: number;
+
     it('correcting an assessment from correct to incorrect supercedes fact and decrements quest progress', async () => {
       // 1. Locate an existing QUALIFIED fact for independent practice
       const fact = await prisma.qualifyingFact.findFirst({
@@ -966,14 +1001,16 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
         throw new Error('Expected at least one qualified practice fact with assessmentResultId.');
       }
 
-      const initialCount = fact.consumptions[0]?.objectiveProgress?.currentCount ?? 1;
+      targetAssessmentResultId = fact.assessmentResultId;
+      targetFactId = fact.id;
+      initialCount = fact.consumptions[0]?.objectiveProgress?.currentCount ?? 1;
 
       // 2. Course owner issues assessment correction to false
       await request(app.getHttpServer())
         .post('/api/v1/evaluations/correct')
         .set('Cookie', ownerCookie)
         .send({
-          assessmentResultId: fact.assessmentResultId,
+          assessmentResultId: targetAssessmentResultId,
           newIsCorrect: false,
           newScore: 0,
           newStatus: 'FAILED',
@@ -983,7 +1020,7 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
 
       // 3. Verify fact state is SUPERSEDED in database
       const updatedFact = await prisma.qualifyingFact.findUniqueOrThrow({
-        where: { id: fact.id },
+        where: { id: targetFactId },
         include: { consumptions: { include: { objectiveProgress: true } } },
       });
       expect(updatedFact.state).toBe('SUPERSEDED');
@@ -995,6 +1032,73 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
       expect(updatedFact.consumptions[0].objectiveProgress.currentCount).toBe(
         Math.max(0, initialCount - 1),
       );
+    });
+
+    it('two-way reconciliation: correcting assessment back to correct restores fact and increments quest progress', async () => {
+      // Course owner regrades back to correct
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: targetAssessmentResultId,
+          newIsCorrect: true,
+          newScore: 100,
+          newStatus: 'EVALUATED',
+          reason: 'Instructor confirmed correct answer after student appeal',
+        })
+        .expect(HttpStatus.OK);
+
+      // Verify fact state is restored to QUALIFIED
+      const restoredFact = await prisma.qualifyingFact.findUniqueOrThrow({
+        where: { id: targetFactId },
+        include: { consumptions: { include: { objectiveProgress: true } } },
+      });
+      expect(restoredFact.state).toBe('QUALIFIED');
+
+      // Verify consumption is reactivated to CONSUMED
+      expect(restoredFact.consumptions[0].status).toBe('CONSUMED');
+
+      // Verify quest progress count restored
+      expect(restoredFact.consumptions[0].objectiveProgress.currentCount).toBe(initialCount);
+    });
+
+    it('correcting an assessment to PENDING (unreleased) revokes qualification even if isCorrect is true', async () => {
+      // Owner sets assessment to PENDING for investigation
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: targetAssessmentResultId,
+          newIsCorrect: true,
+          newScore: 100,
+          newStatus: 'PENDING',
+          reason: 'Placed in pending review status for moderation',
+        })
+        .expect(HttpStatus.OK);
+
+      // Verify fact state is SUPERSEDED because PENDING status must never qualify or leak
+      const pendingFact = await prisma.qualifyingFact.findUniqueOrThrow({
+        where: { id: targetFactId },
+        include: { consumptions: { include: { objectiveProgress: true } } },
+      });
+      expect(pendingFact.state).toBe('SUPERSEDED');
+      expect(pendingFact.consumptions[0].status).toBe('REVOKED');
+      expect(pendingFact.consumptions[0].objectiveProgress.currentCount).toBe(
+        Math.max(0, initialCount - 1),
+      );
+
+      // Restore to EVALUATED for subsequent tests
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: targetAssessmentResultId,
+          newIsCorrect: true,
+          newScore: 100,
+          newStatus: 'EVALUATED',
+          reason: 'Moderation complete: approved as evaluated',
+        })
+        .expect(HttpStatus.OK);
     });
   });
 
@@ -1021,7 +1125,7 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
         .expect(HttpStatus.CREATED);
       const runId = runRes.body.id;
 
-      // Concurrently execute: Owner revokes grant, Learner sends HEARTBEAT
+      // Concurrently execute: Owner revokes grant, Learner sends SUSPEND
       const [revokeResult, cmdResult] = await Promise.all([
         request(app.getHttpServer())
           .delete(`/api/v1/courses/${courseId}/versions/${version1Id}/grants/${activeGrantId}`)
@@ -1031,13 +1135,94 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
           .set('Cookie', learnerCookie)
           .send({
             command: 'SUSPEND',
-            idempotencyKey: `cmd-hb-conc-${Date.now()}`,
+            idempotencyKey: `cmd-sus-conc-${Date.now()}`,
           }),
       ]);
 
       // Both must return valid HTTP status (no 500 deadlock / 40P01)
       expect(revokeResult.status).toBe(HttpStatus.OK);
       expect([HttpStatus.OK, HttpStatus.FORBIDDEN]).toContain(cmdResult.status);
+    });
+
+    it('concurrent grant revocation and FINISH execution serialize cleanly through Quest Engine', async () => {
+      // 1. Re-activate grant for learner
+      const grantRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/versions/${version1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: learnerId })
+        .expect(HttpStatus.CREATED);
+
+      const activeGrantId = grantRes.body.id;
+
+      // 2. Start Video Run
+      const runRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: version1Id,
+          blockInstanceId: videoBlockId,
+          idempotencyKey: `run-conc-finish-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+      const runId = runRes.body.id;
+
+      // 3. Concurrently execute: Owner revokes grant, Learner calls FINISH (goes through Qualification & QuestEngine)
+      const [revokeResult, finishResult] = await Promise.all([
+        request(app.getHttpServer())
+          .delete(`/api/v1/courses/${courseId}/versions/${version1Id}/grants/${activeGrantId}`)
+          .set('Cookie', ownerCookie),
+        request(app.getHttpServer())
+          .post(`/api/v1/runs/${runId}/commands`)
+          .set('Cookie', learnerCookie)
+          .send({
+            command: 'FINISH',
+            idempotencyKey: `cmd-fin-conc-${Date.now()}`,
+          }),
+      ]);
+
+      expect(revokeResult.status).toBe(HttpStatus.OK);
+      expect([HttpStatus.OK, HttpStatus.FORBIDDEN]).toContain(finishResult.status);
+    });
+
+    it('concurrent grant revocation and SUBMIT_RESPONSE execution serialize cleanly through Quest Engine', async () => {
+      // 1. Re-activate grant for learner
+      const grantRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/versions/${version1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: learnerId })
+        .expect(HttpStatus.CREATED);
+
+      const activeGrantId = grantRes.body.id;
+
+      // 2. Start MCQ Distinct Run
+      const runRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: version1Id,
+          blockInstanceId: mcqDistinctBlockId,
+          idempotencyKey: `run-conc-sub-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+      const runId = runRes.body.id;
+
+      // 3. Concurrently execute: Owner revokes grant, Learner submits response
+      const [revokeResult, subResult] = await Promise.all([
+        request(app.getHttpServer())
+          .delete(`/api/v1/courses/${courseId}/versions/${version1Id}/grants/${activeGrantId}`)
+          .set('Cookie', ownerCookie),
+        request(app.getHttpServer())
+          .post(`/api/v1/runs/${runId}/commands`)
+          .set('Cookie', learnerCookie)
+          .send({
+            command: 'SUBMIT_RESPONSE',
+            payload: { selectedOptionId: 'opt_1' },
+            idempotencyKey: `cmd-sub-conc-${Date.now()}`,
+          }),
+      ]);
+
+      expect(revokeResult.status).toBe(HttpStatus.OK);
+      expect([HttpStatus.OK, HttpStatus.FORBIDDEN]).toContain(subResult.status);
     });
   });
 
@@ -1074,9 +1259,9 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
 
       expect(questsRes.body.length).toBe(2);
       const completedCount = questsRes.body.filter((q: any) => q.status === 'COMPLETED').length;
-      expect(completedCount).toBe(1);
+      expect(completedCount).toBe(2);
       const activeCount = questsRes.body.filter((q: any) => q.status === 'ACTIVE').length;
-      expect(activeCount).toBe(1);
+      expect(activeCount).toBe(0);
     });
   });
 });

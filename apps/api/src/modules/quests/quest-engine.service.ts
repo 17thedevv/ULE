@@ -81,6 +81,36 @@ export class QuestEngineService {
         });
 
         if (existingConsumption) {
+          if (existingConsumption.status === 'REVOKED') {
+            // Re-activate this consumption upon re-qualification
+            await tx.questFactConsumption.update({
+              where: { id: existingConsumption.id },
+              data: {
+                status: 'CONSUMED',
+                factId: fact.id,
+                consumedAt: new Date(),
+              },
+            });
+
+            // Increment progress count
+            const newCount = objective.currentCount + 1;
+            const isObjectiveCompleted = newCount >= objective.targetCount;
+            const now = new Date();
+
+            await tx.questObjectiveProgress.update({
+              where: { id: objective.id },
+              data: {
+                currentCount: newCount,
+                isCompleted: isObjectiveCompleted,
+                completedAt: isObjectiveCompleted ? now : null,
+                lastEvaluatedAt: now,
+              },
+            });
+
+            objective.currentCount = newCount;
+            objective.isCompleted = isObjectiveCompleted;
+            anyObjectiveUpdated = true;
+          }
           continue;
         }
 
@@ -90,6 +120,7 @@ export class QuestEngineService {
             where: {
               questInstanceId: instance.id,
               objectiveProgressId: objective.id,
+              status: 'CONSUMED',
               fact: {
                 blockInstanceId: fact.blockInstanceId,
               },

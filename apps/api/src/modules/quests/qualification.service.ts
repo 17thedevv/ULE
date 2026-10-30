@@ -88,16 +88,18 @@ export class QualificationService {
     const { run, attempt, assessmentResult, courseVersion, isDeferredWithheld } = params;
     const tx = txClient ?? this.prisma;
 
-    if (!assessmentResult || assessmentResult.isCorrect !== true) {
+    if (!assessmentResult || assessmentResult.isCorrect !== true || assessmentResult.status !== 'EVALUATED') {
       return [];
     }
 
     const supportCtx = (attempt.supportContext as Record<string, unknown> | null) ?? {};
-    if (
+    const isAssisted =
       attempt.assisted === true ||
-      supportCtx.provenance === 'SELF_REPORTED' ||
-      supportCtx.supportProvenance === 'SELF_REPORTED_INDEPENDENT'
-    ) {
+      supportCtx.hintUsed === true ||
+      supportCtx.provenance === 'SERVER_OBSERVED' ||
+      supportCtx.provenance === 'SELF_REPORTED_ASSISTED';
+
+    if (isAssisted) {
       return [];
     }
 
@@ -172,6 +174,18 @@ export class QualificationService {
             assessmentResultId: assessmentResult.id,
             state: 'QUALIFIED',
             policyVersion: '1.0.0',
+            metadata: {
+              provenance: supportCtx.provenance ?? 'SELF_REPORTED_INDEPENDENT',
+              verificationLevel: 'UNVERIFIED_PRACTICE',
+            },
+          },
+        });
+      } else if (fact.state !== 'QUALIFIED') {
+        fact = await tx.qualifyingFact.update({
+          where: { id: fact.id },
+          data: {
+            state: 'QUALIFIED',
+            assessmentResultId: assessmentResult.id,
           },
         });
       }
@@ -220,7 +234,10 @@ export class QualificationService {
 
   /**
    * Reconciles QualifyingFacts and Quest progress when an AssessmentCorrection is applied.
-   * If corrected from correct to incorrect/failed, marks existing fact as SUPERSEDED and revokes consumption.
+   * - If corrected to non-evaluated status (e.g. PENDING, SKIPPED) or incorrect/failed:
+   *   Marks existing fact as SUPERSEDED and revokes consumption, decrementing quest progress.
+   * - If corrected to EVALUATED with isCorrect: true:
+   *   Re-qualifies the fact and restores consumption and quest progress if eligible.
    */
   async reconcileAssessmentCorrection(
     params: {
@@ -236,7 +253,7 @@ export class QualificationService {
       where: { assessmentResultId },
     });
 
-    if (targetIsCorrect !== true || targetStatus === 'FAILED') {
+    if (targetStatus !== 'EVALUATED' || targetIsCorrect !== true) {
       // De-qualify existing facts
       for (const fact of existingFacts) {
         if (fact.state === 'QUALIFIED') {
@@ -277,6 +294,119 @@ export class QualificationService {
             });
           }
         }
+      }
+    } else {
+      // Re-qualification branch: restore qualification and quest progress on correction to correct
+      const assessment = await tx.assessmentResult.findUnique({
+        where: { id: assessmentResultId },
+        include: {
+          attempt: true,
+          run: {
+            include: {
+              courseVersion: true,
+            },
+          },
+        },
+      });
+
+      if (!assessment || !assessment.attempt || !assessment.run) {
+        return;
+      }
+
+      // Check run status: never qualify ABANDONED runs
+      if (assessment.run.closeReason === 'ABANDONED') {
+        return;
+      }
+
+      const attempt = assessment.attempt;
+      const supportCtx = (attempt.supportContext as Record<string, unknown> | null) ?? {};
+      const isAssisted =
+        attempt.assisted === true ||
+        supportCtx.hintUsed === true ||
+        supportCtx.provenance === 'SERVER_OBSERVED' ||
+        supportCtx.provenance === 'SELF_REPORTED_ASSISTED';
+
+      if (isAssisted) {
+        return;
+      }
+
+      const snapshot = (assessment.run.courseVersion.snapshot as {
+        skillMappings?: Array<{
+          id: string;
+          blockInstanceId: string;
+          skillId: string;
+          skillCode: string;
+          criterion: string;
+        }>;
+      }) || {};
+
+      const mappings = (snapshot.skillMappings ?? []).filter(
+        (m) => m.blockInstanceId === assessment.run.blockInstanceId,
+      );
+
+      if (mappings.length !== 1) {
+        return;
+      }
+
+      // Repetition check across runs: must be first attempt on this block
+      const priorAttempts = await tx.aBAttempt.findMany({
+        where: {
+          run: {
+            userId: assessment.run.userId,
+            courseVersionId: assessment.run.courseVersionId,
+            blockInstanceId: assessment.run.blockInstanceId,
+          },
+        },
+        select: { id: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const isFirstAttempt = priorAttempts.length <= 1 || priorAttempts[0].id === attempt.id;
+      if (!isFirstAttempt) {
+        return;
+      }
+
+      for (const mapping of mappings) {
+        const sourceKey = `fact:ind_prac:${attempt.id}:${mapping.skillCode}`;
+
+        let fact = await tx.qualifyingFact.findUnique({
+          where: { sourceKey },
+        });
+
+        if (fact) {
+          if (fact.state !== 'QUALIFIED') {
+            fact = await tx.qualifyingFact.update({
+              where: { id: fact.id },
+              data: {
+                state: 'QUALIFIED',
+                assessmentResultId: assessment.id,
+              },
+            });
+          }
+        } else {
+          fact = await tx.qualifyingFact.create({
+            data: {
+              sourceKey,
+              userId: assessment.run.userId,
+              courseVersionId: assessment.run.courseVersionId,
+              factType: 'INDEPENDENT_PRACTICE_CONFIRMED',
+              blockInstanceId: assessment.run.blockInstanceId,
+              skillId: mapping.skillId,
+              skillCode: mapping.skillCode,
+              runId: assessment.run.id,
+              attemptId: attempt.id,
+              assessmentResultId: assessment.id,
+              state: 'QUALIFIED',
+              policyVersion: '1.0.0',
+              metadata: {
+                provenance: supportCtx.provenance ?? 'SELF_REPORTED_INDEPENDENT',
+                verificationLevel: 'UNVERIFIED_PRACTICE',
+              },
+            },
+          });
+        }
+
+        await this.questEngine.processFact(fact, tx);
       }
     }
   }

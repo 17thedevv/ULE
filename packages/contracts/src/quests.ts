@@ -47,9 +47,20 @@ export type QuestObjectiveConfig =
   | IndependentPracticeConfig
   | ExploreOpportunitiesConfig;
 
+export interface CourseQuestRewardPolicyDto {
+  courseXp?: number;
+  badgeKey?: string;
+}
+
+export interface PlatformQuestRewardPolicyDto {
+  platformXp?: number;
+  badgeKey?: string;
+}
+
 export interface QuestRewardPolicyDto {
   courseXp?: number;
   platformXp?: number;
+  badgeKey?: string;
 }
 
 export interface DraftCourseQuestDto {
@@ -60,7 +71,7 @@ export interface DraftCourseQuestDto {
   description: string | null;
   templateId: QuestTemplateId;
   config: QuestObjectiveConfig;
-  rewardPolicy: QuestRewardPolicyDto | null;
+  rewardPolicy: CourseQuestRewardPolicyDto | null;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -72,7 +83,7 @@ export interface CreateDraftCourseQuestRequest {
   description?: string;
   templateId: QuestTemplateId;
   config: QuestObjectiveConfig;
-  rewardPolicy?: QuestRewardPolicyDto;
+  rewardPolicy?: CourseQuestRewardPolicyDto;
 }
 
 export interface UpdateDraftCourseQuestRequest {
@@ -80,7 +91,7 @@ export interface UpdateDraftCourseQuestRequest {
   title?: string;
   description?: string;
   config?: QuestObjectiveConfig;
-  rewardPolicy?: QuestRewardPolicyDto;
+  rewardPolicy?: CourseQuestRewardPolicyDto;
 }
 
 export interface QuestDefinitionSnapshot {

@@ -9,7 +9,6 @@ import {
   CourseQuestInstanceDto,
   QuestDefinitionSnapshot,
   QuestInstanceStatus,
-  QuestObjectiveProgressDto,
   QuestRewardPolicyDto,
   QuestTemplateId,
 } from '@ule/contracts';

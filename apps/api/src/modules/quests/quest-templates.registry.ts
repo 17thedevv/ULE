@@ -2,7 +2,6 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   CompleteDistinctActivitiesConfig,
   IndependentPracticeConfig,
-  QuestObjectiveConfig,
   QuestTemplateId,
 } from '@ule/contracts';
 

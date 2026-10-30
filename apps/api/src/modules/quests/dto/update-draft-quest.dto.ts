@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  CourseQuestRewardPolicyDto,
   QuestObjectiveConfig,
-  QuestRewardPolicyDto,
   UpdateDraftCourseQuestRequest,
 } from '@ule/contracts';
 import {
@@ -56,5 +56,5 @@ export class UpdateDraftQuestDto implements UpdateDraftCourseQuestRequest {
   })
   @IsObject()
   @IsOptional()
-  rewardPolicy?: QuestRewardPolicyDto;
+  rewardPolicy?: CourseQuestRewardPolicyDto;
 }
