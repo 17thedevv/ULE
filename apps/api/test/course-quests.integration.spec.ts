@@ -861,6 +861,184 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
       });
       expect(factsAfterSuspend.length).toBe(0);
     });
+
+    it('abandoning a deferred run NEVER releases hidden correctness or qualifies quest', async () => {
+      // 1. Start a new run on mcqDeferredBlockId
+      const startRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: version1Id,
+          blockInstanceId: mcqDeferredBlockId,
+          idempotencyKey: `run-def-abandon-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+      const defRunId = startRes.body.id;
+
+      // 2. Submit response
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${defRunId}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_yes' },
+          idempotencyKey: `cmd-sub-abandon-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // 3. Abandon run
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${defRunId}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'ABANDON',
+          idempotencyKey: `cmd-abandon-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // 4. Verify no fact is created for ABANDONED run
+      const facts = await prisma.qualifyingFact.findMany({
+        where: { runId: defRunId },
+      });
+      expect(facts.length).toBe(0);
+    });
+
+    it('finishing a deferred run reconciles and qualifies quest upon CLOSED COMPLETED', async () => {
+      // 1. Start another run on mcqDeferredBlockId
+      const startRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: version1Id,
+          blockInstanceId: mcqDeferredBlockId,
+          idempotencyKey: `run-def-finish-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+      const defRunId = startRes.body.id;
+
+      // 2. Submit response
+      const subRes = await request(app.getHttpServer())
+        .post(`/api/v1/runs/${defRunId}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_yes' },
+          idempotencyKey: `cmd-sub-deffinish-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // 3. Finish run
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${defRunId}/commands`)
+        .set('Cookie', learnerCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-finish-deffinish-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // 4. Verify activity completion fact and independent practice fact are qualified upon close
+      const facts = await prisma.qualifyingFact.findMany({
+        where: { runId: defRunId },
+      });
+      expect(facts.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('P1: Assessment Correction Reconciliation Lifecycle', () => {
+    it('correcting an assessment from correct to incorrect supercedes fact and decrements quest progress', async () => {
+      // 1. Locate an existing QUALIFIED fact for independent practice
+      const fact = await prisma.qualifyingFact.findFirst({
+        where: {
+          userId: learnerId,
+          factType: 'INDEPENDENT_PRACTICE_CONFIRMED',
+          state: 'QUALIFIED',
+          assessmentResultId: { not: null },
+        },
+        include: {
+          consumptions: {
+            include: { objectiveProgress: true },
+          },
+        },
+      });
+
+      if (!fact || !fact.assessmentResultId) {
+        throw new Error('Expected at least one qualified practice fact with assessmentResultId.');
+      }
+
+      const initialCount = fact.consumptions[0]?.objectiveProgress?.currentCount ?? 1;
+
+      // 2. Course owner issues assessment correction to false
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: fact.assessmentResultId,
+          newIsCorrect: false,
+          newScore: 0,
+          newStatus: 'FAILED',
+          reason: 'Manual re-grading audit found learner error',
+        })
+        .expect(HttpStatus.OK);
+
+      // 3. Verify fact state is SUPERSEDED in database
+      const updatedFact = await prisma.qualifyingFact.findUniqueOrThrow({
+        where: { id: fact.id },
+        include: { consumptions: { include: { objectiveProgress: true } } },
+      });
+      expect(updatedFact.state).toBe('SUPERSEDED');
+
+      // 4. Verify fact consumption is REVOKED
+      expect(updatedFact.consumptions[0].status).toBe('REVOKED');
+
+      // 5. Verify quest progress was decremented
+      expect(updatedFact.consumptions[0].objectiveProgress.currentCount).toBe(
+        Math.max(0, initialCount - 1),
+      );
+    });
+  });
+
+  describe('P1 & Gate 1: Strict Concurrency & Deadlock Freedom', () => {
+    it('concurrent grant revocation and run command execution serialize cleanly without deadlock', async () => {
+      // Re-activate grant for learner first
+      const grantRes = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/versions/${version1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: learnerId })
+        .expect(HttpStatus.CREATED);
+
+      const activeGrantId = grantRes.body.id;
+
+      // Start a run
+      const runRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', learnerCookie)
+        .send({
+          courseVersionId: version1Id,
+          blockInstanceId: videoBlockId,
+          idempotencyKey: `run-conc-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+      const runId = runRes.body.id;
+
+      // Concurrently execute: Owner revokes grant, Learner sends HEARTBEAT
+      const [revokeResult, cmdResult] = await Promise.all([
+        request(app.getHttpServer())
+          .delete(`/api/v1/courses/${courseId}/versions/${version1Id}/grants/${activeGrantId}`)
+          .set('Cookie', ownerCookie),
+        request(app.getHttpServer())
+          .post(`/api/v1/runs/${runId}/commands`)
+          .set('Cookie', learnerCookie)
+          .send({
+            command: 'SUSPEND',
+            idempotencyKey: `cmd-hb-conc-${Date.now()}`,
+          }),
+      ]);
+
+      // Both must return valid HTTP status (no 500 deadlock / 40P01)
+      expect(revokeResult.status).toBe(HttpStatus.OK);
+      expect([HttpStatus.OK, HttpStatus.FORBIDDEN]).toContain(cmdResult.status);
+    });
   });
 
   describe('Gate 1: Access Grant Revocation Concurrency Gate', () => {
@@ -896,7 +1074,9 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
 
       expect(questsRes.body.length).toBe(2);
       const completedCount = questsRes.body.filter((q: any) => q.status === 'COMPLETED').length;
-      expect(completedCount).toBe(2);
+      expect(completedCount).toBe(1);
+      const activeCount = questsRes.body.filter((q: any) => q.status === 'ACTIVE').length;
+      expect(activeCount).toBe(1);
     });
   });
 });

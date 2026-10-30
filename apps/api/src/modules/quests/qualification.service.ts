@@ -92,7 +92,12 @@ export class QualificationService {
       return [];
     }
 
-    if (attempt.assisted === true) {
+    const supportCtx = (attempt.supportContext as Record<string, unknown> | null) ?? {};
+    if (
+      attempt.assisted === true ||
+      supportCtx.provenance === 'SELF_REPORTED' ||
+      supportCtx.supportProvenance === 'SELF_REPORTED_INDEPENDENT'
+    ) {
       return [];
     }
 
@@ -188,6 +193,11 @@ export class QualificationService {
   ): Promise<void> {
     const tx = txClient ?? this.prisma;
 
+    // Invariant: ABANDONED runs NEVER qualify or release correctness
+    if (run.status !== 'CLOSED' || run.closeReason !== 'COMPLETED') {
+      return;
+    }
+
     const latestAttempt = await tx.aBAttempt.findFirst({
       where: { runId: run.id },
       orderBy: { attemptNumber: 'desc' },
@@ -205,6 +215,69 @@ export class QualificationService {
         },
         tx,
       );
+    }
+  }
+
+  /**
+   * Reconciles QualifyingFacts and Quest progress when an AssessmentCorrection is applied.
+   * If corrected from correct to incorrect/failed, marks existing fact as SUPERSEDED and revokes consumption.
+   */
+  async reconcileAssessmentCorrection(
+    params: {
+      assessmentResultId: string;
+      targetIsCorrect: boolean | null;
+      targetStatus: string;
+    },
+    tx: Prisma.TransactionClient,
+  ): Promise<void> {
+    const { assessmentResultId, targetIsCorrect, targetStatus } = params;
+
+    const existingFacts = await tx.qualifyingFact.findMany({
+      where: { assessmentResultId },
+    });
+
+    if (targetIsCorrect !== true || targetStatus === 'FAILED') {
+      // De-qualify existing facts
+      for (const fact of existingFacts) {
+        if (fact.state === 'QUALIFIED') {
+          await tx.qualifyingFact.update({
+            where: { id: fact.id },
+            data: { state: 'SUPERSEDED' },
+          });
+
+          // Revoke any consumptions and adjust objective progress
+          const consumptions = await tx.questFactConsumption.findMany({
+            where: { factId: fact.id, status: 'CONSUMED' },
+            include: { objectiveProgress: true },
+          });
+
+          for (const consumption of consumptions) {
+            await tx.questFactConsumption.update({
+              where: { id: consumption.id },
+              data: { status: 'REVOKED' },
+            });
+
+            const newCount = Math.max(0, consumption.objectiveProgress.currentCount - 1);
+            await tx.questObjectiveProgress.update({
+              where: { id: consumption.objectiveProgressId },
+              data: {
+                currentCount: newCount,
+                isCompleted: false,
+                completedAt: null,
+              },
+            });
+
+            // Revert completed quest back to ACTIVE
+            await tx.questInstance.update({
+              where: { id: consumption.questInstanceId },
+              data: {
+                status: 'ACTIVE',
+                completedAt: null,
+              },
+            });
+          }
+        }
+      }
     }
   }
 }
