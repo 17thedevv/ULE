@@ -311,14 +311,45 @@ export class DraftQuestsService {
       throw new BadRequestException('Reward policy must be a valid object.');
     }
     const policy = rewardPolicy as Record<string, unknown>;
-    if (policy.platformXp !== undefined) {
-      throw new BadRequestException(
-        'Course quests cannot configure platform-scoped rewards (platformXp). Platform rewards are strictly platform-owned.',
-      );
+
+    // Strict allowlist: only courseXp and badgeKey are permitted in Course Quests
+    const allowedKeys = new Set(['courseXp', 'badgeKey']);
+    for (const key of Object.keys(policy)) {
+      if (!allowedKeys.has(key)) {
+        if (key === 'platformXp') {
+          throw new BadRequestException(
+            'Course quests cannot configure platform-scoped rewards (platformXp). Platform rewards are strictly platform-owned.',
+          );
+        }
+        throw new BadRequestException(
+          `Unexpected property '${key}' in course quest rewardPolicy. Only 'courseXp' and 'badgeKey' are allowed.`,
+        );
+      }
     }
+
     if (policy.courseXp !== undefined) {
-      if (typeof policy.courseXp !== 'number' || policy.courseXp < 0 || !Number.isFinite(policy.courseXp)) {
-        throw new BadRequestException('Course quest courseXp reward must be a non-negative number.');
+      if (
+        typeof policy.courseXp !== 'number' ||
+        !Number.isInteger(policy.courseXp) ||
+        policy.courseXp < 0 ||
+        policy.courseXp > 10000
+      ) {
+        throw new BadRequestException(
+          'Course quest courseXp reward must be a non-negative integer between 0 and 10,000.',
+        );
+      }
+    }
+
+    if (policy.badgeKey !== undefined && policy.badgeKey !== null) {
+      if (
+        typeof policy.badgeKey !== 'string' ||
+        policy.badgeKey.trim().length === 0 ||
+        policy.badgeKey.length > 64 ||
+        !/^[a-zA-Z0-9_-]+$/.test(policy.badgeKey)
+      ) {
+        throw new BadRequestException(
+          'Course quest badgeKey must be an alphanumeric identifier (up to 64 chars, containing letters, numbers, underscores or hyphens).',
+        );
       }
     }
   }

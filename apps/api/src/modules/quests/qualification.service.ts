@@ -23,6 +23,59 @@ export interface QualifyAttemptParams {
   isDeferredWithheld?: boolean;
 }
 
+export interface EvaluationReleaseParams {
+  run: {
+    status: string;
+    closeReason: string | null;
+    blockInstanceId: string;
+  };
+  courseVersion: CourseVersion;
+  isDeferredWithheld?: boolean;
+}
+
+/**
+ * Canonical release eligibility predicate shared across runtime qualification and assessment correction.
+ * Enforces:
+ * 1. Explicit withheld flag (e.g. from runtime during active attempt under DEFERRED policy).
+ * 2. ABANDONED runs NEVER qualify or release correctness.
+ * 3. DEFERRED feedback policy requires run to be CLOSED with closeReason === 'COMPLETED' before release.
+ */
+export function isEvaluationReleaseEligible(params: EvaluationReleaseParams): boolean {
+  const { run, courseVersion, isDeferredWithheld } = params;
+
+  // Invariant 1: Caller-level deferred withholding (e.g. from runtime during active attempt)
+  if (isDeferredWithheld === true) {
+    return false;
+  }
+
+  // Invariant 2: ABANDONED runs NEVER qualify or release correctness
+  if (run.closeReason === 'ABANDONED') {
+    return false;
+  }
+
+  // Invariant 3: Inspect immutable course version snapshot for block feedbackPolicy
+  const snapshot = (courseVersion.snapshot as {
+    blocks?: Array<{
+      id: string;
+      config?: Record<string, unknown>;
+    }>;
+  }) || {};
+
+  const pinnedBlock = (snapshot.blocks ?? []).find((b) => b.id === run.blockInstanceId);
+  const feedbackPolicy = (pinnedBlock?.config as { feedbackPolicy?: string } | undefined)?.feedbackPolicy;
+
+  if (feedbackPolicy === 'DEFERRED') {
+    // Under DEFERRED feedback policy, evaluations are strictly withheld from qualification/re-qualification
+    // until the run reaches CLOSED with closeReason === 'COMPLETED'.
+    const isCompleted = run.status === 'CLOSED' && run.closeReason === 'COMPLETED';
+    if (!isCompleted) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 @Injectable()
 export class QualificationService {
   private readonly logger = new Logger(QualificationService.name);
@@ -31,6 +84,13 @@ export class QualificationService {
     private readonly prisma: PrismaService,
     private readonly questEngine: QuestEngineService,
   ) {}
+
+  /**
+   * Helper exposing canonical release predicate on QualificationService instance.
+   */
+  isEvaluationReleaseEligible(params: EvaluationReleaseParams): boolean {
+    return isEvaluationReleaseEligible(params);
+  }
 
   /**
    * Qualifies an activity run completion fact into the QualifyingFact ledger.
@@ -103,7 +163,7 @@ export class QualificationService {
       return [];
     }
 
-    if (isDeferredWithheld === true) {
+    if (!isEvaluationReleaseEligible({ run, courseVersion, isDeferredWithheld })) {
       return [];
     }
 
@@ -253,7 +313,33 @@ export class QualificationService {
       where: { assessmentResultId },
     });
 
-    if (targetStatus !== 'EVALUATED' || targetIsCorrect !== true) {
+    const assessment = await tx.assessmentResult.findUnique({
+      where: { id: assessmentResultId },
+      include: {
+        attempt: true,
+        run: {
+          include: {
+            courseVersion: true,
+          },
+        },
+      },
+    });
+
+    if (!assessment || !assessment.attempt || !assessment.run) {
+      return;
+    }
+
+    // Single canonical release eligibility predicate:
+    // With DEFERRED feedback policy, qualification is strictly withheld while run is ACTIVE, SUSPENDED, or ABANDONED.
+    // Only CLOSED with closeReason === 'COMPLETED' is eligible for release.
+    const isEligible = isEvaluationReleaseEligible({
+      run: assessment.run,
+      courseVersion: assessment.run.courseVersion,
+    });
+
+    const shouldQualify = targetStatus === 'EVALUATED' && targetIsCorrect === true && isEligible;
+
+    if (!shouldQualify) {
       // De-qualify existing facts
       for (const fact of existingFacts) {
         if (fact.state === 'QUALIFIED') {
@@ -295,40 +381,21 @@ export class QualificationService {
           }
         }
       }
-    } else {
-      // Re-qualification branch: restore qualification and quest progress on correction to correct
-      const assessment = await tx.assessmentResult.findUnique({
-        where: { id: assessmentResultId },
-        include: {
-          attempt: true,
-          run: {
-            include: {
-              courseVersion: true,
-            },
-          },
-        },
-      });
+      return;
+    }
 
-      if (!assessment || !assessment.attempt || !assessment.run) {
-        return;
-      }
+    // Re-qualification branch: restore qualification and quest progress on correction to correct
+    const attempt = assessment.attempt;
+    const supportCtx = (attempt.supportContext as Record<string, unknown> | null) ?? {};
+    const isAssisted =
+      attempt.assisted === true ||
+      supportCtx.hintUsed === true ||
+      supportCtx.provenance === 'SERVER_OBSERVED' ||
+      supportCtx.provenance === 'SELF_REPORTED_ASSISTED';
 
-      // Check run status: never qualify ABANDONED runs
-      if (assessment.run.closeReason === 'ABANDONED') {
-        return;
-      }
-
-      const attempt = assessment.attempt;
-      const supportCtx = (attempt.supportContext as Record<string, unknown> | null) ?? {};
-      const isAssisted =
-        attempt.assisted === true ||
-        supportCtx.hintUsed === true ||
-        supportCtx.provenance === 'SERVER_OBSERVED' ||
-        supportCtx.provenance === 'SELF_REPORTED_ASSISTED';
-
-      if (isAssisted) {
-        return;
-      }
+    if (isAssisted) {
+      return;
+    }
 
       const snapshot = (assessment.run.courseVersion.snapshot as {
         skillMappings?: Array<{
@@ -410,4 +477,3 @@ export class QualificationService {
       }
     }
   }
-}

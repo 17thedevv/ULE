@@ -443,6 +443,69 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
       expect(res.body.message).toContain('platform-scoped rewards (platformXp)');
     });
 
+    it('rejects quest creation containing non-allowlisted properties in rewardPolicy (P2)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/draft/quests`)
+        .set('Cookie', ownerCookie)
+        .send({
+          questKey: 'illegal-gems',
+          title: 'Illegal Reward Properties',
+          templateId: 'COMPLETE_DISTINCT_ACTIVITIES',
+          config: { targetCount: 1 },
+          rewardPolicy: {
+            courseXp: 10,
+            gems: 50,
+          },
+        })
+        .expect(HttpStatus.BAD_REQUEST);
+
+      expect(res.body.message).toContain("Unexpected property 'gems' in course quest rewardPolicy");
+    });
+
+    it('rejects quest creation with invalid courseXp (negative or over limit) (P2)', async () => {
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/draft/quests`)
+        .set('Cookie', ownerCookie)
+        .send({
+          questKey: 'invalid-xp-negative',
+          title: 'Negative XP Quest',
+          templateId: 'COMPLETE_DISTINCT_ACTIVITIES',
+          config: { targetCount: 1 },
+          rewardPolicy: { courseXp: -5 },
+        })
+        .expect(HttpStatus.BAD_REQUEST);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/draft/quests`)
+        .set('Cookie', ownerCookie)
+        .send({
+          questKey: 'invalid-xp-over-limit',
+          title: 'Excessive XP Quest',
+          templateId: 'COMPLETE_DISTINCT_ACTIVITIES',
+          config: { targetCount: 1 },
+          rewardPolicy: { courseXp: 50000 },
+        })
+        .expect(HttpStatus.BAD_REQUEST);
+    });
+
+    it('rejects quest creation with invalid badgeKey format (P2)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/draft/quests`)
+        .set('Cookie', ownerCookie)
+        .send({
+          questKey: 'invalid-badge-format',
+          title: 'Invalid Badge Quest',
+          templateId: 'COMPLETE_DISTINCT_ACTIVITIES',
+          config: { targetCount: 1 },
+          rewardPolicy: {
+            badgeKey: 'badge with illegal spaces and @!',
+          },
+        })
+        .expect(HttpStatus.BAD_REQUEST);
+
+      expect(res.body.message).toContain('alphanumeric identifier');
+    });
+
     it('enforces optimistic locking on quest updates: rejects stale revision with HTTP 409', async () => {
       await request(app.getHttpServer())
         .patch(`/api/v1/courses/${courseId}/draft/quests/${distinctActivitiesQuestId}`)
@@ -1099,6 +1162,304 @@ describe('Phase 4: Course Gamification & Quests Integration Tests (PR #6)', () =
           reason: 'Moderation complete: approved as evaluated',
         })
         .expect(HttpStatus.OK);
+    });
+  });
+
+  describe('P1 Regression: Assessment Correction under DEFERRED Feedback Policy', () => {
+    let defLearner1Cookie: string;
+    let defLearner1Id: string;
+    let defLearner2Cookie: string;
+    let defLearner2Id: string;
+
+    it('correction while DEFERRED run is ACTIVE does NOT qualify fact or leak quest progress', async () => {
+      // 1. Register fresh learner 1
+      const regRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/sign-up/email')
+        .set('Origin', trustedOrigin)
+        .send({
+          email: `def-learner-1-${Date.now()}@ule.test`,
+          password: 'TestPassword123!',
+          name: 'Deferred Test Learner 1',
+        })
+        .expect(HttpStatus.OK);
+      defLearner1Cookie = extractCookies(regRes);
+      const meRes = await request(app.getHttpServer())
+        .get('/api/v1/me')
+        .set('Cookie', defLearner1Cookie)
+        .expect(HttpStatus.OK);
+      defLearner1Id = meRes.body.user.id;
+
+      // Grant access and enroll
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/versions/${version1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: defLearner1Id })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/learner/courses/${version1Id}/enroll`)
+        .set('Cookie', defLearner1Cookie)
+        .expect(HttpStatus.CREATED);
+
+      // 2. Start DEFERRED MCQ run
+      const runRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', defLearner1Cookie)
+        .send({
+          courseVersionId: version1Id,
+          blockInstanceId: mcqDeferredBlockId,
+          idempotencyKey: `run-def-active-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+      const activeRunId = runRes.body.id;
+
+      // 3. Submit incorrect response
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${activeRunId}/commands`)
+        .set('Cookie', defLearner1Cookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_no' },
+          idempotencyKey: `cmd-sub-def-active-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Verify assessment exists
+      const assessment = await prisma.assessmentResult.findFirstOrThrow({
+        where: { runId: activeRunId },
+      });
+
+      // 4. Owner corrects assessment to EVALUATED / isCorrect: true while run is still ACTIVE
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: assessment.id,
+          newIsCorrect: true,
+          newScore: 100,
+          newStatus: 'EVALUATED',
+          reason: 'Instructor early correction on active deferred run',
+        })
+        .expect(HttpStatus.OK);
+
+      // 5. Invariant check: NO QualifyingFact is QUALIFIED because DEFERRED feedback is withheld
+      const facts = await prisma.qualifyingFact.findMany({
+        where: { assessmentResultId: assessment.id, state: 'QUALIFIED' },
+      });
+      expect(facts.length).toBe(0);
+
+      // 6. Invariant check: Learner-facing quest progress is 0 (NO correctness leak)
+      const questsRes = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${version1Id}/quests`)
+        .set('Cookie', defLearner1Cookie)
+        .expect(HttpStatus.OK);
+      const practiceQuest = questsRes.body.find((q: any) => q.templateId === 'INDEPENDENT_PRACTICE');
+      expect(practiceQuest.status).toBe('ACTIVE');
+      expect(practiceQuest.objectives[0].currentCount).toBe(0);
+
+      // 7. Test SUSPENDED state: Learner suspends the run
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${activeRunId}/commands`)
+        .set('Cookie', defLearner1Cookie)
+        .send({
+          command: 'SUSPEND',
+          idempotencyKey: `cmd-suspend-def-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Owner re-evaluates while SUSPENDED
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: assessment.id,
+          newIsCorrect: true,
+          newScore: 100,
+          newStatus: 'EVALUATED',
+          reason: 'Instructor correction while run is suspended',
+        })
+        .expect(HttpStatus.OK);
+
+      // Still no qualified fact or leaked quest progress
+      const factsAfterSuspend = await prisma.qualifyingFact.findMany({
+        where: { assessmentResultId: assessment.id, state: 'QUALIFIED' },
+      });
+      expect(factsAfterSuspend.length).toBe(0);
+
+      const questsAfterSuspend = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${version1Id}/quests`)
+        .set('Cookie', defLearner1Cookie)
+        .expect(HttpStatus.OK);
+      const practiceQuestAfterSuspend = questsAfterSuspend.body.find((q: any) => q.templateId === 'INDEPENDENT_PRACTICE');
+      expect(practiceQuestAfterSuspend.objectives[0].currentCount).toBe(0);
+
+      // 8. Test ABANDONED state: Learner abandons the run
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${activeRunId}/commands`)
+        .set('Cookie', defLearner1Cookie)
+        .send({
+          command: 'ABANDON',
+          idempotencyKey: `cmd-abandon-def-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Owner issues correction on abandoned run
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: assessment.id,
+          newIsCorrect: true,
+          newScore: 100,
+          newStatus: 'EVALUATED',
+          reason: 'Correction on abandoned run',
+        })
+        .expect(HttpStatus.OK);
+
+      // Invariant: ABANDONED run NEVER qualifies or leaks
+      const factsAfterAbandon = await prisma.qualifyingFact.findMany({
+        where: { assessmentResultId: assessment.id, state: 'QUALIFIED' },
+      });
+      expect(factsAfterAbandon.length).toBe(0);
+
+      const questsAfterAbandon = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${version1Id}/quests`)
+        .set('Cookie', defLearner1Cookie)
+        .expect(HttpStatus.OK);
+      const practiceQuestAfterAbandon = questsAfterAbandon.body.find((q: any) => q.templateId === 'INDEPENDENT_PRACTICE');
+      expect(practiceQuestAfterAbandon.objectives[0].currentCount).toBe(0);
+    });
+
+    it('correction on CLOSED COMPLETED deferred run qualifies fact and updates quest progress with two-way reconciliation', async () => {
+      // 1. Register fresh learner 2
+      const regRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/sign-up/email')
+        .set('Origin', trustedOrigin)
+        .send({
+          email: `def-learner-2-${Date.now()}@ule.test`,
+          password: 'TestPassword123!',
+          name: 'Deferred Test Learner 2',
+        })
+        .expect(HttpStatus.OK);
+      defLearner2Cookie = extractCookies(regRes);
+      const meRes = await request(app.getHttpServer())
+        .get('/api/v1/me')
+        .set('Cookie', defLearner2Cookie)
+        .expect(HttpStatus.OK);
+      defLearner2Id = meRes.body.user.id;
+
+      // Grant access and enroll
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${courseId}/versions/${version1Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: defLearner2Id })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/learner/courses/${version1Id}/enroll`)
+        .set('Cookie', defLearner2Cookie)
+        .expect(HttpStatus.CREATED);
+
+      // 2. Start DEFERRED MCQ run
+      const runRes = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', defLearner2Cookie)
+        .send({
+          courseVersionId: version1Id,
+          blockInstanceId: mcqDeferredBlockId,
+          idempotencyKey: `run-def-completed-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+      const defRunId = runRes.body.id;
+
+      // 3. Submit incorrect response
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${defRunId}/commands`)
+        .set('Cookie', defLearner2Cookie)
+        .send({
+          command: 'SUBMIT_RESPONSE',
+          payload: { selectedOptionId: 'opt_no' },
+          idempotencyKey: `cmd-sub-def-comp-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // 4. Finish run (CLOSED COMPLETED)
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${defRunId}/commands`)
+        .set('Cookie', defLearner2Cookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-fin-def-comp-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Verify quest progress is 0 because answer was incorrect
+      const questsBeforeCorr = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${version1Id}/quests`)
+        .set('Cookie', defLearner2Cookie)
+        .expect(HttpStatus.OK);
+      const practiceBefore = questsBeforeCorr.body.find((q: any) => q.templateId === 'INDEPENDENT_PRACTICE');
+      expect(practiceBefore.status).toBe('ACTIVE');
+      expect(practiceBefore.objectives[0].currentCount).toBe(0);
+
+      // 5. Owner corrects assessment to EVALUATED / isCorrect: true on this CLOSED COMPLETED run
+      const assessment = await prisma.assessmentResult.findFirstOrThrow({
+        where: { runId: defRunId },
+      });
+
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: assessment.id,
+          newIsCorrect: true,
+          newScore: 100,
+          newStatus: 'EVALUATED',
+          reason: 'Post-completion regrade: appeal accepted',
+        })
+        .expect(HttpStatus.OK);
+
+      // 6. Because run is CLOSED COMPLETED, the fact QUALIFIES
+      const fact = await prisma.qualifyingFact.findFirstOrThrow({
+        where: { assessmentResultId: assessment.id, state: 'QUALIFIED' },
+      });
+      expect(fact.state).toBe('QUALIFIED');
+
+      // 7. Quest progress increments and quest reaches COMPLETED
+      const questsAfterCorr = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${version1Id}/quests`)
+        .set('Cookie', defLearner2Cookie)
+        .expect(HttpStatus.OK);
+      const practiceAfter = questsAfterCorr.body.find((q: any) => q.templateId === 'INDEPENDENT_PRACTICE');
+      expect(practiceAfter.status).toBe('COMPLETED');
+      expect(practiceAfter.objectives[0].currentCount).toBe(1);
+
+      // 8. Reverse: Owner corrects to FAILED / isCorrect: false
+      await request(app.getHttpServer())
+        .post('/api/v1/evaluations/correct')
+        .set('Cookie', ownerCookie)
+        .send({
+          assessmentResultId: assessment.id,
+          newIsCorrect: false,
+          newScore: 0,
+          newStatus: 'FAILED',
+          reason: 'Audit reversal: found misconduct',
+        })
+        .expect(HttpStatus.OK);
+
+      // Fact is SUPERSEDED, quest progress decremented to 0, status reverted to ACTIVE
+      const factRevoked = await prisma.qualifyingFact.findFirstOrThrow({
+        where: { id: fact.id },
+      });
+      expect(factRevoked.state).toBe('SUPERSEDED');
+
+      const questsAfterRevoke = await request(app.getHttpServer())
+        .get(`/api/v1/learner/courses/${version1Id}/quests`)
+        .set('Cookie', defLearner2Cookie)
+        .expect(HttpStatus.OK);
+      const practiceAfterRevoke = questsAfterRevoke.body.find((q: any) => q.templateId === 'INDEPENDENT_PRACTICE');
+      expect(practiceAfterRevoke.status).toBe('ACTIVE');
+      expect(practiceAfterRevoke.objectives[0].currentCount).toBe(0);
     });
   });
 
