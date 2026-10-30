@@ -230,7 +230,7 @@
      - Dedicated `QualificationService` maps authoritative ABP runtime events and evaluated evidence into normalized `QualifyingFact` projections.
      - Closed allowlist for MVP:
        - `ACTIVITY_COMPLETED`: Emitted when an evaluatable or non-evaluatable block run reaches `CLOSED` with `closeReason === 'COMPLETED'`. Satisfies participation-only quest objectives (`CompleteDistinctActivities`). Strictly excluded from skill mastery.
-       - `INDEPENDENT_PRACTICE_CONFIRMED`: Emitted when an evaluatable attempt satisfies `isCorrect === true`, `assisted === false`, `supportProvenance === 'SERVER_OBSERVED'` (or verified unassisted), `isSameItemRepetition === false`, unambiguous skill mapping, and released feedback (`CLOSED COMPLETED` under `DEFERRED` policy).
+       - `INDEPENDENT_PRACTICE_CONFIRMED`: Emitted when an evaluatable attempt satisfies `isCorrect === true`, unassisted (`assisted === false`, no hint used, non-assisted provenance), `isSameItemRepetition === false`, unambiguous single-skill mapping, and released feedback (`CLOSED COMPLETED` under `DEFERRED` policy). In MVP course-scoped practice milestones, client/in-browser attempts record `provenance: 'SELF_REPORTED_INDEPENDENT'` with `verificationLevel: 'UNVERIFIED_PRACTICE'`. This is sufficient for course quest engagement milestones, but is explicitly non-authoritative for verified skill mastery in the intelligence layer or cross-course Global Quests (Phase 4 PR #8).
      - Strict anti-leak rule: Unreleased `DEFERRED` feedback is withheld from qualification; abandoned or active deferred runs never qualify practice milestones.
      - Absolute invariant: Quest completion is never equivalent to verified skill mastery.
   3. **Dual-Ledger Economy Isolation & Append-Only Adjustments**:
