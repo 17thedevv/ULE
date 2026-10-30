@@ -346,7 +346,9 @@ export class QuestionTypesRegistry {
             ? rawBlanks.filter((t) => t && typeof t === 'object' && typeof t.blankKey === 'string')
             : [];
           for (const target of targets) {
-            const variants = blanks[target.blankKey];
+            const variants = Object.prototype.hasOwnProperty.call(blanks, target.blankKey)
+              ? blanks[target.blankKey]
+              : undefined;
             if (!Array.isArray(variants) || variants.length === 0) {
               errors.push(`CLOZE answerKey.blanks must provide at least one variant for '${target.blankKey}'.`);
             } else {
@@ -605,9 +607,9 @@ export class QuestionTypesRegistry {
             ? rawTargets.filter((t) => t && typeof t === 'object' && typeof t.id === 'string')
             : [];
 
-          // P2 REQUIREMENT: All premises must have an answer mapping
+          // P2 REQUIREMENT: All premises must have an answer mapping (using hasOwnProperty to guard against prototype property collisions)
           for (const premise of premises) {
-            if (!(premise.id in pairs)) {
+            if (!Object.prototype.hasOwnProperty.call(pairs, premise.id)) {
               errors.push(`Missing answer mapping for premise '${premise.id}'.`);
             }
           }

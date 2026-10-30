@@ -331,6 +331,31 @@ describe('QuestionTypesRegistry Unit Tests', () => {
       expect(res.valid).toBe(false);
       expect(res.errors.some((e) => e.includes("Missing answer mapping for premise 'p_jp'"))).toBe(true);
     });
+
+    it('P2 REQUIREMENT: rejects MATCHING answerKey when premise id collides with Object prototype property (e.g. toString) and is unmapped', () => {
+      const res = registry.validateQuestion(
+        'MATCHING',
+        {
+          prompt: 'Match Javascript concepts',
+          premises: [
+            { id: 'toString', text: 'String conversion method' },
+            { id: 'custom_premise', text: 'Custom premise' },
+          ],
+          targets: [
+            { id: 't1', text: 'Target 1' },
+            { id: 't2', text: 'Target 2' },
+          ],
+        },
+        {
+          pairs: {
+            custom_premise: 't2',
+            // 'toString' is NOT mapped in pairs as an own property!
+          },
+        },
+      );
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes("Missing answer mapping for premise 'toString'"))).toBe(true);
+    });
   });
 
   describe('Learner Payload Sanitization Anti-Leakage', () => {
