@@ -9,6 +9,7 @@ import { AppModule } from '../src/app.module';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
 import { createCorsOriginValidator } from '../src/common/utils/cors.util';
 import { PrismaService } from '../src/modules/prisma/prisma.service';
+import { QuestEngineService } from '../src/modules/quests/quest-engine.service';
 
 function extractCookies(res: request.Response): string {
   const raw = res.headers['set-cookie'];
@@ -60,18 +61,34 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
     name: 'Learner Frank (Active Quest Deduplication)',
   };
 
+  const userLearnerGrace = {
+    email: `grace_multidomain_${Date.now()}@ule.internal`,
+    password: 'LearnerPassword123!',
+    name: 'Learner Grace (Course Diversity Across Versions)',
+  };
+
+  const userLearnerHannah = {
+    email: `hannah_multidomain_${Date.now()}@ule.internal`,
+    password: 'LearnerPassword123!',
+    name: 'Learner Hannah (Restoration Diversity Revalidation)',
+  };
+
   let ownerCookie: string;
   let bobCookie: string;
   let charlieCookie: string;
   let davidCookie: string;
   let evaCookie: string;
   let frankCookie: string;
+  let graceCookie: string;
+  let hannahCookie: string;
 
   let bobId: string;
   let charlieId: string;
   let davidId: string;
   let evaId: string;
   let frankId: string;
+  let graceId: string;
+  let hannahId: string;
 
   // Domain A (Mathematics) Identifiers
   let mathCourseId: string;
@@ -186,6 +203,32 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
       .set('Cookie', frankCookie)
       .expect(HttpStatus.OK);
     frankId = frankMe.body.user.id;
+
+    // 7. Register Learner Grace
+    const graceRegRes = await request(app.getHttpServer())
+      .post('/api/v1/auth/sign-up/email')
+      .set('Origin', trustedOrigin)
+      .send(userLearnerGrace)
+      .expect(HttpStatus.OK);
+    graceCookie = extractCookies(graceRegRes);
+    const graceMe = await request(app.getHttpServer())
+      .get('/api/v1/me')
+      .set('Cookie', graceCookie)
+      .expect(HttpStatus.OK);
+    graceId = graceMe.body.user.id;
+
+    // 8. Register Learner Hannah
+    const hannahRegRes = await request(app.getHttpServer())
+      .post('/api/v1/auth/sign-up/email')
+      .set('Origin', trustedOrigin)
+      .send(userLearnerHannah)
+      .expect(HttpStatus.OK);
+    hannahCookie = extractCookies(hannahRegRes);
+    const hannahMe = await request(app.getHttpServer())
+      .get('/api/v1/me')
+      .set('Cookie', hannahCookie)
+      .expect(HttpStatus.OK);
+    hannahId = hannahMe.body.user.id;
   });
 
   afterAll(async () => {
@@ -1619,6 +1662,337 @@ describe('Phase 5: Multi-Domain Proof Integration Tests', () => {
 
       // Still 2, no increment
       expect(updatedGlobalQuest.objectives[0].currentCount).toBe(2);
+    });
+
+    it('enforces course diversity by courseId across different versions of the same course (v1 and v2)', async () => {
+      // 1. Create a 2nd immutable version of Math course (versionNumber: 2, same courseId: mathCourseId)
+      const v2Res = await request(app.getHttpServer())
+        .post(`/api/v1/courses/${mathCourseId}/versions`)
+        .set('Cookie', ownerCookie)
+        .expect(HttpStatus.CREATED);
+      const mathVersion2Id = v2Res.body.id;
+
+      // 2. Grant Learner Grace access to Math v1, Math v2, and English v1
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${mathCourseId}/versions/${mathVersionId}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: graceId })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${mathCourseId}/versions/${mathVersion2Id}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: graceId })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${engCourseId}/versions/${engVersionId}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: graceId })
+        .expect(HttpStatus.CREATED);
+
+      // 3. Grace enrolls in all three versions
+      await request(app.getHttpServer())
+        .post(`/api/v1/learner/courses/${mathVersionId}/enroll`)
+        .set('Cookie', graceCookie)
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/learner/courses/${mathVersion2Id}/enroll`)
+        .set('Cookie', graceCookie)
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/learner/courses/${engVersionId}/enroll`)
+        .set('Cookie', graceCookie)
+        .expect(HttpStatus.CREATED);
+
+      // 4. Seed Global Quest with requireDistinctCourses: true for Grace
+      const graceQuest = await prisma.questInstance.create({
+        data: {
+          userId: graceId,
+          questKey: 'grace-polymath-courseid-diversity',
+          templateId: 'COMPLETE_DISTINCT_ACTIVITIES',
+          title: 'Grace Cross-Course Polymath',
+          scope: 'GLOBAL',
+          status: 'ACTIVE',
+          config: {
+            targetCount: 2,
+            requireDistinctCourses: true,
+          },
+          objectives: {
+            create: [
+              {
+                objectiveKey: 'complete_distinct_activities',
+                targetCount: 2,
+                currentCount: 0,
+                isCompleted: false,
+              },
+            ],
+          },
+        },
+        include: { objectives: true },
+      });
+
+      // 5. Grace completes Math Video in Math Version 1
+      const mathV1Run = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', graceCookie)
+        .send({
+          courseVersionId: mathVersionId,
+          blockInstanceId: mathVideoBlockId,
+          idempotencyKey: `run-grace-math-v1-video-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${mathV1Run.body.id}/commands`)
+        .set('Cookie', graceCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-grace-math-v1-fin-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Invariant: 1st activity in Math increments progress to 1/2
+      let qGrace = await prisma.questInstance.findUniqueOrThrow({
+        where: { id: graceQuest.id },
+        include: { objectives: true },
+      });
+      expect(qGrace.objectives[0].currentCount).toBe(1);
+
+      // 6. Grace completes Math MCQ in Math Version 2 (different version, SAME courseId)
+      const mathV2Run = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', graceCookie)
+        .send({
+          courseVersionId: mathVersion2Id,
+          blockInstanceId: mathMcqPracticeBlockId,
+          idempotencyKey: `run-grace-math-v2-mcq-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${mathV2Run.body.id}/commands`)
+        .set('Cookie', graceCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-grace-math-v2-fin-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // INVARIANT: Even though mathVersion2Id !== mathVersionId, both share courseId === mathCourseId!
+      // Therefore, the second Math activity MUST NOT advance progress!
+      qGrace = await prisma.questInstance.findUniqueOrThrow({
+        where: { id: graceQuest.id },
+        include: { objectives: true },
+      });
+      expect(qGrace.status).toBe('ACTIVE');
+      expect(qGrace.objectives[0].currentCount).toBe(1); // STILL 1, not 2
+
+      // 7. Grace completes English Reading MCQ in engVersionId (different courseId === engCourseId)
+      const engRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', graceCookie)
+        .send({
+          courseVersionId: engVersionId,
+          blockInstanceId: engMcqReadingBlockId,
+          idempotencyKey: `run-grace-eng-mcq-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${engRun.body.id}/commands`)
+        .set('Cookie', graceCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-grace-eng-fin-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // INVARIANT: Distinct courseId increments progress to 2/2 and COMPLETES the Global Quest
+      qGrace = await prisma.questInstance.findUniqueOrThrow({
+        where: { id: graceQuest.id },
+        include: { objectives: true },
+      });
+      expect(qGrace.status).toBe('COMPLETED');
+      expect(qGrace.objectives[0].currentCount).toBe(2);
+      expect(qGrace.objectives[0].isCompleted).toBe(true);
+    });
+
+    it('revalidates course diversity limits when restoring revoked fact consumptions', async () => {
+      // 1. Grant Learner Hannah access to Math v1 and English v1
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${mathCourseId}/versions/${mathVersionId}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: hannahId })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/courses/${engCourseId}/versions/${engVersionId}/grants`)
+        .set('Cookie', ownerCookie)
+        .send({ userId: hannahId })
+        .expect(HttpStatus.CREATED);
+
+      // 2. Hannah enrolls
+      await request(app.getHttpServer())
+        .post(`/api/v1/learner/courses/${mathVersionId}/enroll`)
+        .set('Cookie', hannahCookie)
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/learner/courses/${engVersionId}/enroll`)
+        .set('Cookie', hannahCookie)
+        .expect(HttpStatus.CREATED);
+
+      // 3. Seed Global Quest with requireDistinctCourses: true for Hannah
+      const hannahQuest = await prisma.questInstance.create({
+        data: {
+          userId: hannahId,
+          questKey: 'hannah-polymath-revocation-revalidation',
+          templateId: 'COMPLETE_DISTINCT_ACTIVITIES',
+          title: 'Hannah Restoration Revalidation Quest',
+          scope: 'GLOBAL',
+          status: 'ACTIVE',
+          config: {
+            targetCount: 2,
+            requireDistinctCourses: true,
+          },
+          objectives: {
+            create: [
+              {
+                objectiveKey: 'complete_distinct_activities',
+                targetCount: 2,
+                currentCount: 0,
+                isCompleted: false,
+              },
+            ],
+          },
+        },
+        include: { objectives: true },
+      });
+
+      // 4. Hannah completes Math Video (Fact A)
+      const mathVideoRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', hannahCookie)
+        .send({
+          courseVersionId: mathVersionId,
+          blockInstanceId: mathVideoBlockId,
+          idempotencyKey: `run-hannah-math-video-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${mathVideoRun.body.id}/commands`)
+        .set('Cookie', hannahCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-hannah-math-vid-fin-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Fact A is consumed, progress = 1
+      const factA = await prisma.qualifyingFact.findFirstOrThrow({
+        where: { runId: mathVideoRun.body.id, factType: 'ACTIVITY_COMPLETED' },
+      });
+      const consumptionA = await prisma.questFactConsumption.findFirstOrThrow({
+        where: { factId: factA.id, questInstanceId: hannahQuest.id },
+      });
+      expect(consumptionA.status).toBe('CONSUMED');
+
+      let qHannah = await prisma.questInstance.findUniqueOrThrow({
+        where: { id: hannahQuest.id },
+        include: { objectives: true },
+      });
+      expect(qHannah.objectives[0].currentCount).toBe(1);
+
+      // 5. Simulate revocation of Fact A (e.g., via assessment or run correction)
+      await prisma.questFactConsumption.update({
+        where: { id: consumptionA.id },
+        data: { status: 'REVOKED' },
+      });
+      await prisma.questObjectiveProgress.update({
+        where: { id: hannahQuest.objectives[0].id },
+        data: { currentCount: 0 },
+      });
+
+      // 6. While Fact A is revoked, Hannah completes Math MCQ (Fact B, distinct block in SAME Math course)
+      const mathMcqRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', hannahCookie)
+        .send({
+          courseVersionId: mathVersionId,
+          blockInstanceId: mathMcqPracticeBlockId,
+          idempotencyKey: `run-hannah-math-mcq-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${mathMcqRun.body.id}/commands`)
+        .set('Cookie', hannahCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-hannah-math-mcq-fin-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Fact B is consumed! Math course now has 1 active consumed activity in hannahQuest
+      qHannah = await prisma.questInstance.findUniqueOrThrow({
+        where: { id: hannahQuest.id },
+        include: { objectives: true },
+      });
+      expect(qHannah.objectives[0].currentCount).toBe(1);
+
+      // 7. Now simulate re-qualification of Fact A (calling questEngine.processFact on Fact A)
+      const questEngine = app.get(QuestEngineService);
+      await prisma.$transaction(async (tx) => {
+        await questEngine.processFact(factA, tx);
+      });
+
+      // INVARIANT: Restoration REVALIDATES course diversity limits!
+      // Math course ALREADY has Fact B consumed (1/1 allowed).
+      // Therefore, revoked consumption A MUST NOT be restored to CONSUMED!
+      const checkConsumptionA = await prisma.questFactConsumption.findUniqueOrThrow({
+        where: { id: consumptionA.id },
+      });
+      expect(checkConsumptionA.status).toBe('REVOKED'); // MUST REMAIN REVOKED
+
+      qHannah = await prisma.questInstance.findUniqueOrThrow({
+        where: { id: hannahQuest.id },
+        include: { objectives: true },
+      });
+      expect(qHannah.status).toBe('ACTIVE');
+      expect(qHannah.objectives[0].currentCount).toBe(1); // MUST REMAIN 1, not 2
+
+      // 8. Hannah completes English Reading MCQ (different course)
+      const engRun = await request(app.getHttpServer())
+        .post('/api/v1/runs')
+        .set('Cookie', hannahCookie)
+        .send({
+          courseVersionId: engVersionId,
+          blockInstanceId: engMcqReadingBlockId,
+          idempotencyKey: `run-hannah-eng-mcq-${Date.now()}`,
+        })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/runs/${engRun.body.id}/commands`)
+        .set('Cookie', hannahCookie)
+        .send({
+          command: 'FINISH',
+          idempotencyKey: `cmd-hannah-eng-fin-${Date.now()}`,
+        })
+        .expect(HttpStatus.OK);
+
+      // Fact C from English course IS consumed, completing the quest
+      qHannah = await prisma.questInstance.findUniqueOrThrow({
+        where: { id: hannahQuest.id },
+        include: { objectives: true },
+      });
+      expect(qHannah.status).toBe('COMPLETED');
+      expect(qHannah.objectives[0].currentCount).toBe(2);
+      expect(qHannah.objectives[0].isCompleted).toBe(true);
     });
   });
 
