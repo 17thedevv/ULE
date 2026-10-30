@@ -246,4 +246,29 @@
      - Strict 5-tier lock hierarchy (`Grant FOR SHARE` -> `Run FOR UPDATE` -> `Advisory Lock` -> `Quest Instance FOR UPDATE (sorted ASC)` -> `Reward Append`) preventing deadlocks.
 - **Consequences**: Proven, concurrency-safe gamification and learner agency vertical slice. Verified via real PostgreSQL tests across 5 staged pull requests (PR #6 to PR #10) meeting Gates G1-G7.
 
+## ADR-013: Multi-Domain Proof, Domain-Agnostic Core Engines & Allowlisted Cloze ABP Extension
+
+- **Status**: Accepted (Phase 5 Proof)
+- **Context**: ULE must prove architectural versatility across disparate learning disciplines—demonstrated concretely with Mathematics (algebraic derivation, symbolic problem solving, video explanations) and English Language Learning (reading comprehension, syntax, vocabulary retrieval in context)—without compromising the frozen core stack or creating domain-specific branching (`if (domain === 'math')`) inside canonical Course, CourseVersion, Quest, or Learning Evidence engines.
+- **Decision**:
+  1. **Zero Domain Branching Invariant**:
+     - The core state models (`Course`, `CourseVersion`, `QuestInstance`, `QualifyingFact`, `ABRun`, `AssessmentResult`, `CourseEnrollment`, `CourseAccessGrant`) contain strictly zero domain-specific columns, flags, or table partitions.
+     - All domain-specific pedagogical semantics, schemas, sanitized learner projections, and deterministic evaluation logic are encapsulated entirely within versioned, allowlisted Activity Block Protocol (ABP) block manifests.
+  2. **Allowlisted Cloze Extension (`cloze`, v1.0.0)**:
+     - Implements `IBlockTypeDefinition` with full capabilities: `renderable: true`, `submittable: true`, `evaluatable: true`, `completable: true`, `runtimeExecutionSupported: true`.
+     - Supports 3 feedback policies: `IMMEDIATE_WITH_EXPLANATION`, `IMMEDIATE_CORRECTNESS_ONLY`, and `DEFERRED`.
+     - Configuration schema enforces structured placeholder syntax `{{blankKey}}` in `templateText`, non-empty `targetBlanks`, and author-defined `answerKey.blanks`.
+     - Sanitized learner projection (`sanitizeForLearner`) strictly strips educator answer keys, accepted variants, and explanations from learner-facing runtime payloads.
+  3. **Deterministic Language Normalization Boundary**:
+     - Language learning evaluation operates deterministically via token normalization (`normalizeClozeToken`):
+       - Unicode NFKC decomposition and canonical recomposition.
+       - Case folding (`toLowerCase()`).
+       - Whitespace trimming and multi-space condensation.
+       - Standard punctuation stripping while preserving intra-token semantic boundaries.
+     - Open-ended generative LLM text matching and non-deterministic speech evaluation are strictly excluded from the trusted core evaluation boundary.
+  4. **Cross-Domain Global Quest Ingestion**:
+     - `QuestEngineService.processFact` queries candidate instances across both course-scoped (`scope: 'COURSE', courseVersionId: fact.courseVersionId`) and global-scoped (`scope: 'GLOBAL', courseVersionId: null`) active quest instances.
+     - Global Quests consume qualified facts originating from distinct course versions, progressing unified platform milestones (e.g. `polymath-explorer` consuming Math video completion and English reading comprehension) with zero double-counting, replay idempotency, and full two-way reconciliation upon assessment corrections.
+- **Consequences**: Successfully proves that ULE supports radically different learning domains without architectural drift or engine fragmentation. Verified by 26 automated integration tests in `test/multi-domain-proof.integration.spec.ts` (100% pass) and 248 total integration tests across the ULE test suite.
+
 

@@ -62,6 +62,40 @@ export interface CodingConfig {
   expectedOutput?: string;
 }
 
+export interface ClozeBlank {
+  id: string;
+  blankKey: string;
+  hintText?: string;
+}
+
+export interface ClozeAnswerKey {
+  blanks: Record<string, string[]>;
+  explanation?: string;
+}
+
+export type ClozeFeedbackPolicy =
+  | 'IMMEDIATE_WITH_EXPLANATION'
+  | 'IMMEDIATE_CORRECTNESS_ONLY'
+  | 'DEFERRED';
+
+export interface ClozeConfig {
+  prompt: string;
+  templateText: string;
+  targetBlanks: ClozeBlank[];
+  answerKey: ClozeAnswerKey;
+  feedbackPolicy?: ClozeFeedbackPolicy;
+  allowHints?: boolean;
+}
+
+export function normalizeClozeToken(token: string): string {
+  if (!token || typeof token !== 'string') return '';
+  return token
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/[.,/#!$%^&*;:{}=\-_`~()?"'’]/g, '');
+}
+
 // ----------------------------------------------------
 // Learner-Facing Views (Protected Evaluator Data Removed)
 // ----------------------------------------------------
@@ -72,6 +106,14 @@ export interface MultipleChoiceLearnerView {
   allowHints: boolean;
   hintText?: string;
   feedbackPolicy: MultipleChoiceFeedbackPolicy;
+}
+
+export interface ClozeLearnerView {
+  prompt: string;
+  templateText: string;
+  targetBlanks: Array<{ id: string; blankKey: string }>;
+  allowHints: boolean;
+  feedbackPolicy: ClozeFeedbackPolicy;
 }
 
 export interface VideoLearnerView {
@@ -184,6 +226,7 @@ export interface SupportContextDto {
 
 export interface SubmitResponsePayload {
   selectedOptionId?: string;
+  answers?: Record<string, string>;
   usedHint?: boolean;
   response?: Record<string, unknown>;
 }

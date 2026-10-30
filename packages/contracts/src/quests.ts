@@ -30,11 +30,14 @@ export type QualifyingFactState =
 export interface CompleteDistinctActivitiesConfig {
   targetCount: number;
   requiredBlockInstanceIds?: string[];
+  requireDistinctCourses?: boolean;
+  maxPerCourse?: number;
 }
 
 export interface IndependentPracticeConfig {
   skillCode: string;
   targetCount: number;
+  minVerificationLevel?: 'UNVERIFIED_PRACTICE' | 'VERIFIED_ASSESSMENT';
 }
 
 export interface ExploreOpportunitiesConfig {

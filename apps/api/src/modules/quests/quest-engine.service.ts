@@ -21,11 +21,14 @@ export class QuestEngineService {
     fact: QualifyingFact,
     tx: Prisma.TransactionClient,
   ): Promise<void> {
-    // 1. Identify candidate active quest instances
+    // 1. Identify candidate active quest instances (both course-scoped and global-scoped)
     const candidateInstances = await tx.questInstance.findMany({
       where: {
         userId: fact.userId,
-        courseVersionId: fact.courseVersionId,
+        OR: [
+          { courseVersionId: fact.courseVersionId, scope: 'COURSE' },
+          { scope: 'GLOBAL', courseVersionId: null },
+        ],
         status: 'ACTIVE',
       },
       select: { id: true },
@@ -82,6 +85,19 @@ export class QuestEngineService {
 
         if (existingConsumption) {
           if (existingConsumption.status === 'REVOKED') {
+            // Revalidate course diversity and distinct block constraints before restoring
+            const canRestore = await this.validateDistinctActivityConstraints(
+              tx,
+              instance,
+              objective.id,
+              fact,
+              existingConsumption.id,
+            );
+
+            if (!canRestore) {
+              continue;
+            }
+
             // Re-activate this consumption upon re-qualification
             await tx.questFactConsumption.update({
               where: { id: existingConsumption.id },
@@ -114,21 +130,16 @@ export class QuestEngineService {
           continue;
         }
 
-        // Distinct block check: for Complete Distinct Activities, each block instance counts at most once
-        if (instance.templateId === 'COMPLETE_DISTINCT_ACTIVITIES') {
-          const alreadyConsumedBlock = await tx.questFactConsumption.findFirst({
-            where: {
-              questInstanceId: instance.id,
-              objectiveProgressId: objective.id,
-              status: 'CONSUMED',
-              fact: {
-                blockInstanceId: fact.blockInstanceId,
-              },
-            },
-          });
-          if (alreadyConsumedBlock) {
-            continue;
-          }
+        // Validate distinct block check & cross-course constraints for Complete Distinct Activities
+        const satisfiesConstraints = await this.validateDistinctActivityConstraints(
+          tx,
+          instance,
+          objective.id,
+          fact,
+        );
+
+        if (!satisfiesConstraints) {
+          continue;
         }
 
         // Record consumption atomically
@@ -183,7 +194,85 @@ export class QuestEngineService {
     }
   }
 
-  private evaluateObjectiveMatch(
+  /**
+   * Validates whether a fact satisfies the distinct-activity and course-diversity constraints
+   * for a COMPLETE_DISTINCT_ACTIVITIES objective, optionally excluding an existing consumption
+   * (e.g. when revalidating a REVOKED consumption for restoration).
+   *
+   * Course diversity is enforced by canonical courseId (via courseVersion.courseId)
+   * rather than only courseVersionId, preventing different versions of the same course
+   * from circumventing distinct course rules.
+   */
+  private async validateDistinctActivityConstraints(
+    tx: Prisma.TransactionClient,
+    instance: QuestInstance,
+    objectiveId: string,
+    fact: QualifyingFact,
+    excludeConsumptionId?: string,
+  ): Promise<boolean> {
+    if (instance.templateId !== 'COMPLETE_DISTINCT_ACTIVITIES') {
+      return true;
+    }
+
+    const config = instance.config as CompleteDistinctActivitiesConfig | null;
+
+    // Invariant 1: each distinct block instance counts at most once per objective
+    const alreadyConsumedBlock = await tx.questFactConsumption.findFirst({
+      where: {
+        questInstanceId: instance.id,
+        objectiveProgressId: objectiveId,
+        status: 'CONSUMED',
+        ...(excludeConsumptionId ? { id: { not: excludeConsumptionId } } : {}),
+        fact: {
+          blockInstanceId: fact.blockInstanceId,
+        },
+      },
+    });
+
+    if (alreadyConsumedBlock) {
+      return false;
+    }
+
+    // Invariant 2: Cross-course constraint (requireDistinctCourses or maxPerCourse)
+    // Enforced by canonical courseId rather than only courseVersionId
+    if (
+      config?.requireDistinctCourses === true ||
+      (typeof config?.maxPerCourse === 'number' && config.maxPerCourse > 0)
+    ) {
+      const maxAllowed = config.requireDistinctCourses === true ? 1 : config.maxPerCourse!;
+      const cv = await tx.courseVersion.findUnique({
+        where: { id: fact.courseVersionId },
+        select: { courseId: true },
+      });
+      const factCourseId = cv?.courseId;
+
+      const sameCourseConsumptions = await tx.questFactConsumption.count({
+        where: {
+          questInstanceId: instance.id,
+          objectiveProgressId: objectiveId,
+          status: 'CONSUMED',
+          ...(excludeConsumptionId ? { id: { not: excludeConsumptionId } } : {}),
+          fact: factCourseId
+            ? {
+                courseVersion: {
+                  courseId: factCourseId,
+                },
+              }
+            : {
+                courseVersionId: fact.courseVersionId,
+              },
+        },
+      });
+
+      if (sameCourseConsumptions >= maxAllowed) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  public evaluateObjectiveMatch(
     instance: QuestInstance,
     objectiveKey: string,
     fact: QualifyingFact,
@@ -218,6 +307,27 @@ export class QuestEngineService {
       if (config?.skillCode && config.skillCode !== fact.skillCode) {
         return false;
       }
+
+      // ADR-012/013 Invariant: Global Quests require verified evidence.
+      // Fail-closed: missing, empty, non-string, unverified, or unknown verification metadata is strictly rejected.
+      const metadata = fact.metadata as Record<string, unknown> | null;
+      if (instance.scope === 'GLOBAL') {
+        if (
+          !metadata ||
+          typeof metadata.verificationLevel !== 'string' ||
+          metadata.verificationLevel !== 'VERIFIED_ASSESSMENT' ||
+          metadata.provenance === 'SELF_REPORTED_INDEPENDENT'
+        ) {
+          return false;
+        }
+      }
+
+      if (config?.minVerificationLevel === 'VERIFIED_ASSESSMENT') {
+        if (!metadata || metadata.verificationLevel !== 'VERIFIED_ASSESSMENT') {
+          return false;
+        }
+      }
+
       return true;
     }
 
