@@ -64,6 +64,11 @@ model User {
   assessmentDefinitions     AssessmentDefinition[] @relation("UserAssessmentDefinitions")
   createdAssessmentVersions AssessmentVersion[]    @relation("UserCreatedAssessmentVersions")
 
+  // Phase 5.5 Exam Runtime relations
+  examAccessGrants        ExamAccessGrant[] @relation("LearnerExamGrants")
+  grantedExamAccessGrants ExamAccessGrant[] @relation("GrantedByExamCreator")
+  examAttempts            ExamAttempt[]     @relation("LearnerExamAttempts")
+
   @@map("users")
 }
 
@@ -1010,6 +1015,8 @@ model QuestionVersion {
 
   pinnedInItemRefs       AssessmentItemRef[]
   assessmentVersionItems AssessmentVersionItem[]
+  examResponses          ExamResponse[]
+  examItemGrades         ExamItemGrade[]
 
   @@unique([questionBankItemId, versionNumber])
   @@index([questionBankItemId])
@@ -1037,8 +1044,9 @@ model AssessmentDefinition {
   createdAt             DateTime           @default(now())
   updatedAt             DateTime           @updatedAt
 
-  sections AssessmentSection[]
-  versions AssessmentVersion[]
+  sections         AssessmentSection[]
+  versions         AssessmentVersion[]
+  examAccessGrants ExamAccessGrant[]
 
   @@index([ownerId])
   @@index([courseId])
@@ -1106,7 +1114,8 @@ model AssessmentVersion {
   createdBy              User                 @relation("UserCreatedAssessmentVersions", fields: [createdById], references: [id], onDelete: Restrict)
   createdAt              DateTime             @default(now())
 
-  items AssessmentVersionItem[]
+  items    AssessmentVersionItem[]
+  attempts ExamAttempt[]
 
   @@unique([assessmentDefinitionId, versionNumber])
   @@unique([assessmentDefinitionId, idempotencyKey])
@@ -1130,4 +1139,139 @@ model AssessmentVersionItem {
   @@index([assessmentVersionId])
   @@index([questionVersionId])
   @@map("assessment_version_items")
+}
+
+// -----------------------------------------------------------------------------
+// Phase 5.5: ExamAttempt Runtime, Timed Sessions & Deterministic Auto-Grading
+// -----------------------------------------------------------------------------
+
+enum ExamAttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+  GRADING
+  COMPLETED
+  ABANDONED
+  EXPIRED
+}
+
+enum ExamGradeAggregationStatus {
+  FULLY_GRADED
+  PARTIAL_PENDING_HUMAN
+}
+
+/// Explicit exam access grant for standalone assessments or custom enrollments.
+model ExamAccessGrant {
+  id                     String               @id @default(uuid())
+  assessmentDefinitionId String
+  assessmentDefinition   AssessmentDefinition @relation(fields: [assessmentDefinitionId], references: [id], onDelete: Cascade)
+  userId                 String
+  user                   User                 @relation("LearnerExamGrants", fields: [userId], references: [id], onDelete: Cascade)
+  grantedById            String
+  grantedBy              User                 @relation("GrantedByExamCreator", fields: [grantedById], references: [id], onDelete: Restrict)
+  status                 AccessGrantStatus    @default(ACTIVE)
+  revokedAt              DateTime?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  @@unique([assessmentDefinitionId, userId])
+  @@index([userId])
+  @@index([assessmentDefinitionId])
+  @@map("exam_access_grants")
+}
+
+/// Server-authoritative examination attempt tied to an immutable AssessmentVersion snapshot.
+model ExamAttempt {
+  id                  String            @id @default(uuid())
+  assessmentVersionId String
+  assessmentVersion   AssessmentVersion @relation(fields: [assessmentVersionId], references: [id], onDelete: Restrict)
+  learnerId           String
+  learner             User              @relation("LearnerExamAttempts", fields: [learnerId], references: [id], onDelete: Restrict)
+  attemptNumber       Int
+  status              ExamAttemptStatus @default(IN_PROGRESS)
+  idempotencyKey      String?
+  startedAt           DateTime          @default(now())
+  deadlineAt          DateTime?
+  submittedAt         DateTime?
+  completedAt         DateTime?
+  revision            Int               @default(1)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  responses ExamResponse[]
+  grade     ExamGrade?
+
+  @@unique([assessmentVersionId, learnerId, attemptNumber])
+  @@unique([assessmentVersionId, learnerId, idempotencyKey])
+  @@index([learnerId])
+  @@index([assessmentVersionId])
+  @@index([status])
+  @@map("exam_attempts")
+}
+
+/// Validated learner response payload for a specific published assessment item.
+model ExamResponse {
+  id                String          @id @default(uuid())
+  examAttemptId     String
+  examAttempt       ExamAttempt     @relation(fields: [examAttemptId], references: [id], onDelete: Cascade)
+  itemRefId         String
+  questionVersionId String
+  questionVersion   QuestionVersion @relation(fields: [questionVersionId], references: [id], onDelete: Restrict)
+  responsePayload   Json
+  revision          Int             @default(1)
+  savedAt           DateTime        @default(now())
+  isFinal           Boolean         @default(false)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([examAttemptId, itemRefId])
+  @@index([examAttemptId])
+  @@index([questionVersionId])
+  @@map("exam_responses")
+}
+
+/// Authoritative examination grade summary calculated upon submission.
+model ExamGrade {
+  id                 String                     @id @default(uuid())
+  examAttemptId      String                     @unique
+  examAttempt        ExamAttempt                @relation(fields: [examAttemptId], references: [id], onDelete: Cascade)
+  objectivePoints    Float                      @default(0)
+  pendingHumanPoints Float                      @default(0)
+  totalAwardedPoints Float                      @default(0)
+  maxPossiblePoints  Float
+  percentageScore    Float?
+  isPassing          Boolean?
+  aggregationStatus  ExamGradeAggregationStatus
+  evaluatorVersion   String                     @default("ule-exam-evaluator-v1")
+  evaluatedAt        DateTime                   @default(now())
+  isReleased         Boolean                    @default(false)
+  releasedAt         DateTime?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  itemGrades ExamItemGrade[]
+
+  @@index([examAttemptId])
+  @@map("exam_grades")
+}
+
+/// Granular item-level grade observation within an examination.
+model ExamItemGrade {
+  id                String          @id @default(uuid())
+  examGradeId       String
+  examGrade         ExamGrade       @relation(fields: [examGradeId], references: [id], onDelete: Cascade)
+  itemRefId         String
+  questionVersionId String
+  questionVersion   QuestionVersion @relation(fields: [questionVersionId], references: [id], onDelete: Restrict)
+  questionType      QuestionType
+  maxPoints         Float
+  awardedPoints     Float           @default(0)
+  isCorrect         Boolean         @default(false)
+  isPendingHuman    Boolean         @default(false)
+  evaluationDetails Json?
+  createdAt         DateTime        @default(now())
+
+  @@unique([examGradeId, itemRefId])
+  @@index([examGradeId])
+  @@index([questionVersionId])
+  @@map("exam_item_grades")
 }

@@ -6,11 +6,30 @@ import { QuestionBankService } from './question-bank.service';
 import { QuestionBankController } from './question-bank.controller';
 import { AssessmentsService } from './assessments.service';
 import { AssessmentsController } from './assessments.controller';
+import { DeterministicAutoGraderService } from './evaluators/deterministic-auto-grader.service';
+import { ExamAttemptsService } from './exam-attempts.service';
+import { ExamAttemptsController } from './exam-attempts.controller';
 
 @Module({
   imports: [PrismaModule, AuthModule],
-  controllers: [QuestionBankController, AssessmentsController],
-  providers: [QuestionTypesRegistry, QuestionBankService, AssessmentsService],
-  exports: [QuestionTypesRegistry, QuestionBankService, AssessmentsService],
+  controllers: [
+    QuestionBankController,
+    AssessmentsController,
+    ExamAttemptsController,
+  ],
+  providers: [
+    QuestionTypesRegistry,
+    QuestionBankService,
+    AssessmentsService,
+    DeterministicAutoGraderService,
+    ExamAttemptsService,
+  ],
+  exports: [
+    QuestionTypesRegistry,
+    QuestionBankService,
+    AssessmentsService,
+    DeterministicAutoGraderService,
+    ExamAttemptsService,
+  ],
 })
 export class AssessmentsModule {}
