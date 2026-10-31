@@ -14,6 +14,7 @@ import { MeModule } from './modules/me/me.module';
 import { PrismaModule } from './modules/prisma/prisma.module';
 import { SkillsModule } from './modules/skills/skills.module';
 import { QuestsModule } from './modules/quests/quests.module';
+import { AssessmentsModule } from './modules/assessments/assessments.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { QuestsModule } from './modules/quests/quests.module';
     McpModule,
     HealthModule,
     QuestsModule,
+    AssessmentsModule,
   ],
 })
 export class AppModule {}

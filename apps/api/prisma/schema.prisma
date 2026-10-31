@@ -58,6 +58,12 @@ model User {
   questInstances  QuestInstance[]    @relation("UserQuestInstances")
   qualifyingFacts QualifyingFact[]   @relation("UserQualifyingFacts")
 
+  // Phase 5.5 Assessment relations
+  questionBankItems         QuestionBankItem[]     @relation("UserQuestionBankItems")
+  createdQuestionVersions   QuestionVersion[]      @relation("UserCreatedQuestionVersions")
+  assessmentDefinitions     AssessmentDefinition[] @relation("UserAssessmentDefinitions")
+  createdAssessmentVersions AssessmentVersion[]    @relation("UserCreatedAssessmentVersions")
+
   @@map("users")
 }
 
@@ -134,6 +140,10 @@ model Course {
   versions     CourseVersion[]
   skills       CourseSkill[]
   accessGrants CourseAccessGrant[]
+
+  // Phase 5.5 Assessment relations
+  questionBankItems     QuestionBankItem[]     @relation("CourseQuestionBankItems")
+  assessmentDefinitions AssessmentDefinition[] @relation("CourseAssessmentDefinitions")
 
   @@index([ownerId])
   @@map("courses")
@@ -915,4 +925,209 @@ model QuestFactConsumption {
   @@index([questInstanceId])
   @@index([factId])
   @@map("quest_fact_consumptions")
+}
+
+// ----------------------------------------------------
+// Phase 5.5: Assessment & Examination Engine Foundation
+// ----------------------------------------------------
+
+enum QuestionType {
+  SINGLE_CHOICE
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+  CLOZE
+  SHORT_TEXT
+  NUMERIC
+  ESSAY
+  MATCHING
+  ORDERING
+}
+
+enum ExamFeedbackPolicy {
+  IMMEDIATE
+  ON_SUBMISSION
+  DEFERRED
+  MANUAL
+}
+
+enum ExamStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+/// Reusable Question Bank Item aggregate root owned by creator.
+model QuestionBankItem {
+  id                    String            @id @default(uuid())
+  ownerId               String
+  owner                 User              @relation("UserQuestionBankItems", fields: [ownerId], references: [id], onDelete: Cascade)
+  courseId              String?
+  course                Course?           @relation("CourseQuestionBankItems", fields: [courseId], references: [id], onDelete: SetNull)
+  type                  QuestionType
+  title                 String
+  prompt                String
+  content               Json
+  answerKey             Json?
+  rubric                Json?
+  config                Json?
+  defaultPoints         Float             @default(1.0)
+  skillCode             String?
+  difficulty            String?
+  tags                  String[]          @default([])
+  revision              Int               @default(1)
+  publishedVersionCount Int               @default(0)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  versions           QuestionVersion[]
+  assessmentItemRefs AssessmentItemRef[]
+
+  @@index([ownerId])
+  @@index([courseId])
+  @@index([type])
+  @@map("question_bank_items")
+}
+
+/// Immutable Question Version snapshot created upon publication.
+model QuestionVersion {
+  id                 String           @id @default(uuid())
+  questionBankItemId String
+  questionBankItem   QuestionBankItem @relation(fields: [questionBankItemId], references: [id], onDelete: Cascade)
+  versionNumber      Int
+  type               QuestionType
+  title              String
+  prompt             String
+  content            Json
+  answerKey          Json?
+  rubric             Json?
+  config             Json?
+  defaultPoints      Float
+  skillCode          String?
+  sourceRevision     Int
+  createdById        String
+  createdBy          User             @relation("UserCreatedQuestionVersions", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt          DateTime         @default(now())
+
+  pinnedInItemRefs       AssessmentItemRef[]
+  assessmentVersionItems AssessmentVersionItem[]
+
+  @@unique([questionBankItemId, versionNumber])
+  @@index([questionBankItemId])
+  @@index([createdById])
+  @@map("question_versions")
+}
+
+/// Draft Assessment Definition composed of sections and item references.
+model AssessmentDefinition {
+  id                    String             @id @default(uuid())
+  ownerId               String
+  owner                 User               @relation("UserAssessmentDefinitions", fields: [ownerId], references: [id], onDelete: Cascade)
+  courseId              String?
+  course                Course?            @relation("CourseAssessmentDefinitions", fields: [courseId], references: [id], onDelete: SetNull)
+  title                 String
+  description           String?
+  instructions          String?
+  durationMinutes       Int?
+  passingScore          Float?
+  maxAttempts           Int?
+  feedbackPolicy        ExamFeedbackPolicy @default(ON_SUBMISSION)
+  status                ExamStatus         @default(DRAFT)
+  revision              Int                @default(1)
+  publishedVersionCount Int                @default(0)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  sections AssessmentSection[]
+  versions AssessmentVersion[]
+
+  @@index([ownerId])
+  @@index([courseId])
+  @@map("assessment_definitions")
+}
+
+/// Section within an Assessment Definition for grouping and ordering items.
+model AssessmentSection {
+  id                     String               @id @default(uuid())
+  assessmentDefinitionId String
+  assessmentDefinition   AssessmentDefinition @relation(fields: [assessmentDefinitionId], references: [id], onDelete: Cascade)
+  title                  String
+  description            String?
+  orderIndex             Int                  @default(0)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  items AssessmentItemRef[]
+
+  @@index([assessmentDefinitionId])
+  @@index([assessmentDefinitionId, orderIndex])
+  @@map("assessment_sections")
+}
+
+/// Reference to a QuestionBankItem within an AssessmentSection.
+model AssessmentItemRef {
+  id                      String             @id @default(uuid())
+  sectionId               String
+  section                 AssessmentSection  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  questionBankItemId      String
+  questionBankItem        QuestionBankItem   @relation(fields: [questionBankItemId], references: [id], onDelete: Restrict)
+  pinnedQuestionVersionId String?
+  pinnedQuestionVersion   QuestionVersion?   @relation(fields: [pinnedQuestionVersionId], references: [id], onDelete: SetNull)
+  orderIndex              Int                @default(0)
+  points                  Float              @default(1.0)
+  isRequired              Boolean            @default(true)
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+
+  @@index([sectionId])
+  @@index([sectionId, orderIndex])
+  @@index([questionBankItemId])
+  @@map("assessment_item_refs")
+}
+
+/// Immutable Assessment Version snapshot (published exam blueprint).
+model AssessmentVersion {
+  id                     String               @id @default(uuid())
+  assessmentDefinitionId String
+  assessmentDefinition   AssessmentDefinition @relation(fields: [assessmentDefinitionId], references: [id], onDelete: Cascade)
+  versionNumber          Int
+  idempotencyKey         String?
+  title                  String
+  description            String?
+  instructions           String?
+  durationMinutes        Int?
+  passingScore           Float?
+  maxAttempts            Int?
+  feedbackPolicy         ExamFeedbackPolicy
+  totalPoints            Float
+  itemCount              Int
+  snapshot               Json
+  draftRevision          Int
+  createdById            String
+  createdBy              User                 @relation("UserCreatedAssessmentVersions", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt              DateTime             @default(now())
+
+  items AssessmentVersionItem[]
+
+  @@unique([assessmentDefinitionId, versionNumber])
+  @@unique([assessmentDefinitionId, idempotencyKey])
+  @@index([assessmentDefinitionId])
+  @@index([createdById])
+  @@index([idempotencyKey])
+  @@map("assessment_versions")
+}
+
+/// Relational integrity linkage between an AssessmentVersion and pinned QuestionVersions.
+model AssessmentVersionItem {
+  id                  String            @id @default(uuid())
+  assessmentVersionId String
+  assessmentVersion   AssessmentVersion @relation(fields: [assessmentVersionId], references: [id], onDelete: Cascade)
+  questionVersionId   String
+  questionVersion     QuestionVersion   @relation(fields: [questionVersionId], references: [id], onDelete: Restrict)
+  orderIndex          Int
+  points              Float
+
+  @@unique([assessmentVersionId, questionVersionId, orderIndex])
+  @@index([assessmentVersionId])
+  @@index([questionVersionId])
+  @@map("assessment_version_items")
 }
