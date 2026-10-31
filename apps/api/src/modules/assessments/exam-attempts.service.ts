@@ -100,6 +100,8 @@ type GradeWithItemGrades = ExamGrade & {
   itemGrades?: ExamItemGrade[];
 };
 
+export const EXAM_DEADLINE_GRACE_MS = 15_000;
+
 @Injectable()
 export class ExamAttemptsService {
   private readonly logger = new Logger(ExamAttemptsService.name);
@@ -109,6 +111,45 @@ export class ExamAttemptsService {
     private readonly questionTypesRegistry: QuestionTypesRegistry,
     private readonly autoGrader: DeterministicAutoGraderService,
   ) {}
+
+  /**
+   * Authoritatively checks whether an examination deadline has been exceeded
+   * beyond the unified transmission grace period (15s).
+   */
+  isAttemptOverdue(deadlineAt: Date | null, now = new Date()): boolean {
+    if (!deadlineAt) return false;
+    return now.getTime() > deadlineAt.getTime() + EXAM_DEADLINE_GRACE_MS;
+  }
+
+  /**
+   * Authoritative conditional lazy expiration reconciliation.
+   * Guarantees that terminal states (COMPLETED, GRADING, SUBMITTED, ABANDONED)
+   * can NEVER be overwritten by an expiration transition.
+   * Only transitions if status is currently 'IN_PROGRESS'.
+   */
+  async reconcileExpirationIfOverdue(
+    attemptId: string,
+    deadlineAt: Date | null,
+    now = new Date(),
+    client: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<{ isExpired: boolean }> {
+    if (!this.isAttemptOverdue(deadlineAt, now)) {
+      return { isExpired: false };
+    }
+
+    const result = await client.examAttempt.updateMany({
+      where: {
+        id: attemptId,
+        status: 'IN_PROGRESS',
+      },
+      data: {
+        status: 'EXPIRED',
+        completedAt: deadlineAt,
+      },
+    });
+
+    return { isExpired: result.count > 0 };
+  }
 
   /**
    * Starts or resumes an examination attempt for a learner.
@@ -178,15 +219,14 @@ export class ExamAttemptsService {
       // 5. Check if there is an active in-progress attempt
       const activeAttempt = existingAttempts.find((a) => a.status === 'IN_PROGRESS');
       if (activeAttempt) {
-        // Lazy expiration check
-        if (activeAttempt.deadlineAt && activeAttempt.deadlineAt < now) {
-          await tx.examAttempt.update({
-            where: { id: activeAttempt.id },
-            data: {
-              status: 'EXPIRED',
-              completedAt: activeAttempt.deadlineAt,
-            },
-          });
+        // Authoritative lazy expiration check using shared grace and conditional update
+        if (this.isAttemptOverdue(activeAttempt.deadlineAt, now)) {
+          await this.reconcileExpirationIfOverdue(
+            activeAttempt.id,
+            activeAttempt.deadlineAt,
+            now,
+            tx,
+          );
           activeAttempt.status = 'EXPIRED';
           activeAttempt.completedAt = activeAttempt.deadlineAt;
         } else {
@@ -263,16 +303,16 @@ export class ExamAttemptsService {
       );
     }
 
-    // Lazy expiration reconciliation
-    if (attempt.status === 'IN_PROGRESS' && attempt.deadlineAt && attempt.deadlineAt < new Date()) {
-      const expired = await this.prisma.examAttempt.update({
-        where: { id: attemptId },
-        data: {
-          status: 'EXPIRED',
-          completedAt: attempt.deadlineAt,
-        },
-      });
-      return this.mapAttemptToDto(expired);
+    // Authoritative atomic conditional lazy expiration reconciliation
+    if (attempt.status === 'IN_PROGRESS') {
+      const now = new Date();
+      if (this.isAttemptOverdue(attempt.deadlineAt, now)) {
+        await this.reconcileExpirationIfOverdue(attemptId, attempt.deadlineAt, now);
+        const fresh = await this.prisma.examAttempt.findUniqueOrThrow({
+          where: { id: attemptId },
+        });
+        return this.mapAttemptToDto(fresh);
+      }
     }
 
     return this.mapAttemptToDto(attempt);
@@ -307,16 +347,16 @@ export class ExamAttemptsService {
       );
     }
 
-    // Lazy expiration check
-    if (attempt.status === 'IN_PROGRESS' && attempt.deadlineAt && attempt.deadlineAt < new Date()) {
-      await this.prisma.examAttempt.update({
-        where: { id: attemptId },
-        data: {
-          status: 'EXPIRED',
-          completedAt: attempt.deadlineAt,
-        },
-      });
-      attempt.status = 'EXPIRED';
+    // Authoritative atomic conditional lazy expiration check
+    if (attempt.status === 'IN_PROGRESS') {
+      const now = new Date();
+      if (this.isAttemptOverdue(attempt.deadlineAt, now)) {
+        await this.reconcileExpirationIfOverdue(attemptId, attempt.deadlineAt, now);
+        const fresh = await this.prisma.examAttempt.findUniqueOrThrow({
+          where: { id: attemptId },
+        });
+        attempt.status = fresh.status;
+      }
     }
 
     const snapshot = attempt.assessmentVersion.snapshot as unknown as BlueprintSnapshotPayload;
@@ -445,14 +485,13 @@ export class ExamAttemptsService {
       }
 
       const now = new Date();
-      if (lockedAttempt.deadlineAt && now > lockedAttempt.deadlineAt) {
-        await tx.examAttempt.update({
-          where: { id: attemptId },
-          data: {
-            status: 'EXPIRED',
-            completedAt: lockedAttempt.deadlineAt,
-          },
-        });
+      if (this.isAttemptOverdue(lockedAttempt.deadlineAt, now)) {
+        await this.reconcileExpirationIfOverdue(
+          attemptId,
+          lockedAttempt.deadlineAt,
+          now,
+          tx,
+        );
         return { expired: true as const };
       }
 
@@ -628,19 +667,15 @@ export class ExamAttemptsService {
 
       const now = new Date();
 
-      // 3. Deadline check (with a 15-second network grace period)
+      // 3. Deadline check (with unified 15-second network grace period)
       // Commit the EXPIRED state sustainably inside the transaction before returning
-      if (
-        freshAttempt.deadlineAt &&
-        now.getTime() > freshAttempt.deadlineAt.getTime() + 15000
-      ) {
-        await tx.examAttempt.update({
-          where: { id: attemptId },
-          data: {
-            status: 'EXPIRED',
-            completedAt: freshAttempt.deadlineAt,
-          },
-        });
+      if (this.isAttemptOverdue(freshAttempt.deadlineAt, now)) {
+        await this.reconcileExpirationIfOverdue(
+          attemptId,
+          freshAttempt.deadlineAt,
+          now,
+          tx,
+        );
         return { expired: true as const };
       }
 

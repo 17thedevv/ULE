@@ -822,6 +822,166 @@ describe('Phase 5.5: ExamAttempt Runtime, Timed Sessions & Deterministic Auto-Gr
       });
       expect(dbAttempt?.status).toBe('EXPIRED');
     });
+
+    it('preserves IN_PROGRESS status and permits valid submission when reading within the 15-second grace window', async () => {
+      // 1. Create an assessment for testing the 15-second grace window
+      const graceAss = await request(app.getHttpServer())
+        .post('/api/v1/assessments')
+        .set('Cookie', aliceCookie)
+        .send({
+          title: 'Grace Window Expiration Test',
+          durationMinutes: 1,
+          feedbackPolicy: 'ON_SUBMISSION',
+        })
+        .expect(HttpStatus.CREATED);
+
+      const sec = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${graceAss.body.id}/sections`)
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Sec 1' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${graceAss.body.id}/sections/${sec.body.id}/items`)
+        .set('Cookie', aliceCookie)
+        .send({ questionBankItemId: mcqQuestionId, points: 5.0 })
+        .expect(HttpStatus.CREATED);
+
+      const pub = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${graceAss.body.id}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'gate-c-grace-pub-1' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${graceAss.body.id}/access-grants`)
+        .set('Cookie', aliceCookie)
+        .send({ userId: charlieId })
+        .expect(HttpStatus.CREATED);
+
+      const att = await request(app.getHttpServer())
+        .post(`/api/v1/exams/${pub.body.id}/attempts`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.CREATED);
+
+      const attemptId = att.body.id;
+
+      // Deadline passed 5 seconds ago (within the 15-second grace period)
+      await prisma.examAttempt.update({
+        where: { id: attemptId },
+        data: {
+          deadlineAt: new Date(Date.now() - 5000),
+          status: 'IN_PROGRESS',
+        },
+      });
+
+      // Reading attempt metadata or questions during grace must NOT prematurely expire it
+      const readRes = await request(app.getHttpServer())
+        .get(`/api/v1/exam-attempts/${attemptId}`)
+        .set('Cookie', charlieCookie)
+        .expect(HttpStatus.OK);
+
+      expect(readRes.body.status).toBe('IN_PROGRESS');
+
+      const qRes = await request(app.getHttpServer())
+        .get(`/api/v1/exam-attempts/${attemptId}/questions`)
+        .set('Cookie', charlieCookie)
+        .expect(HttpStatus.OK);
+
+      expect(qRes.body.status).toBe('IN_PROGRESS');
+
+      // Learner is allowed to submit within the grace period -> HTTP 200 OK
+      const subRes = await request(app.getHttpServer())
+        .post(`/api/v1/exam-attempts/${attemptId}/submit`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.OK);
+
+      expect(subRes.body.status).toBe('COMPLETED');
+      expect(subRes.body.isReleased).toBe(true);
+
+      const finalDb = await prisma.examAttempt.findUnique({
+        where: { id: attemptId },
+      });
+      expect(finalDb?.status).toBe('COMPLETED');
+    });
+
+    it('ensures lazy expiration never overwrites COMPLETED attempts during concurrent read and submit', async () => {
+      // 1. Create an assessment for concurrent GET vs Submit test
+      const conAss = await request(app.getHttpServer())
+        .post('/api/v1/assessments')
+        .set('Cookie', aliceCookie)
+        .send({
+          title: 'Concurrent Read vs Submit Non-Clobbering Test',
+          durationMinutes: 1,
+          feedbackPolicy: 'ON_SUBMISSION',
+        })
+        .expect(HttpStatus.CREATED);
+
+      const sec = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${conAss.body.id}/sections`)
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Sec 1' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${conAss.body.id}/sections/${sec.body.id}/items`)
+        .set('Cookie', aliceCookie)
+        .send({ questionBankItemId: mcqQuestionId, points: 5.0 })
+        .expect(HttpStatus.CREATED);
+
+      const pub = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${conAss.body.id}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'gate-c-non-clobber-pub' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${conAss.body.id}/access-grants`)
+        .set('Cookie', aliceCookie)
+        .send({ userId: charlieId })
+        .expect(HttpStatus.CREATED);
+
+      const att = await request(app.getHttpServer())
+        .post(`/api/v1/exams/${pub.body.id}/attempts`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.CREATED);
+
+      const attemptId = att.body.id;
+
+      // Submit attempt so that it transitions to COMPLETED
+      const submitRes = await request(app.getHttpServer())
+        .post(`/api/v1/exam-attempts/${attemptId}/submit`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.OK);
+
+      expect(submitRes.body.status).toBe('COMPLETED');
+
+      // Now simulate a late read where deadline was 1 hour ago
+      await prisma.examAttempt.update({
+        where: { id: attemptId },
+        data: { deadlineAt: new Date(Date.now() - 3600000) },
+      });
+
+      // GET attempt must return COMPLETED and must NEVER overwrite status to EXPIRED
+      const readRes = await request(app.getHttpServer())
+        .get(`/api/v1/exam-attempts/${attemptId}`)
+        .set('Cookie', charlieCookie)
+        .expect(HttpStatus.OK);
+
+      expect(readRes.body.status).toBe('COMPLETED');
+
+      // Verify in DB that status is STILL COMPLETED and grade is intact
+      const dbAttempt = await prisma.examAttempt.findUnique({
+        where: { id: attemptId },
+        include: { grade: true },
+      });
+      expect(dbAttempt?.status).toBe('COMPLETED');
+      expect(dbAttempt?.grade).toBeDefined();
+    });
   });
 
   // ===========================================================================
