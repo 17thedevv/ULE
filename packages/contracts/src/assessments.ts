@@ -380,3 +380,115 @@ export interface SanitizedLearnerAssessmentPreviewDto {
     items: SanitizedLearnerQuestionPreviewDto[];
   }>;
 }
+
+// ----------------------------------------------------
+// Phase 5.5: ExamAttempt Runtime & Grading Contracts
+// ----------------------------------------------------
+
+export type ExamAttemptStatus =
+  | 'IN_PROGRESS'
+  | 'SUBMITTED'
+  | 'GRADING'
+  | 'COMPLETED'
+  | 'ABANDONED'
+  | 'EXPIRED';
+
+export type ExamGradeAggregationStatus =
+  | 'FULLY_GRADED'
+  | 'PARTIAL_PENDING_HUMAN';
+
+export interface StartExamAttemptDto {
+  idempotencyKey?: string;
+}
+
+export interface ExamAttemptDto {
+  id: string;
+  assessmentVersionId: string;
+  learnerId: string;
+  attemptNumber: number;
+  status: ExamAttemptStatus;
+  idempotencyKey?: string | null;
+  startedAt: string;
+  deadlineAt: string | null;
+  submittedAt: string | null;
+  completedAt: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SaveExamResponseDto {
+  responsePayload: Record<string, unknown>;
+  expectedRevision?: number;
+}
+
+export interface ExamResponseDto {
+  id: string;
+  examAttemptId: string;
+  itemRefId: string;
+  questionVersionId: string;
+  responsePayload: Record<string, unknown>;
+  revision: number;
+  savedAt: string;
+  isFinal: boolean;
+}
+
+export interface SubmitExamAttemptDto {
+  idempotencyKey?: string;
+}
+
+export interface ExamItemGradeDto {
+  id: string;
+  itemRefId: string;
+  questionVersionId: string;
+  questionType: QuestionType;
+  maxPoints: number;
+  awardedPoints: number;
+  isCorrect: boolean;
+  isPendingHuman: boolean;
+  evaluationDetails?: Record<string, unknown> | null;
+}
+
+export interface ExamGradeDto {
+  id: string;
+  examAttemptId: string;
+  objectivePoints: number;
+  pendingHumanPoints: number;
+  totalAwardedPoints: number;
+  maxPossiblePoints: number;
+  percentageScore: number;
+  isPassing: boolean;
+  aggregationStatus: ExamGradeAggregationStatus;
+  evaluatorVersion: string;
+  evaluatedAt: string;
+  isReleased: boolean;
+  releasedAt: string | null;
+  itemGrades?: ExamItemGradeDto[];
+}
+
+export interface ExamResultSummaryDto {
+  attemptId: string;
+  status: ExamAttemptStatus;
+  startedAt: string;
+  submittedAt: string | null;
+  deadlineAt: string | null;
+  feedbackPolicy: ExamFeedbackPolicy;
+  isReleased: boolean;
+  releasedAt: string | null;
+  notice?: string;
+  grade?: ExamGradeDto;
+}
+
+export interface GrantExamAccessDto {
+  userId: string;
+}
+
+export interface ExamAccessGrantDto {
+  id: string;
+  assessmentDefinitionId: string;
+  userId: string;
+  grantedById: string;
+  status: 'ACTIVE' | 'REVOKED';
+  revokedAt: string | null;
+  createdAt: string;
+}
