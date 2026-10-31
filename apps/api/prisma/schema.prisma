@@ -69,6 +69,10 @@ model User {
   grantedExamAccessGrants ExamAccessGrant[] @relation("GrantedByExamCreator")
   examAttempts            ExamAttempt[]     @relation("LearnerExamAttempts")
 
+  // Phase 5.5 Human Grading & Appeals relations
+  learnerAppeals          ExamGradeAppeal[] @relation("LearnerExamAppeals")
+  reviewedAppeals         ExamGradeAppeal[] @relation("ReviewerExamAppeals")
+
   @@map("users")
 }
 
@@ -1199,6 +1203,7 @@ model ExamAttempt {
 
   responses ExamResponse[]
   grade     ExamGrade?
+  appeals   ExamGradeAppeal[]
 
   @@unique([assessmentVersionId, learnerId, attemptNumber])
   @@unique([assessmentVersionId, learnerId, idempotencyKey])
@@ -1245,10 +1250,12 @@ model ExamGrade {
   evaluatedAt        DateTime                   @default(now())
   isReleased         Boolean                    @default(false)
   releasedAt         DateTime?
+  revision           Int                        @default(1)
   createdAt          DateTime                   @default(now())
   updatedAt          DateTime                   @updatedAt
 
   itemGrades ExamItemGrade[]
+  revisions  ExamGradeRevision[]
 
   @@index([examAttemptId])
   @@map("exam_grades")
@@ -1268,10 +1275,110 @@ model ExamItemGrade {
   isCorrect         Boolean         @default(false)
   isPendingHuman    Boolean         @default(false)
   evaluationDetails Json?
+  revision          Int             @default(1)
   createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  revisions ExamHumanGradeRevision[]
+  appeals   ExamGradeAppeal[]
 
   @@unique([examGradeId, itemRefId])
   @@index([examGradeId])
   @@index([questionVersionId])
   @@map("exam_item_grades")
+}
+
+// ----------------------------------------------------
+// Phase 5.5: Human Rubric Grading, Revisions & Appeals
+// ----------------------------------------------------
+
+enum ExamGradeRevisionEventType {
+  INITIAL_EVALUATION
+  CORRECTION
+  APPEAL_RESOLUTION
+  UNANSWERED_DISPOSITION
+}
+
+enum ExamAppealStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED_UPHELD
+  RESOLVED_CHANGED
+  REJECTED
+  WITHDRAWN
+}
+
+/// Append-only audit ledger for individual human rubric evaluations and corrections.
+model ExamHumanGradeRevision {
+  id                    String                     @id @default(uuid())
+  examItemGradeId       String
+  examItemGrade         ExamItemGrade              @relation(fields: [examItemGradeId], references: [id], onDelete: Cascade)
+  revision              Int
+  actorId               String
+  eventType             ExamGradeRevisionEventType @default(INITIAL_EVALUATION)
+  previousAwardedPoints Float                      @default(0)
+  newAwardedPoints      Float                      @default(0)
+  criterionScores       Json?
+  comments              String?
+  reason                String?
+  idempotencyKey        String?
+  createdAt             DateTime                   @default(now())
+
+  @@unique([examItemGradeId, revision])
+  @@unique([examItemGradeId, idempotencyKey])
+  @@index([examItemGradeId])
+  @@index([actorId])
+  @@map("exam_human_grade_revisions")
+}
+
+/// Append-only audit ledger for examination aggregate grade versions.
+model ExamGradeRevision {
+  id                    String                     @id @default(uuid())
+  examGradeId           String
+  examGrade             ExamGrade                  @relation(fields: [examGradeId], references: [id], onDelete: Cascade)
+  revision              Int
+  actorId               String
+  eventType             ExamGradeRevisionEventType @default(INITIAL_EVALUATION)
+  previousTotalPoints   Float                      @default(0)
+  newTotalPoints        Float                      @default(0)
+  previousPercentage    Float?
+  newPercentage         Float?
+  previousPassingStatus Boolean?
+  newPassingStatus      Boolean?
+  reason                String?
+  idempotencyKey        String?
+  createdAt             DateTime                   @default(now())
+
+  @@unique([examGradeId, revision])
+  @@unique([examGradeId, idempotencyKey])
+  @@index([examGradeId])
+  @@index([actorId])
+  @@map("exam_grade_revisions")
+}
+
+/// Learner-initiated grade appeals and resolution workflow.
+model ExamGradeAppeal {
+  id                         String           @id @default(uuid())
+  examAttemptId              String
+  examAttempt                ExamAttempt      @relation(fields: [examAttemptId], references: [id], onDelete: Cascade)
+  examItemGradeId            String?
+  examItemGrade              ExamItemGrade?   @relation(fields: [examItemGradeId], references: [id], onDelete: Cascade)
+  learnerId                  String
+  learner                    User             @relation("LearnerExamAppeals", fields: [learnerId], references: [id], onDelete: Restrict)
+  status                     ExamAppealStatus @default(OPEN)
+  reason                     String
+  gradeRevisionAtSubmission Int              @default(1)
+  reviewerId                 String?
+  reviewer                   User?            @relation("ReviewerExamAppeals", fields: [reviewerId], references: [id], onDelete: Restrict)
+  reviewerNotes              String?
+  resolution                 String?
+  resolvedAt                 DateTime?
+  createdAt                  DateTime         @default(now())
+  updatedAt                  DateTime         @updatedAt
+
+  @@index([examAttemptId])
+  @@index([examItemGradeId])
+  @@index([learnerId])
+  @@index([status])
+  @@map("exam_grade_appeals")
 }

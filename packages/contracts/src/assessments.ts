@@ -492,3 +492,131 @@ export interface ExamAccessGrantDto {
   revokedAt: string | null;
   createdAt: string;
 }
+
+// ----------------------------------------------------
+// Phase 5.5: Human Rubric Grading, Revisions & Appeals
+// ----------------------------------------------------
+
+export type ExamGradeRevisionEventType =
+  | 'INITIAL_EVALUATION'
+  | 'CORRECTION'
+  | 'APPEAL_RESOLUTION'
+  | 'UNANSWERED_DISPOSITION';
+
+export type ExamAppealStatus =
+  | 'OPEN'
+  | 'UNDER_REVIEW'
+  | 'RESOLVED_UPHELD'
+  | 'RESOLVED_CHANGED'
+  | 'REJECTED'
+  | 'WITHDRAWN';
+
+export interface RubricCriterionEvaluationInput {
+  criterionId: string;
+  score: number;
+  comment?: string;
+}
+
+export interface EvaluateExamItemDto {
+  criterionScores?: RubricCriterionEvaluationInput[];
+  awardedPoints?: number;
+  feedback?: string;
+  idempotencyKey?: string;
+  expectedRevision?: number;
+}
+
+export interface CorrectExamItemGradeDto {
+  criterionScores?: RubricCriterionEvaluationInput[];
+  awardedPoints?: number;
+  reason: string;
+  feedback?: string;
+  idempotencyKey?: string;
+  expectedRevision: number;
+}
+
+export interface FinalizeExamGradingDto {
+  idempotencyKey?: string;
+}
+
+export interface CreateExamAppealDto {
+  examItemGradeId?: string;
+  reason: string;
+}
+
+export interface ResolveExamAppealDto {
+  resolution: 'RESOLVED_UPHELD' | 'RESOLVED_CHANGED' | 'REJECTED';
+  reviewerNotes: string;
+  awardedPoints?: number;
+  criterionScores?: RubricCriterionEvaluationInput[];
+  correctionReason?: string;
+  idempotencyKey?: string;
+}
+
+export interface ExamHumanGradeRevisionDto {
+  id: string;
+  examItemGradeId: string;
+  revision: number;
+  actorId: string;
+  eventType: ExamGradeRevisionEventType;
+  previousAwardedPoints: number;
+  newAwardedPoints: number;
+  criterionScores?: Record<string, unknown> | null;
+  comments?: string | null;
+  reason?: string | null;
+  createdAt: string;
+}
+
+export interface ExamGradeRevisionDto {
+  id: string;
+  examGradeId: string;
+  revision: number;
+  actorId: string;
+  eventType: ExamGradeRevisionEventType;
+  previousTotalPoints: number;
+  newTotalPoints: number;
+  previousPercentage: number | null;
+  newPercentage: number | null;
+  previousPassingStatus: boolean | null;
+  newPassingStatus: boolean | null;
+  reason?: string | null;
+  createdAt: string;
+}
+
+export interface ExamGradeAppealDto {
+  id: string;
+  examAttemptId: string;
+  examItemGradeId: string | null;
+  learnerId: string;
+  status: ExamAppealStatus;
+  reason: string;
+  gradeRevisionAtSubmission: number;
+  reviewerId: string | null;
+  reviewerNotes: string | null;
+  resolution: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExamGradingQueuePendingItemDto {
+  itemGradeId: string;
+  itemRefId: string;
+  questionVersionId: string;
+  questionType: QuestionType;
+  maxPoints: number;
+  submittedResponse: Record<string, unknown> | null;
+  rubric?: EssayRubric | null;
+  revision: number;
+}
+
+export interface ExamGradingQueueItemDto {
+  attemptId: string;
+  assessmentVersionId: string;
+  assessmentTitle: string;
+  learnerId: string;
+  learnerName: string;
+  submittedAt: string | null;
+  pendingItemCount: number;
+  pendingItems: ExamGradingQueuePendingItemDto[];
+}
+
