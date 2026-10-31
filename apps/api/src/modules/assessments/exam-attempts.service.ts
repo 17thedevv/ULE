@@ -411,64 +411,74 @@ export class ExamAttemptsService {
     userId: string,
     dto: SaveExamResponseDto,
   ): Promise<ExamResponseDto> {
-    const attempt = await this.prisma.examAttempt.findUnique({
-      where: { id: attemptId },
-      include: {
-        assessmentVersion: true,
-      },
-    });
+    const result = await this.prisma.$transaction(async (tx) => {
+      // 1. Serialization lock on attempt root to serialize with submitAttempt
+      const [lockedAttempt] = await tx.$queryRaw<
+        Array<{
+          id: string;
+          status: string;
+          deadlineAt: Date | null;
+          learnerId: string;
+          assessmentVersionId: string;
+        }>
+      >`
+        SELECT id, status, "deadlineAt", "learnerId", "assessmentVersionId"
+        FROM exam_attempts
+        WHERE id = ${attemptId}
+        FOR UPDATE
+      `;
 
-    if (!attempt) {
-      throw new NotFoundException(`ExamAttempt '${attemptId}' not found.`);
-    }
-
-    if (attempt.learnerId !== userId) {
-      throw new ForbiddenException(
-        `Only the assigned learner can save responses for ExamAttempt '${attemptId}'.`,
-      );
-    }
-
-    if (attempt.status !== 'IN_PROGRESS') {
-      throw new BadRequestException(
-        `Cannot save responses for attempt with status '${attempt.status}'.`,
-      );
-    }
-
-    const now = new Date();
-    if (attempt.deadlineAt && now > attempt.deadlineAt) {
-      await this.prisma.examAttempt.update({
-        where: { id: attemptId },
-        data: {
-          status: 'EXPIRED',
-          completedAt: attempt.deadlineAt,
-        },
-      });
-      throw new BadRequestException(
-        'Examination deadline has expired. Responses are no longer accepted.',
-      );
-    }
-
-    // Locate question item in blueprint snapshot to resolve questionVersionId
-    const snapshot = attempt.assessmentVersion.snapshot as unknown as BlueprintSnapshotPayload;
-    let targetItem: SnapshotItemPayload | null = null;
-
-    for (const s of snapshot.sections || []) {
-      for (const item of s.items || []) {
-        if (item.id === itemId) {
-          targetItem = item;
-          break;
-        }
+      if (!lockedAttempt) {
+        throw new NotFoundException(`ExamAttempt '${attemptId}' not found.`);
       }
-      if (targetItem) break;
-    }
 
-    if (!targetItem) {
-      throw new NotFoundException(
-        `Item '${itemId}' not found in examination blueprint snapshot.`,
-      );
-    }
+      if (lockedAttempt.learnerId !== userId) {
+        throw new ForbiddenException(
+          `Only the assigned learner can save responses for ExamAttempt '${attemptId}'.`,
+        );
+      }
 
-    return this.prisma.$transaction(async (tx) => {
+      if (lockedAttempt.status !== 'IN_PROGRESS') {
+        throw new BadRequestException(
+          `Cannot save responses for attempt with status '${lockedAttempt.status}'.`,
+        );
+      }
+
+      const now = new Date();
+      if (lockedAttempt.deadlineAt && now > lockedAttempt.deadlineAt) {
+        await tx.examAttempt.update({
+          where: { id: attemptId },
+          data: {
+            status: 'EXPIRED',
+            completedAt: lockedAttempt.deadlineAt,
+          },
+        });
+        return { expired: true as const };
+      }
+
+      // Locate question item in blueprint snapshot to resolve questionVersionId
+      const version = await tx.assessmentVersion.findUniqueOrThrow({
+        where: { id: lockedAttempt.assessmentVersionId },
+      });
+      const snapshot = version.snapshot as unknown as BlueprintSnapshotPayload;
+      let targetItem: SnapshotItemPayload | null = null;
+
+      for (const s of snapshot.sections || []) {
+        for (const item of s.items || []) {
+          if (item.id === itemId) {
+            targetItem = item;
+            break;
+          }
+        }
+        if (targetItem) break;
+      }
+
+      if (!targetItem) {
+        throw new NotFoundException(
+          `Item '${itemId}' not found in examination blueprint snapshot.`,
+        );
+      }
+
       const existing = await tx.examResponse.findUnique({
         where: {
           examAttemptId_itemRefId: {
@@ -495,7 +505,7 @@ export class ExamAttemptsService {
         }
 
         const updated = await tx.examResponse.update({
-          where: { id: existing.id },
+          where: { id: existing.id, isFinal: false },
           data: {
             responsePayload: dto.responsePayload as Prisma.InputJsonValue,
             revision: existing.revision + 1,
@@ -503,7 +513,7 @@ export class ExamAttemptsService {
           },
         });
 
-        return this.mapResponseToDto(updated);
+        return { expired: false as const, response: this.mapResponseToDto(updated) };
       } else {
         if (
           dto.expectedRevision !== undefined &&
@@ -527,9 +537,17 @@ export class ExamAttemptsService {
           },
         });
 
-        return this.mapResponseToDto(created);
+        return { expired: false as const, response: this.mapResponseToDto(created) };
       }
     });
+
+    if (result.expired) {
+      throw new BadRequestException(
+        'Examination deadline has expired. Responses are no longer accepted.',
+      );
+    }
+
+    return result.response;
   }
 
   /**
@@ -568,7 +586,7 @@ export class ExamAttemptsService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // 1. Lock attempt for serialization
       await tx.$queryRaw`SELECT id FROM exam_attempts WHERE id = ${attemptId} FOR UPDATE`;
 
@@ -596,7 +614,10 @@ export class ExamAttemptsService {
           where: { examAttemptId: attemptId },
           include: { itemGrades: true },
         });
-        return this.buildResultSummary(freshAttempt, existingGrade);
+        return {
+          expired: false as const,
+          summary: this.buildResultSummary(freshAttempt, existingGrade),
+        };
       }
 
       if (freshAttempt.status === 'EXPIRED' || freshAttempt.status === 'ABANDONED') {
@@ -608,6 +629,7 @@ export class ExamAttemptsService {
       const now = new Date();
 
       // 3. Deadline check (with a 15-second network grace period)
+      // Commit the EXPIRED state sustainably inside the transaction before returning
       if (
         freshAttempt.deadlineAt &&
         now.getTime() > freshAttempt.deadlineAt.getTime() + 15000
@@ -619,9 +641,7 @@ export class ExamAttemptsService {
             completedAt: freshAttempt.deadlineAt,
           },
         });
-        throw new BadRequestException(
-          'Examination deadline has expired. Attempt has been marked as expired.',
-        );
+        return { expired: true as const };
       }
 
       // 4. Freeze all existing responses
@@ -666,20 +686,24 @@ export class ExamAttemptsService {
         freshAttempt.assessmentVersion.passingScore,
       );
 
-      // 8. Determine feedback release state based on version policy
+      // 8. Determine feedback release state based on version policy and grading status
+      // Incomplete/pending human grading is NEVER released as final
       const feedbackPolicy = freshAttempt.assessmentVersion.feedbackPolicy;
       let isReleased = false;
       let releasedAt: Date | null = null;
 
-      if (feedbackPolicy === 'IMMEDIATE') {
-        isReleased = true;
-        releasedAt = now;
-      } else if (feedbackPolicy === 'DEFERRED') {
-        // If deadline has already passed, release immediately
-        if (freshAttempt.deadlineAt && now >= freshAttempt.deadlineAt) {
+      if (evalResult.aggregationStatus === 'FULLY_GRADED') {
+        if (feedbackPolicy === 'IMMEDIATE' || feedbackPolicy === 'ON_SUBMISSION') {
           isReleased = true;
           releasedAt = now;
+        } else if (feedbackPolicy === 'DEFERRED') {
+          // If deadline has already passed, release immediately
+          if (freshAttempt.deadlineAt && now >= freshAttempt.deadlineAt) {
+            isReleased = true;
+            releasedAt = now;
+          }
         }
+        // MANUAL policy remains isReleased = false until explicitly triggered by educator
       }
 
       // 9. Persist ExamGrade
@@ -748,8 +772,19 @@ export class ExamAttemptsService {
         include: { itemGrades: true },
       });
 
-      return this.buildResultSummary(updatedAttempt, completeGrade);
+      return {
+        expired: false as const,
+        summary: this.buildResultSummary(updatedAttempt, completeGrade),
+      };
     });
+
+    if (result.expired) {
+      throw new BadRequestException(
+        'Examination deadline has expired. Attempt has been marked as expired.',
+      );
+    }
+
+    return result.summary;
   }
 
   /**
@@ -801,10 +836,11 @@ export class ExamAttemptsService {
 
     let grade = attempt.grade;
 
-    // Check if DEFERRED release can now take effect because deadline has passed
+    // Check if DEFERRED release can now take effect because deadline has passed AND attempt is fully graded
     if (
       !grade.isReleased &&
       attempt.assessmentVersion.feedbackPolicy === 'DEFERRED' &&
+      grade.aggregationStatus === 'FULLY_GRADED' &&
       attempt.deadlineAt &&
       new Date() >= attempt.deadlineAt
     ) {
@@ -856,6 +892,12 @@ export class ExamAttemptsService {
 
     if (!attempt.grade) {
       throw new BadRequestException('Cannot release grades: attempt has not been graded yet.');
+    }
+
+    if (attempt.grade.aggregationStatus !== 'FULLY_GRADED') {
+      throw new BadRequestException(
+        'Cannot release examination grades: attempt is still pending human evaluation (FULLY_GRADED required).',
+      );
     }
 
     const updatedGrade = await this.prisma.examGrade.update({
@@ -955,7 +997,24 @@ export class ExamAttemptsService {
           status: 'ACTIVE',
         },
       });
+
       if (enrollment) {
+        // Fail-closed verification: Ensure CourseAccessGrant has not been revoked
+        const courseGrant = await this.prisma.courseAccessGrant.findUnique({
+          where: {
+            courseVersionId_userId: {
+              courseVersionId: enrollment.courseVersionId,
+              userId: learnerId,
+            },
+          },
+        });
+
+        if (courseGrant && (courseGrant.status === 'REVOKED' || courseGrant.revokedAt !== null)) {
+          throw new ForbiddenException(
+            'Course access grant has been revoked. Learner is not authorized to attempt this examination.',
+          );
+        }
+
         return;
       }
     }
@@ -998,8 +1057,13 @@ export class ExamAttemptsService {
     };
 
     if (!isReleased || !grade) {
-      baseSummary.notice =
-        'Detailed examination scores and item feedback are withheld according to the feedback release policy.';
+      if (grade?.aggregationStatus === 'PARTIAL_PENDING_HUMAN') {
+        baseSummary.notice =
+          'Examination contains questions pending human evaluation. Final scores and pass/fail determination will be released upon completion of grading.';
+      } else {
+        baseSummary.notice =
+          'Detailed examination scores and item feedback are withheld according to the feedback release policy.';
+      }
       return baseSummary;
     }
 

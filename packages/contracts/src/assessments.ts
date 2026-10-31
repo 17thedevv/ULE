@@ -456,8 +456,8 @@ export interface ExamGradeDto {
   pendingHumanPoints: number;
   totalAwardedPoints: number;
   maxPossiblePoints: number;
-  percentageScore: number;
-  isPassing: boolean;
+  percentageScore: number | null;
+  isPassing: boolean | null;
   aggregationStatus: ExamGradeAggregationStatus;
   evaluatorVersion: string;
   evaluatedAt: string;

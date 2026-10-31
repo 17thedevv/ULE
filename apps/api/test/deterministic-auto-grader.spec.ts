@@ -270,6 +270,55 @@ describe('DeterministicAutoGraderService Unit Tests', () => {
       expect(summaryNaN.totalAwardedPoints).toBe(0);
       expect(summaryNaN.itemGrades[0].isCorrect).toBe(false);
     });
+
+    it('rejects implicit coercion of null, empty string, boolean, or array to zero', () => {
+      const zeroItem: ExamSnapshotItem = {
+        id: 'num-zero-1',
+        questionVersionId: 'qv-num-zero',
+        type: 'NUMERIC',
+        title: 'Zero Value',
+        prompt: 'Enter value zero:',
+        content: {},
+        answerKey: { correctValue: 0, tolerance: 0, toleranceType: 'ABSOLUTE' },
+        points: 5.0,
+      };
+
+      // null must NOT coerce to 0
+      const resNull = new Map([[zeroItem.id, { submittedValue: null }]]);
+      const sumNull = grader.evaluateAttempt([zeroItem], resNull);
+      expect(sumNull.totalAwardedPoints).toBe(0);
+      expect(sumNull.itemGrades[0].isCorrect).toBe(false);
+
+      // empty string must NOT coerce to 0
+      const resEmpty = new Map([[zeroItem.id, { submittedValue: '' }]]);
+      const sumEmpty = grader.evaluateAttempt([zeroItem], resEmpty);
+      expect(sumEmpty.totalAwardedPoints).toBe(0);
+      expect(sumEmpty.itemGrades[0].isCorrect).toBe(false);
+
+      // boolean false must NOT coerce to 0
+      const resBool = new Map([[zeroItem.id, { submittedValue: false }]]);
+      const sumBool = grader.evaluateAttempt([zeroItem], resBool);
+      expect(sumBool.totalAwardedPoints).toBe(0);
+      expect(sumBool.itemGrades[0].isCorrect).toBe(false);
+
+      // empty array must NOT coerce to 0
+      const resArr = new Map([[zeroItem.id, { submittedValue: [] }]]);
+      const sumArr = grader.evaluateAttempt([zeroItem], resArr);
+      expect(sumArr.totalAwardedPoints).toBe(0);
+      expect(sumArr.itemGrades[0].isCorrect).toBe(false);
+
+      // legitimate number 0 must be correct
+      const resZero = new Map([[zeroItem.id, { submittedValue: 0 }]]);
+      const sumZero = grader.evaluateAttempt([zeroItem], resZero);
+      expect(sumZero.totalAwardedPoints).toBe(5.0);
+      expect(sumZero.itemGrades[0].isCorrect).toBe(true);
+
+      // legitimate string "0" must be correct
+      const resStrZero = new Map([[zeroItem.id, { submittedValue: '0' }]]);
+      const sumStrZero = grader.evaluateAttempt([zeroItem], resStrZero);
+      expect(sumStrZero.totalAwardedPoints).toBe(5.0);
+      expect(sumStrZero.itemGrades[0].isCorrect).toBe(true);
+    });
   });
 
   describe('MATCHING grading', () => {
@@ -451,8 +500,8 @@ describe('DeterministicAutoGraderService Unit Tests', () => {
       expect(summary.objectivePoints).toBe(20.0);
       expect(summary.pendingHumanPoints).toBe(50.0);
       expect(summary.maxPossiblePoints).toBe(100.0);
-      expect(summary.percentageScore).toBe(20.0);
-      expect(summary.isPassing).toBe(false); // 20% < 70%
+      expect(summary.percentageScore).toBeNull();
+      expect(summary.isPassing).toBeNull();
       expect(summary.aggregationStatus).toBe('PARTIAL_PENDING_HUMAN');
     });
 

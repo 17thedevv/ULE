@@ -1238,8 +1238,8 @@ model ExamGrade {
   pendingHumanPoints Float                      @default(0)
   totalAwardedPoints Float                      @default(0)
   maxPossiblePoints  Float
-  percentageScore    Float                      @default(0)
-  isPassing          Boolean                    @default(false)
+  percentageScore    Float?
+  isPassing          Boolean?
   aggregationStatus  ExamGradeAggregationStatus
   evaluatorVersion   String                     @default("ule-exam-evaluator-v1")
   evaluatedAt        DateTime                   @default(now())

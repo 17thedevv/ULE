@@ -43,6 +43,7 @@ describe('Phase 5.5: ExamAttempt Runtime, Timed Sessions & Deterministic Auto-Gr
   let bobCookie: string;
   let charlieCookie: string;
 
+  let aliceId: string;
   let charlieId: string;
 
   // Question IDs
@@ -106,10 +107,11 @@ describe('Phase 5.5: ExamAttempt Runtime, Timed Sessions & Deterministic Auto-Gr
       .send(userAlice)
       .expect(HttpStatus.OK);
     aliceCookie = extractCookies(aliceReg);
-    await request(app.getHttpServer())
+    const aliceMe = await request(app.getHttpServer())
       .get('/api/v1/me')
       .set('Cookie', aliceCookie)
       .expect(HttpStatus.OK);
+    aliceId = aliceMe.body.user.id;
 
     // 2. Register Educator Bob
     const bobReg = await request(app.getHttpServer())
@@ -558,6 +560,82 @@ describe('Phase 5.5: ExamAttempt Runtime, Timed Sessions & Deterministic Auto-Gr
       expect(attemptRes.body.status).toBe('IN_PROGRESS');
       expect(attemptRes.body.attemptNumber).toBe(1);
     });
+
+    it('denies attempt creation if learner holds an ACTIVE CourseEnrollment but CourseAccessGrant is REVOKED (HTTP 403 fail-closed)', async () => {
+      // 1. Create a course owned by Alice
+      const course = await prisma.course.create({
+        data: {
+          ownerId: aliceId,
+          visibility: 'PUBLIC',
+        },
+      });
+
+      const courseVersion = await prisma.courseVersion.create({
+        data: {
+          courseId: course.id,
+          versionNumber: 1,
+          title: 'Course with Revoked Grant Test',
+          snapshot: {},
+          draftRevision: 1,
+          createdById: aliceId,
+        },
+      });
+
+      // 2. Create assessment linked to this course
+      const courseAss = await prisma.assessmentDefinition.create({
+        data: {
+          title: 'Course Bound Assessment',
+          courseId: course.id,
+          ownerId: course.ownerId,
+          status: 'PUBLISHED',
+          feedbackPolicy: 'ON_SUBMISSION',
+        },
+      });
+
+      const courseAssVer = await prisma.assessmentVersion.create({
+        data: {
+          assessmentDefinitionId: courseAss.id,
+          versionNumber: 1,
+          title: 'Course Bound Assessment v1',
+          totalPoints: 5.0,
+          itemCount: 1,
+          feedbackPolicy: 'ON_SUBMISSION',
+          snapshot: { sections: [] },
+          draftRevision: 1,
+          createdById: aliceId,
+        },
+      });
+
+      // 3. Create ACTIVE enrollment for Charlie
+      await prisma.courseEnrollment.create({
+        data: {
+          userId: charlieId,
+          courseVersionId: courseVersion.id,
+          status: 'ACTIVE',
+        },
+      });
+
+      // 4. Create REVOKED CourseAccessGrant for Charlie
+      await prisma.courseAccessGrant.create({
+        data: {
+          courseId: course.id,
+          courseVersionId: courseVersion.id,
+          userId: charlieId,
+          grantedById: course.ownerId,
+          status: 'REVOKED',
+          revokedAt: new Date(),
+        },
+      });
+
+      // 5. Attempt creation must be denied (fail-closed HTTP 403)
+      const errRes = await request(app.getHttpServer())
+        .post(`/api/v1/exams/${courseAssVer.id}/attempts`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.FORBIDDEN);
+
+      expect(errRes.body.message).toContain('Course access grant has been revoked');
+    });
   });
 
   // ===========================================================================
@@ -674,6 +752,75 @@ describe('Phase 5.5: ExamAttempt Runtime, Timed Sessions & Deterministic Auto-Gr
         .set('Cookie', charlieCookie)
         .send({})
         .expect(HttpStatus.BAD_REQUEST);
+    });
+
+    it('sustainably commits EXPIRED transition even when submit attempt throws 400', async () => {
+      // 1. Create a dedicated assessment for Alice
+      const expAss = await request(app.getHttpServer())
+        .post('/api/v1/assessments')
+        .set('Cookie', aliceCookie)
+        .send({
+          title: 'Expiration Sustainable Commit Test',
+          durationMinutes: 1,
+          feedbackPolicy: 'ON_SUBMISSION',
+        })
+        .expect(HttpStatus.CREATED);
+
+      const sec = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${expAss.body.id}/sections`)
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Sec' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${expAss.body.id}/sections/${sec.body.id}/items`)
+        .set('Cookie', aliceCookie)
+        .send({ questionBankItemId: mcqQuestionId, points: 5.0 })
+        .expect(HttpStatus.CREATED);
+
+      const pub = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${expAss.body.id}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'gate-c-exp-pub-1' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${expAss.body.id}/access-grants`)
+        .set('Cookie', aliceCookie)
+        .send({ userId: charlieId })
+        .expect(HttpStatus.CREATED);
+
+      const att = await request(app.getHttpServer())
+        .post(`/api/v1/exams/${pub.body.id}/attempts`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.CREATED);
+
+      const attemptId = att.body.id;
+
+      // Artificially backdate deadlineAt to 10 minutes ago
+      await prisma.examAttempt.update({
+        where: { id: attemptId },
+        data: {
+          deadlineAt: new Date(Date.now() - 600000),
+          status: 'IN_PROGRESS',
+        },
+      });
+
+      // Directly attempt to submit overdue attempt -> HTTP 400 Bad Request
+      const subErr = await request(app.getHttpServer())
+        .post(`/api/v1/exam-attempts/${attemptId}/submit`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.BAD_REQUEST);
+
+      expect(subErr.body.message).toContain('expired');
+
+      // Crucial: Verify that EXPIRED was sustainably committed to the database, NOT rolled back!
+      const dbAttempt = await prisma.examAttempt.findUnique({
+        where: { id: attemptId },
+      });
+      expect(dbAttempt?.status).toBe('EXPIRED');
     });
   });
 
@@ -817,6 +964,94 @@ describe('Phase 5.5: ExamAttempt Runtime, Timed Sessions & Deterministic Auto-Gr
       expect(retrySub.body.attemptId).toBe(attemptId);
       expect(retrySub.body.status).toBe('COMPLETED');
     });
+
+    it('serializes concurrent autosave and submit using attempt-level locks', async () => {
+      // Create a fresh assessment to test concurrent save vs submit
+      const ass = await request(app.getHttpServer())
+        .post('/api/v1/assessments')
+        .set('Cookie', aliceCookie)
+        .send({
+          title: 'Concurrent Save vs Submit Test',
+          durationMinutes: 60,
+          feedbackPolicy: 'ON_SUBMISSION',
+        })
+        .expect(HttpStatus.CREATED);
+
+      const sec = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${ass.body.id}/sections`)
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Section 1' })
+        .expect(HttpStatus.CREATED);
+
+      const itemRes = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${ass.body.id}/sections/${sec.body.id}/items`)
+        .set('Cookie', aliceCookie)
+        .send({ questionBankItemId: mcqQuestionId, points: 5.0 })
+        .expect(HttpStatus.CREATED);
+
+      const pub = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${ass.body.id}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'gate-e-concurrent-pub' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${ass.body.id}/access-grants`)
+        .set('Cookie', aliceCookie)
+        .send({ userId: charlieId })
+        .expect(HttpStatus.CREATED);
+
+      const att = await request(app.getHttpServer())
+        .post(`/api/v1/exams/${pub.body.id}/attempts`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.CREATED);
+
+      const attemptIdConcurrent = att.body.id;
+      const targetItemId = itemRes.body.id;
+
+      // Initial save (revision 1)
+      await request(app.getHttpServer())
+        .put(`/api/v1/exam-attempts/${attemptIdConcurrent}/responses/${targetItemId}`)
+        .set('Cookie', charlieCookie)
+        .send({ responsePayload: { selectedOptionId: 'opt_9' } })
+        .expect(HttpStatus.OK);
+
+      // Now fire save (revision 2) and submit concurrently
+      const [saveRes, submitRes] = await Promise.all([
+        request(app.getHttpServer())
+          .put(`/api/v1/exam-attempts/${attemptIdConcurrent}/responses/${targetItemId}`)
+          .set('Cookie', charlieCookie)
+          .send({ responsePayload: { selectedOptionId: 'opt_9' }, expectedRevision: 1 }),
+        request(app.getHttpServer())
+          .post(`/api/v1/exam-attempts/${attemptIdConcurrent}/submit`)
+          .set('Cookie', charlieCookie)
+          .send({}),
+      ]);
+
+      // Submit must always succeed
+      expect(submitRes.status).toBe(HttpStatus.OK);
+      expect(submitRes.body.status).toBe('COMPLETED');
+
+      // Save either succeeded before submit acquired lock (200) or was rejected after submit locked attempt (400)
+      expect([HttpStatus.OK, HttpStatus.BAD_REQUEST]).toContain(saveRes.status);
+
+      // Attempt must be COMPLETED and response must be final
+      const finalAttempt = await prisma.examAttempt.findUnique({ where: { id: attemptIdConcurrent } });
+      expect(finalAttempt?.status).toBe('COMPLETED');
+
+      const finalResponse = await prisma.examResponse.findFirst({
+        where: { examAttemptId: attemptIdConcurrent, itemRefId: targetItemId },
+      });
+      expect(finalResponse?.isFinal).toBe(true);
+
+      // Mutating finalized response is rejected
+      await request(app.getHttpServer())
+        .put(`/api/v1/exam-attempts/${attemptIdConcurrent}/responses/${targetItemId}`)
+        .set('Cookie', charlieCookie)
+        .send({ responsePayload: { selectedOptionId: 'opt_6' } })
+        .expect(HttpStatus.BAD_REQUEST);
+    });
   });
 
   // ===========================================================================
@@ -951,16 +1186,35 @@ describe('Phase 5.5: ExamAttempt Runtime, Timed Sessions & Deterministic Auto-Gr
         .expect(HttpStatus.OK);
 
       expect(subRes.body.status).toBe('GRADING');
-      expect(subRes.body.grade.aggregationStatus).toBe('PARTIAL_PENDING_HUMAN');
-      expect(subRes.body.grade.objectivePoints).toBe(5.0);
-      expect(subRes.body.grade.pendingHumanPoints).toBe(10.0);
-      expect(subRes.body.grade.maxPossiblePoints).toBe(15.0);
+      expect(subRes.body.isReleased).toBe(false);
+      expect(subRes.body.grade).toBeUndefined(); // Zero leakage for pending human grading!
+      expect(subRes.body.notice).toContain('pending human evaluation');
 
-      const essayItemGrade = subRes.body.grade.itemGrades.find(
-        (ig: any) => ig.itemRefId === mixedEssayItemRefId,
+      // Verify authoritative grade state in database
+      const dbGrade = await prisma.examGrade.findUnique({
+        where: { examAttemptId: attemptId },
+        include: { itemGrades: true },
+      });
+      expect(dbGrade).toBeDefined();
+      expect(dbGrade?.aggregationStatus).toBe('PARTIAL_PENDING_HUMAN');
+      expect(dbGrade?.objectivePoints).toBe(5.0);
+      expect(dbGrade?.pendingHumanPoints).toBe(10.0);
+      expect(dbGrade?.maxPossiblePoints).toBe(15.0);
+      expect(dbGrade?.percentageScore).toBeNull();
+      expect(dbGrade?.isPassing).toBeNull();
+      expect(dbGrade?.isReleased).toBe(false);
+
+      const essayItemGrade = dbGrade?.itemGrades.find(
+        (ig) => ig.itemRefId === mixedEssayItemRefId,
       );
-      expect(essayItemGrade.isPendingHuman).toBe(true);
-      expect(essayItemGrade.awardedPoints).toBe(0);
+      expect(essayItemGrade?.isPendingHuman).toBe(true);
+      expect(essayItemGrade?.awardedPoints).toBe(0);
+
+      // Premature manual release must fail with HTTP 400 Bad Request
+      await request(app.getHttpServer())
+        .post(`/api/v1/exam-attempts/${attemptId}/release`)
+        .set('Cookie', aliceCookie)
+        .expect(HttpStatus.BAD_REQUEST);
     });
   });
 
@@ -1081,6 +1335,64 @@ describe('Phase 5.5: ExamAttempt Runtime, Timed Sessions & Deterministic Auto-Gr
 
       expect(released.body.isReleased).toBe(true);
       expect(released.body.grade).toBeDefined();
+    });
+
+    it('immediately releases fully graded exam results under ON_SUBMISSION feedback policy', async () => {
+      // Create dedicated ON_SUBMISSION assessment
+      const onSubAss = await request(app.getHttpServer())
+        .post('/api/v1/assessments')
+        .set('Cookie', aliceCookie)
+        .send({
+          title: 'Gate H Dedicated ON_SUBMISSION Assessment',
+          durationMinutes: 30,
+          passingScore: 70.0,
+          maxAttempts: 1,
+          feedbackPolicy: 'ON_SUBMISSION',
+        })
+        .expect(HttpStatus.CREATED);
+
+      const sec = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${onSubAss.body.id}/sections`)
+        .set('Cookie', aliceCookie)
+        .send({ title: 'Section 1' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${onSubAss.body.id}/sections/${sec.body.id}/items`)
+        .set('Cookie', aliceCookie)
+        .send({ questionBankItemId: mcqQuestionId, points: 5.0 })
+        .expect(HttpStatus.CREATED);
+
+      const pub = await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${onSubAss.body.id}/publish`)
+        .set('Cookie', aliceCookie)
+        .send({ idempotencyKey: 'gate-h-onsub-pub' })
+        .expect(HttpStatus.CREATED);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/assessments/${onSubAss.body.id}/access-grants`)
+        .set('Cookie', aliceCookie)
+        .send({ userId: charlieId })
+        .expect(HttpStatus.CREATED);
+
+      const att = await request(app.getHttpServer())
+        .post(`/api/v1/exams/${pub.body.id}/attempts`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.CREATED);
+
+      // Submit attempt
+      const subRes = await request(app.getHttpServer())
+        .post(`/api/v1/exam-attempts/${att.body.id}/submit`)
+        .set('Cookie', charlieCookie)
+        .send({})
+        .expect(HttpStatus.OK);
+
+      expect(subRes.body.status).toBe('COMPLETED');
+      expect(subRes.body.feedbackPolicy).toBe('ON_SUBMISSION');
+      expect(subRes.body.isReleased).toBe(true);
+      expect(subRes.body.grade).toBeDefined();
+      expect(subRes.body.grade.isReleased).toBe(true);
     });
   });
 

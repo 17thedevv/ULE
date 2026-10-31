@@ -17,8 +17,8 @@ export interface ExamEvaluationSummary {
   pendingHumanPoints: number;
   totalAwardedPoints: number;
   maxPossiblePoints: number;
-  percentageScore: number;
-  isPassing: boolean;
+  percentageScore: number | null;
+  isPassing: boolean | null;
   aggregationStatus: 'FULLY_GRADED' | 'PARTIAL_PENDING_HUMAN';
   itemGrades: EvaluatedItemResult[];
 }
@@ -71,16 +71,22 @@ export class DeterministicAutoGraderService {
 
     const totalAwardedPoints = Number(objectivePoints.toFixed(2));
     const normalizedMax = Number(maxPossiblePoints.toFixed(2));
-    const percentageScore =
-      normalizedMax > 0
-        ? Number(((totalAwardedPoints / normalizedMax) * 100).toFixed(2))
-        : 0;
-
-    const isPassing =
-      passingScore != null ? percentageScore >= passingScore : true;
 
     const aggregationStatus =
       pendingHumanPoints > 0 ? 'PARTIAL_PENDING_HUMAN' : 'FULLY_GRADED';
+
+    let percentageScore: number | null = null;
+    let isPassing: boolean | null = null;
+
+    if (aggregationStatus === 'FULLY_GRADED') {
+      percentageScore =
+        normalizedMax > 0
+          ? Number(((totalAwardedPoints / normalizedMax) * 100).toFixed(2))
+          : 0;
+
+      isPassing =
+        passingScore != null ? percentageScore >= passingScore : true;
+    }
 
     return {
       objectivePoints: totalAwardedPoints,
@@ -282,9 +288,35 @@ export class DeterministicAutoGraderService {
         const tolerance = Math.max(0, Number(answerKey.tolerance ?? 0));
         const toleranceType = String(answerKey.toleranceType ?? 'ABSOLUTE');
         const submittedRaw = responsePayload.submittedValue;
-        const submittedVal = Number(submittedRaw);
 
-        if (!Number.isFinite(correctVal) || !Number.isFinite(submittedVal)) {
+        const isValidNumeric =
+          submittedRaw !== null &&
+          submittedRaw !== undefined &&
+          typeof submittedRaw !== 'boolean' &&
+          !Array.isArray(submittedRaw) &&
+          (typeof submittedRaw === 'number' ||
+            (typeof submittedRaw === 'string' && submittedRaw.trim().length > 0)) &&
+          !isNaN(Number(submittedRaw));
+
+        if (!isValidNumeric || !Number.isFinite(correctVal)) {
+          return {
+            itemRefId: item.id,
+            questionVersionId: item.questionVersionId,
+            questionType: item.type,
+            maxPoints,
+            awardedPoints: 0,
+            isCorrect: false,
+            isPendingHuman: false,
+            evaluationDetails: {
+              isCorrect: false,
+              submittedValue: submittedRaw,
+              error: 'Invalid or non-numeric submitted value',
+            },
+          };
+        }
+
+        const submittedVal = Number(submittedRaw);
+        if (!Number.isFinite(submittedVal)) {
           return {
             itemRefId: item.id,
             questionVersionId: item.questionVersionId,
