@@ -1,0 +1,108 @@
+/* ULE UI-01 theme foundation — reference only; verify contrast before production.
+ * Apply on <html data-theme="paper|midnight|forest|contrast">.
+ * NEVER use status color as the only way to convey correctness or grade release.
+ */
+:root,
+:root[data-theme='paper'] {
+  color-scheme: light;
+  --ui-bg: #f5f7fb;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #f1f3f9;
+  --ui-text: #1c2737;
+  --ui-text-muted: #526176;
+  --ui-border: #d7deeb;
+  --ui-primary: #514bdf;
+  --ui-primary-contrast: #ffffff;
+  --ui-focus-ring: #2a37b4;
+  --ui-success: #146b52;
+  --ui-warning: #87520d;
+  --ui-danger: #b42331;
+  --ui-info: #244caa;
+  --ui-success-bg: #e5f5ec;
+  --ui-warning-bg: #fff2d9;
+  --ui-danger-bg: #fce8eb;
+  --ui-info-bg: #e9efff;
+}
+:root[data-theme='midnight'] {
+  color-scheme: dark;
+  --ui-bg: #0d1524;
+  --ui-surface: #182336;
+  --ui-surface-muted: #222e43;
+  --ui-text: #edf2ff;
+  --ui-text-muted: #b6c2d5;
+  --ui-border: #40506a;
+  --ui-primary: #aaa7ff;
+  --ui-primary-contrast: #101726;
+  --ui-focus-ring: #d5d2ff;
+  --ui-success: #7be0b5;
+  --ui-warning: #ffd17a;
+  --ui-danger: #ffaaaa;
+  --ui-info: #a6c6ff;
+  --ui-success-bg: #174239;
+  --ui-warning-bg: #45371d;
+  --ui-danger-bg: #4b2531;
+  --ui-info-bg: #243d65;
+}
+:root[data-theme='forest'] {
+  color-scheme: light;
+  --ui-bg: #f1f6f0;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #e9f3e8;
+  --ui-text: #1e3529;
+  --ui-text-muted: #526955;
+  --ui-border: #c9dcca;
+  --ui-primary: #28765a;
+  --ui-primary-contrast: #ffffff;
+  --ui-focus-ring: #19553c;
+  --ui-success: #14583b;
+  --ui-warning: #82510b;
+  --ui-danger: #a62131;
+  --ui-info: #2054a0;
+  --ui-success-bg: #e3f1e6;
+  --ui-warning-bg: #fff3d8;
+  --ui-danger-bg: #fce9ed;
+  --ui-info-bg: #e5effc;
+}
+:root[data-theme='contrast'] {
+  color-scheme: light;
+  --ui-bg: #ffffff;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #f2f2f2;
+  --ui-text: #111111;
+  --ui-text-muted: #252525;
+  --ui-border: #111111;
+  --ui-primary: #003bb9;
+  --ui-primary-contrast: #ffffff;
+  --ui-focus-ring: #ff9e00;
+  --ui-success: #00512f;
+  --ui-warning: #704100;
+  --ui-danger: #990017;
+  --ui-info: #003bb9;
+  --ui-success-bg: #e8fff0;
+  --ui-warning-bg: #fff2d0;
+  --ui-danger-bg: #ffe7e7;
+  --ui-info-bg: #e8efff;
+}
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 8%);
+}
+body {
+  font-family: var(--font-sans);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+}
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid var(--ui-focus-ring);
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
