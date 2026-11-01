@@ -9,6 +9,8 @@ import { AssessmentsController } from './assessments.controller';
 import { DeterministicAutoGraderService } from './evaluators/deterministic-auto-grader.service';
 import { ExamAttemptsService } from './exam-attempts.service';
 import { ExamAttemptsController } from './exam-attempts.controller';
+import { ExamGradingService } from './exam-grading.service';
+import { ExamGradingController } from './exam-grading.controller';
 
 @Module({
   imports: [PrismaModule, AuthModule],
@@ -16,6 +18,7 @@ import { ExamAttemptsController } from './exam-attempts.controller';
     QuestionBankController,
     AssessmentsController,
     ExamAttemptsController,
+    ExamGradingController,
   ],
   providers: [
     QuestionTypesRegistry,
@@ -23,6 +26,7 @@ import { ExamAttemptsController } from './exam-attempts.controller';
     AssessmentsService,
     DeterministicAutoGraderService,
     ExamAttemptsService,
+    ExamGradingService,
   ],
   exports: [
     QuestionTypesRegistry,
@@ -30,6 +34,7 @@ import { ExamAttemptsController } from './exam-attempts.controller';
     AssessmentsService,
     DeterministicAutoGraderService,
     ExamAttemptsService,
+    ExamGradingService,
   ],
 })
 export class AssessmentsModule {}
