@@ -1,0 +1,213 @@
+/**
+ * ULE Design Tokens — UI-01 & UI-02
+ *
+ * Semantic tokens for 4 themes:
+ * - Paper (default light)
+ * - Midnight (dark)
+ * - Forest (calm light)
+ * - Contrast (high-contrast accessibility)
+ *
+ * RULE: Status must NEVER be communicated by color alone.
+ * Always pair color with text, icon, or pattern (WCAG 1.4.1).
+ */
+
+/* ── Structural tokens (theme-independent) ─────────────────────────────── */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 8%);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 10%);
+}
+
+/* ── Paper (default light theme) ───────────────────────────────────────── */
+:root,
+:root[data-theme='paper'] {
+  color-scheme: light;
+
+  /* Surfaces */
+  --ui-bg: #f5f7fb;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #f1f3f9;
+
+  /* Text */
+  --ui-text: #1c2737;
+  --ui-text-muted: #526176;
+
+  /* Borders */
+  --ui-border: #d7deeb;
+
+  /* Brand */
+  --ui-primary: #514bdf;
+  --ui-primary-hover: #4340c4;
+  --ui-primary-contrast: #ffffff;
+
+  /* Focus */
+  --ui-focus-ring: #2a37b4;
+
+  /* Semantic status */
+  --ui-success: #146b52;
+  --ui-warning: #87520d;
+  --ui-danger: #b42331;
+  --ui-info: #244caa;
+
+  /* Status backgrounds */
+  --ui-success-bg: #e5f5ec;
+  --ui-warning-bg: #fff2d9;
+  --ui-danger-bg: #fce8eb;
+  --ui-info-bg: #e9efff;
+
+  /* Sidebar */
+  --ui-sidebar-bg: #ffffff;
+  --ui-sidebar-text: #1c2737;
+  --ui-sidebar-text-muted: #526176;
+  --ui-sidebar-active-bg: #eeecfc;
+  --ui-sidebar-active-text: #3d38b5;
+  --ui-sidebar-hover-bg: #f5f5fc;
+  --ui-sidebar-border: #d7deeb;
+
+  /* Topbar */
+  --ui-topbar-bg: #ffffff;
+  --ui-topbar-border: #d7deeb;
+}
+
+/* ── Midnight (dark theme) ──────────────────────────────────────────────── */
+:root[data-theme='midnight'] {
+  color-scheme: dark;
+
+  --ui-bg: #0d1524;
+  --ui-surface: #182336;
+  --ui-surface-muted: #222e43;
+
+  --ui-text: #edf2ff;
+  --ui-text-muted: #b6c2d5;
+
+  --ui-border: #40506a;
+
+  --ui-primary: #aaa7ff;
+  --ui-primary-hover: #c5c3ff;
+  --ui-primary-contrast: #101726;
+
+  --ui-focus-ring: #d5d2ff;
+
+  --ui-success: #7be0b5;
+  --ui-warning: #ffd17a;
+  --ui-danger: #ffaaaa;
+  --ui-info: #a6c6ff;
+
+  --ui-success-bg: #174239;
+  --ui-warning-bg: #45371d;
+  --ui-danger-bg: #4b2531;
+  --ui-info-bg: #243d65;
+
+  --ui-sidebar-bg: #111e32;
+  --ui-sidebar-text: #edf2ff;
+  --ui-sidebar-text-muted: #b6c2d5;
+  --ui-sidebar-active-bg: #2a2f5a;
+  --ui-sidebar-active-text: #c5c3ff;
+  --ui-sidebar-hover-bg: #1c2a3e;
+  --ui-sidebar-border: #40506a;
+
+  --ui-topbar-bg: #182336;
+  --ui-topbar-border: #40506a;
+}
+
+/* ── Forest (calm light theme) ─────────────────────────────────────────── */
+:root[data-theme='forest'] {
+  color-scheme: light;
+
+  --ui-bg: #f1f6f0;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #e9f3e8;
+
+  --ui-text: #1e3529;
+  --ui-text-muted: #526955;
+
+  --ui-border: #c9dcca;
+
+  --ui-primary: #28765a;
+  --ui-primary-hover: #1f5e47;
+  --ui-primary-contrast: #ffffff;
+
+  --ui-focus-ring: #19553c;
+
+  --ui-success: #14583b;
+  --ui-warning: #82510b;
+  --ui-danger: #a62131;
+  --ui-info: #2054a0;
+
+  --ui-success-bg: #e3f1e6;
+  --ui-warning-bg: #fff3d8;
+  --ui-danger-bg: #fce9ed;
+  --ui-info-bg: #e5effc;
+
+  --ui-sidebar-bg: #eaf3e8;
+  --ui-sidebar-text: #1e3529;
+  --ui-sidebar-text-muted: #526955;
+  --ui-sidebar-active-bg: #c8e5cb;
+  --ui-sidebar-active-text: #1a5c42;
+  --ui-sidebar-hover-bg: #daeedd;
+  --ui-sidebar-border: #c9dcca;
+
+  --ui-topbar-bg: #ffffff;
+  --ui-topbar-border: #c9dcca;
+}
+
+/* ── Contrast (high-contrast accessibility theme) ──────────────────────── */
+:root[data-theme='contrast'] {
+  color-scheme: light;
+
+  --ui-bg: #ffffff;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #f2f2f2;
+
+  --ui-text: #111111;
+  --ui-text-muted: #252525;
+
+  --ui-border: #111111;
+
+  --ui-primary: #003bb9;
+  --ui-primary-hover: #002a88;
+  --ui-primary-contrast: #ffffff;
+
+  --ui-focus-ring: #ff9e00;
+
+  --ui-success: #00512f;
+  --ui-warning: #704100;
+  --ui-danger: #990017;
+  --ui-info: #003bb9;
+
+  --ui-success-bg: #e8fff0;
+  --ui-warning-bg: #fff2d0;
+  --ui-danger-bg: #ffe7e7;
+  --ui-info-bg: #e8efff;
+
+  --ui-sidebar-bg: #ffffff;
+  --ui-sidebar-text: #111111;
+  --ui-sidebar-text-muted: #252525;
+  --ui-sidebar-active-bg: #003bb9;
+  --ui-sidebar-active-text: #ffffff;
+  --ui-sidebar-hover-bg: #e8efff;
+  --ui-sidebar-border: #111111;
+
+  --ui-topbar-bg: #ffffff;
+  --ui-topbar-border: #111111;
+}
+
+/* ── Global focus ring ──────────────────────────────────────────────────── */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid var(--ui-focus-ring);
+  outline-offset: 3px;
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

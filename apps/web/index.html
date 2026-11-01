@@ -3,7 +3,34 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ULE - Universal Learning Engine</title>
+    <title>ULE — Universal Learning Engine</title>
+    <!--
+      FOUC Prevention: Set data-theme and color-scheme synchronously before CSS renders.
+    -->
+    <script>
+      (function () {
+        var STORAGE_KEY = 'ule.theme.v1';
+        var VALID = ['paper', 'midnight', 'forest', 'contrast'];
+        var stored;
+        try {
+          stored = window.localStorage.getItem(STORAGE_KEY);
+        } catch (e) {
+          stored = null;
+        }
+        var theme;
+        if (stored === 'system' || !stored) {
+          theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'midnight'
+            : 'paper';
+        } else if (VALID.indexOf(stored) !== -1) {
+          theme = stored;
+        } else {
+          theme = 'paper';
+        }
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme === 'midnight' ? 'dark' : 'light';
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
