@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ExamTakingView } from './ExamTakingView';
 import * as examsApi from '../../services/exams';
@@ -215,5 +215,209 @@ describe('Phase 6: ExamTakingView', () => {
       expect(examsApi.submitExamAttempt).toHaveBeenCalledWith('att-100');
       expect(onFinish).toHaveBeenCalledWith(mockResult);
     });
+  });
+
+  it('flushes pending debounced save immediately and awaits it before submitting', async () => {
+    let saveCompleted = false;
+    let submittedAfterSave = false;
+
+    vi.mocked(examsApi.saveExamResponse).mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      saveCompleted = true;
+      return {
+        id: 'resp-2',
+        examAttemptId: 'att-100',
+        itemRefId: 'item-2',
+        questionVersionId: 'qv-2',
+        responsePayload: { text: 'Immediate answer' },
+        revision: 1,
+        savedAt: new Date().toISOString(),
+        isFinal: false,
+      };
+    });
+
+    const mockResult: ExamResultSummaryDto = {
+      attemptId: 'att-100',
+      status: 'COMPLETED',
+      startedAt: '2026-11-01T10:00:00.000Z',
+      submittedAt: '2026-11-01T10:15:00.000Z',
+      deadlineAt: null,
+      feedbackPolicy: 'ON_SUBMISSION',
+      isReleased: true,
+      releasedAt: '2026-11-01T10:15:00.000Z',
+    };
+
+    vi.mocked(examsApi.submitExamAttempt).mockImplementation(async () => {
+      if (saveCompleted) {
+        submittedAfterSave = true;
+      }
+      return mockResult;
+    });
+
+    render(
+      <ExamTakingView
+        attemptId="att-100"
+        onFinish={onFinish}
+        onCancel={onCancel}
+        debounceMs={1000} // High debounce so timer has not fired
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('Your word')).toBeInTheDocument();
+    });
+
+    // Enter answer in item-2
+    const input = screen.getByPlaceholderText('Your word');
+    fireEvent.change(input, { target: { value: 'Immediate answer' } });
+
+    // Submit immediately before 1000ms debounce fires
+    fireEvent.click(screen.getByTestId('submit-exam-button'));
+
+    await waitFor(() => {
+      expect(examsApi.saveExamResponse).toHaveBeenCalledWith(
+        'att-100',
+        'item-2',
+        { text: 'Immediate answer' },
+        undefined,
+      );
+      expect(examsApi.submitExamAttempt).toHaveBeenCalledWith('att-100');
+      expect(submittedAfterSave).toBe(true);
+      expect(onFinish).toHaveBeenCalledWith(mockResult);
+    });
+  });
+
+  it('awaits in-flight autosave before submission, and aborts submission if autosave fails with 409 Conflict', async () => {
+    let rejectInFlightSave!: (err: Error) => void;
+    const inFlightPromise = new Promise<ExamResponseDto>((_, reject) => {
+      rejectInFlightSave = reject;
+    });
+
+    vi.mocked(examsApi.saveExamResponse).mockImplementation(() => inFlightPromise);
+
+    render(
+      <ExamTakingView
+        attemptId="att-100"
+        onFinish={onFinish}
+        onCancel={onCancel}
+        debounceMs={10}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Beta')).toBeInTheDocument();
+    });
+
+    // Click Beta on item-1 to initiate autosave
+    fireEvent.click(screen.getByLabelText('Beta'));
+
+    await waitFor(() => {
+      expect(examsApi.saveExamResponse).toHaveBeenCalledWith(
+        'att-100',
+        'item-1',
+        { selectedOptionId: 'opt-b' },
+        1,
+      );
+    });
+
+    // Also type answer for item-2 so getUnansweredQuestions is empty
+    const input = screen.getByPlaceholderText('Your word');
+    fireEvent.change(input, { target: { value: 'Existing text' } });
+
+    // Click submit while item-1 save is in-flight
+    fireEvent.click(screen.getByTestId('submit-exam-button'));
+
+    // Verify submitExamAttempt has NOT been called yet while item-1 is still in flight
+    expect(examsApi.submitExamAttempt).not.toHaveBeenCalled();
+
+    // Now fail the in-flight save with 409 Conflict
+    act(() => {
+      rejectInFlightSave(new examsApi.ExamApiError(409, 'Conflict: Expected revision 1 but found 3.'));
+    });
+
+    // Verify submit was aborted and error is displayed
+    await waitFor(() => {
+      expect(screen.getByTestId('submit-error-alert')).toBeInTheDocument();
+      expect(screen.getByTestId('submit-error-alert')).toHaveTextContent(/Conflict: Expected revision 1 but found 3/);
+    });
+
+    // Ensure submitExamAttempt was never called
+    expect(examsApi.submitExamAttempt).not.toHaveBeenCalled();
+    expect(onFinish).not.toHaveBeenCalled();
+  });
+
+  it('prevents older in-flight save response from overwriting newer local state if the user kept typing', async () => {
+    let resolveFirstSave!: (val: ExamResponseDto) => void;
+    const firstSavePromise = new Promise<ExamResponseDto>((resolve) => {
+      resolveFirstSave = resolve;
+    });
+
+    let callCount = 0;
+    vi.mocked(examsApi.saveExamResponse).mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return firstSavePromise;
+      }
+      return {
+        id: 'resp-2',
+        examAttemptId: 'att-100',
+        itemRefId: 'item-2',
+        questionVersionId: 'qv-2',
+        responsePayload: { text: 'Second typing' },
+        revision: 2,
+        savedAt: new Date().toISOString(),
+        isFinal: false,
+      };
+    });
+
+    render(
+      <ExamTakingView
+        attemptId="att-100"
+        onFinish={onFinish}
+        onCancel={onCancel}
+        debounceMs={20}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('Your word')).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText('Your word') as HTMLInputElement;
+
+    // Type first text
+    fireEvent.change(input, { target: { value: 'First typing' } });
+
+    // Wait for first save to start
+    await waitFor(() => {
+      expect(examsApi.saveExamResponse).toHaveBeenCalledWith(
+        'att-100',
+        'item-2',
+        { text: 'First typing' },
+        undefined,
+      );
+    });
+
+    // While first save is still in flight, user types more
+    fireEvent.change(input, { target: { value: 'Second typing' } });
+    expect(input.value).toBe('Second typing');
+
+    // Now resolve first save with older text ('First typing') and revision 1
+    await act(async () => {
+      resolveFirstSave({
+        id: 'resp-2',
+        examAttemptId: 'att-100',
+        itemRefId: 'item-2',
+        questionVersionId: 'qv-2',
+        responsePayload: { text: 'First typing' },
+        revision: 1,
+        savedAt: new Date().toISOString(),
+        isFinal: false,
+      });
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Input MUST retain 'Second typing' and NOT be overwritten with 'First typing'
+    expect(input.value).toBe('Second typing');
   });
 });

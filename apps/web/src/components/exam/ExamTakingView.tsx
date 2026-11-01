@@ -26,6 +26,11 @@ interface ItemState {
   revision: number;
 }
 
+interface DirtyItem {
+  payload: Record<string, unknown>;
+  seq: number;
+}
+
 export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   attemptId,
   onFinish,
@@ -55,8 +60,21 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
   const answersRef = useRef<Record<string, ItemState>>(answers);
   answersRef.current = answers;
 
+  // Local edit sequence per item to prevent older in-flight saves from overwriting newer local state
+  const localEditSeqRef = useRef<Record<string, number>>({});
+
+  // Dirty items tracking pending unpersisted edits
+  const dirtyItemsRef = useRef<Map<string, DirtyItem>>(new Map());
+
+  // In-flight save promises per item to serialize saves per item and await on submit
+  const inFlightSavesRef = useRef<Map<string, Promise<void>>>(new Map());
+
+  // Component mounted guard
+  const isMountedRef = useRef<boolean>(true);
+
   // 1. Initial Load
   useEffect(() => {
+    isMountedRef.current = true;
     let mounted = true;
     const init = async () => {
       setLoading(true);
@@ -79,6 +97,10 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           };
         }
         setAnswers(initialAnswers);
+        answersRef.current = initialAnswers;
+        dirtyItemsRef.current.clear();
+        localEditSeqRef.current = {};
+        inFlightSavesRef.current.clear();
 
         if (questionsData.status === 'EXPIRED') {
           setIsExpired(true);
@@ -95,38 +117,99 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     const timers = debounceTimers.current;
     return () => {
       mounted = false;
+      isMountedRef.current = false;
       // Clear any pending timers on unmount
       Object.values(timers).forEach(clearTimeout);
     };
   }, [attemptId]);
 
   // 2. Perform Save
-  const performSave = useCallback(
-    async (itemId: string, payload: Record<string, unknown>, expectedRevision?: number) => {
-      setAutosaveStatus('SAVING');
-      setAutosaveError(null);
+  const doSave = useCallback(
+    async (itemId: string): Promise<void> => {
+      const dirty = dirtyItemsRef.current.get(itemId);
+      if (!dirty) return;
+
+      const payloadToSave = dirty.payload;
+      const seqToSave = dirty.seq;
+      const currentRev = answersRef.current[itemId]?.revision ?? 0;
+      const expectedRevision = currentRev > 0 ? currentRev : undefined;
+
+      if (isMountedRef.current) {
+        setAutosaveStatus('SAVING');
+        setAutosaveError(null);
+      }
+
       try {
-        const saved = await saveExamResponse(attemptId, itemId, payload, expectedRevision);
-        setAnswers((prev) => ({
-          ...prev,
-          [itemId]: {
-            payload: saved.responsePayload,
-            revision: saved.revision,
-          },
-        }));
-        setAutosaveStatus('SAVED');
-        setLastSavedAt(new Date());
-      } catch (err) {
-        if (err instanceof ExamApiError && err.statusCode === 409) {
-          setAutosaveStatus('ERROR');
-          setAutosaveError(err.message || 'Stale response revision (409 Conflict).');
-        } else {
-          setAutosaveStatus('ERROR');
-          setAutosaveError(err instanceof Error ? err.message : 'Autosave failed.');
+        const saved = await saveExamResponse(attemptId, itemId, payloadToSave, expectedRevision);
+
+        const currentSeq = localEditSeqRef.current[itemId] ?? 0;
+        const isNewerLocalEdit = currentSeq > seqToSave;
+
+        // Clear dirty flag only if no newer local edit occurred while in-flight
+        if (!isNewerLocalEdit) {
+          dirtyItemsRef.current.delete(itemId);
         }
+
+        if (isMountedRef.current) {
+          // Never overwrite with older in-flight payload if learner typed newer answer
+          setAnswers((prev) => {
+            const existing = prev[itemId];
+            return {
+              ...prev,
+              [itemId]: {
+                payload: isNewerLocalEdit ? (existing?.payload ?? payloadToSave) : saved.responsePayload,
+                revision: saved.revision,
+              },
+            };
+          });
+
+          answersRef.current[itemId] = {
+            payload: isNewerLocalEdit ? (answersRef.current[itemId]?.payload ?? payloadToSave) : saved.responsePayload,
+            revision: saved.revision,
+          };
+
+          if (inFlightSavesRef.current.size <= 1 && dirtyItemsRef.current.size === 0) {
+            setAutosaveStatus('SAVED');
+          }
+          setLastSavedAt(new Date());
+        }
+      } catch (err) {
+        if (isMountedRef.current) {
+          if (err instanceof ExamApiError && err.statusCode === 409) {
+            setAutosaveStatus('ERROR');
+            setAutosaveError(err.message || 'Stale response revision (409 Conflict).');
+          } else {
+            setAutosaveStatus('ERROR');
+            setAutosaveError(err instanceof Error ? err.message : 'Autosave failed.');
+          }
+        }
+        throw err;
       }
     },
     [attemptId],
+  );
+
+  const executeSaveForItem = useCallback(
+    (itemId: string): Promise<void> => {
+      const currentInFlight = inFlightSavesRef.current.get(itemId) || Promise.resolve();
+
+      const nextPromise: Promise<void> = currentInFlight
+        .then(async () => {
+          if (!dirtyItemsRef.current.has(itemId)) {
+            return;
+          }
+          await doSave(itemId);
+        })
+        .finally(() => {
+          if (inFlightSavesRef.current.get(itemId) === nextPromise) {
+            inFlightSavesRef.current.delete(itemId);
+          }
+        });
+
+      inFlightSavesRef.current.set(itemId, nextPromise);
+      return nextPromise;
+    },
+    [doSave],
   );
 
   // 3. Question Response Changed
@@ -135,6 +218,14 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
 
     const currentItem = answersRef.current[itemId];
     const currentRev = currentItem?.revision ?? 0;
+
+    const nextSeq = (localEditSeqRef.current[itemId] ?? 0) + 1;
+    localEditSeqRef.current[itemId] = nextSeq;
+
+    dirtyItemsRef.current.set(itemId, {
+      payload: newPayload,
+      seq: nextSeq,
+    });
 
     // Optimistically update UI
     setAnswers((prev) => ({
@@ -145,6 +236,11 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
       },
     }));
 
+    answersRef.current[itemId] = {
+      payload: newPayload,
+      revision: currentRev,
+    };
+
     // Debounce save request
     if (debounceTimers.current[itemId]) {
       clearTimeout(debounceTimers.current[itemId]);
@@ -152,23 +248,42 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
 
     setAutosaveStatus('SAVING');
     debounceTimers.current[itemId] = setTimeout(() => {
-      performSave(itemId, newPayload, currentRev > 0 ? currentRev : undefined);
+      executeSaveForItem(itemId).catch(() => {
+        // Error state handled inside doSave
+      });
     }, debounceMs);
   };
 
-  // 4. Timer Expiration Handler
+  // 4. Retry handler for autosave indicator
+  const handleRetryAutosave = useCallback(() => {
+    if (dirtyItemsRef.current.size > 0) {
+      for (const itemId of Array.from(dirtyItemsRef.current.keys())) {
+        executeSaveForItem(itemId).catch(() => {});
+      }
+    } else {
+      for (const [itemId, item] of Object.entries(answersRef.current)) {
+        dirtyItemsRef.current.set(itemId, {
+          payload: item.payload,
+          seq: (localEditSeqRef.current[itemId] ?? 0) + 1,
+        });
+        executeSaveForItem(itemId).catch(() => {});
+      }
+    }
+  }, [executeSaveForItem]);
+
+  // 5. Timer Expiration Handler
   const handleTimerExpire = () => {
     setIsExpired(true);
   };
 
-  // 5. Check unanswered questions
+  // 6. Check unanswered questions
   const getUnansweredQuestions = () => {
     if (!blueprint) return [];
     const unanswered: Array<{ id: string; title: string; orderIndex: number }> = [];
 
     for (const sec of blueprint.sections) {
       for (const item of sec.items) {
-        const ans = answers[item.id];
+        const ans = answersRef.current[item.id] ?? answers[item.id];
         if (!ans || !ans.payload || Object.keys(ans.payload).length === 0) {
           unanswered.push({ id: item.id, title: item.title, orderIndex: item.orderIndex });
           continue;
@@ -186,19 +301,39 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     return unanswered;
   };
 
-  // 6. Final Submission
+  // 7. Final Submission: Flush & await all pending/in-flight autosaves
   const handleSubmit = async () => {
+    if (isSubmitting) return;
     setShowSubmitConfirm(false);
     setIsSubmitting(true);
     setSubmitError(null);
 
     // Flush any pending debounces before submission
-    const pendingItems = Object.keys(debounceTimers.current);
-    if (pendingItems.length > 0) {
-      for (const itemId of pendingItems) {
-        clearTimeout(debounceTimers.current[itemId]);
-        delete debounceTimers.current[itemId];
+    const pendingTimers = Object.values(debounceTimers.current);
+    pendingTimers.forEach(clearTimeout);
+    debounceTimers.current = {};
+
+    // Trigger save for any dirty items
+    for (const itemId of Array.from(dirtyItemsRef.current.keys())) {
+      executeSaveForItem(itemId);
+    }
+
+    // Await all in-flight and flushed saves before submitting
+    try {
+      const inFlight = Array.from(inFlightSavesRef.current.values());
+      if (inFlight.length > 0) {
+        await Promise.all(inFlight);
       }
+    } catch (saveErr) {
+      setIsSubmitting(false);
+      const errMsg =
+        saveErr instanceof ExamApiError
+          ? saveErr.message
+          : saveErr instanceof Error
+            ? saveErr.message
+            : 'Failed to save responses before submission.';
+      setSubmitError(`Failed to save responses before submission: ${errMsg}`);
+      return; // Abort submission so learner does not lose answers
     }
 
     try {
@@ -213,6 +348,28 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // 8. Leave with flush
+  const handleLeave = async () => {
+    if (isSubmitting) return;
+    const pendingTimers = Object.values(debounceTimers.current);
+    pendingTimers.forEach(clearTimeout);
+    debounceTimers.current = {};
+
+    for (const itemId of Array.from(dirtyItemsRef.current.keys())) {
+      executeSaveForItem(itemId).catch(() => {});
+    }
+
+    const inFlight = Array.from(inFlightSavesRef.current.values());
+    if (inFlight.length > 0) {
+      try {
+        await Promise.all(inFlight);
+      } catch {
+        // Continue to onCancel even if autosave failed
+      }
+    }
+    onCancel();
   };
 
   const handlePreSubmit = () => {
@@ -281,10 +438,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
             status={autosaveStatus}
             lastSavedAt={lastSavedAt}
             errorMessage={autosaveError}
-            onRetry={() => {
-              // Retry any pending
-              Object.entries(answers).forEach(([k, v]) => performSave(k, v.payload, v.revision));
-            }}
+            onRetry={handleRetryAutosave}
           />
         </div>
       </header>
@@ -342,7 +496,7 @@ export const ExamTakingView: React.FC<ExamTakingViewProps> = ({
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={onCancel}
+            onClick={handleLeave}
             disabled={isSubmitting}
           >
             Leave (Answers Saved)
