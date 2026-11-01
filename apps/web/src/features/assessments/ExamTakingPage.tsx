@@ -21,7 +21,7 @@ export default function ExamTakingPage() {
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '0 0.5rem' }}>
       <ExamTakingView
         attemptId={attemptId}
-        onFinish={(_result) => {
+        onFinish={() => {
           navigate(`/app/exams/attempts/${attemptId}/result`);
         }}
         onCancel={() => {

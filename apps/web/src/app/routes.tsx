@@ -24,20 +24,6 @@ const CourseDraftEditor = lazy(() => import('../features/creator/CourseDraftEdit
 const QuestionBankPage = lazy(() => import('../features/creator/QuestionBankPage'));
 const DevPage = lazy(() => import('../features/dev/DevPage'));
 
-function ComingSoon({ title }: { title: string }) {
-  return (
-    <div style={{ padding: '2rem' }}>
-      <h1 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--ui-text)' }}>
-        {title}
-      </h1>
-      <p style={{ color: 'var(--ui-text-muted)', fontSize: '0.9rem' }}>
-        This module is scheduled for an upcoming productization phase.
-        All authoritative backend business services remain active.
-      </p>
-    </div>
-  );
-}
-
 export function AppRouter() {
   return (
     <Router>

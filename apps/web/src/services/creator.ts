@@ -14,7 +14,6 @@ import {
   QuestionBankItemDto,
   QuestionType,
   ReorderDraftBlocksRequest,
-  UpdateAssessmentDefinitionDto,
   UpdateCourseDraftRequest,
   UpdateDraftBlockRequest,
 } from '@ule/contracts';
@@ -222,8 +221,8 @@ export async function createQuestionBankItem(
 
 export async function publishQuestionVersion(
   itemId: string,
-): Promise<any> {
-  return request<any>(`/api/v1/question-bank/${itemId}/versions`, {
+): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>(`/api/v1/question-bank/${itemId}/versions`, {
     method: 'POST',
   });
 }

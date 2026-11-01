@@ -73,8 +73,8 @@ export async function fetchGradingQueue(
 /**
  * Fetches the complete grading context for an attempt (responses, rubrics, item grades).
  */
-export async function fetchGradingAttempt(attemptId: string): Promise<any> {
-  return request<any>(`/api/v1/exam-grading/attempts/${attemptId}`);
+export async function fetchGradingAttempt(attemptId: string): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>(`/api/v1/exam-grading/attempts/${attemptId}`);
 }
 
 /**
@@ -109,8 +109,8 @@ export async function correctExamItemGrade(
 export async function finalizeExamGrading(
   attemptId: string,
   dto?: FinalizeExamGradingDto,
-): Promise<any> {
-  return request<any>(`/api/v1/exam-grading/attempts/${attemptId}/finalize`, {
+): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>(`/api/v1/exam-grading/attempts/${attemptId}/finalize`, {
     method: 'POST',
     body: JSON.stringify(dto || {}),
   });

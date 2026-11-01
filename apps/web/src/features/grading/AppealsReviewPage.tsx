@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ExamGradeAppealDto } from '@ule/contracts';
+import { ExamGradeAppealDto, ResolveExamAppealDto } from '@ule/contracts';
 import { fetchAppeal, resolveAppeal, reviewAppeal } from '../../services/grading';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
@@ -70,7 +70,7 @@ export default function AppealsReviewPage() {
     setActionSuccess(null);
     setResolving(true);
     try {
-      const payload: any = {
+      const payload: ResolveExamAppealDto = {
         resolution: resolutionChoice,
         reviewerNotes: reviewerNotes.trim(),
       };
@@ -207,7 +207,11 @@ export default function AppealsReviewPage() {
               Determination Outcome:
               <select
                 value={resolutionChoice}
-                onChange={(e) => setResolutionChoice(e.target.value as any)}
+                onChange={(e) =>
+                  setResolutionChoice(
+                    e.target.value as 'RESOLVED_UPHELD' | 'RESOLVED_CHANGED' | 'REJECTED',
+                  )
+                }
                 style={{
                   display: 'block',
                   marginTop: '0.25rem',

@@ -20,11 +20,40 @@ import { Card } from '../../components/ui/Card';
 import { ErrorState } from '../../components/states/ErrorState';
 import { LoadingState } from '../../components/states/LoadingState';
 
+interface GradingItemGrade {
+  id: string;
+  itemRefId: string;
+  questionType: string;
+  maxPoints: number;
+  awardedPoints?: number;
+  isPendingHuman: boolean;
+  revision?: number;
+}
+
+interface GradingContext {
+  id: string;
+  status: string;
+  learnerId?: string;
+  learner?: { name?: string; email?: string };
+  assessmentVersion?: {
+    assessmentDefinition?: { title: string };
+  };
+  responses?: Array<{
+    itemRefId: string;
+    responsePayload?: Record<string, unknown>;
+  }>;
+  grade?: {
+    totalAwardedPoints?: number;
+    maxPossiblePoints?: number;
+    itemGrades?: GradingItemGrade[];
+  };
+}
+
 export default function RubricEvaluationPage() {
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
 
-  const [gradingContext, setGradingContext] = useState<any | null>(null);
+  const [gradingContext, setGradingContext] = useState<GradingContext | null>(null);
   const [revisions, setRevisions] = useState<{
     aggregateRevisions: ExamGradeRevisionDto[];
     itemRevisions: ExamHumanGradeRevisionDto[];
@@ -48,7 +77,7 @@ export default function RubricEvaluationPage() {
     setError(null);
     try {
       const [context, revs, apps] = await Promise.all([
-        fetchGradingAttempt(attemptId),
+        fetchGradingAttempt(attemptId) as unknown as Promise<GradingContext>,
         fetchGradeRevisions(attemptId).catch(() => ({ aggregateRevisions: [], itemRevisions: [] })),
         fetchAppealsForAttempt(attemptId).catch(() => []),
       ]);
@@ -76,7 +105,7 @@ export default function RubricEvaluationPage() {
     loadData();
   }, [loadData]);
 
-  const handleEvaluate = async (itemGrade: any) => {
+  const handleEvaluate = async (itemGrade: GradingItemGrade) => {
     setActionError(null);
     setActionSuccess(null);
     setEvaluatingItemId(itemGrade.id);
@@ -205,8 +234,8 @@ export default function RubricEvaluationPage() {
           Items Pending / Evaluated ({itemGrades.length})
         </h2>
 
-        {itemGrades.map((itemGrade: any, index: number) => {
-          const resp = responses?.find((r: any) => r.itemRefId === itemGrade.itemRefId);
+        {itemGrades.map((itemGrade: GradingItemGrade, index: number) => {
+          const resp = responses?.find((r) => r.itemRefId === itemGrade.itemRefId);
           const responsePayload = resp?.responsePayload || {};
           const isPending = itemGrade.isPendingHuman;
 
@@ -243,9 +272,11 @@ export default function RubricEvaluationPage() {
                   Learner Submitted Response:
                 </span>
                 <div style={{ fontSize: '0.9rem', color: 'var(--ui-text)', whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
-                  {responsePayload.text || responsePayload.code || JSON.stringify(responsePayload, null, 2) || (
-                    <em>No response provided.</em>
-                  )}
+                  {(typeof responsePayload.text === 'string' && responsePayload.text) ||
+                    (typeof responsePayload.code === 'string' && responsePayload.code) ||
+                    JSON.stringify(responsePayload, null, 2) || (
+                      <em>No response provided.</em>
+                    )}
                 </div>
               </div>
 
