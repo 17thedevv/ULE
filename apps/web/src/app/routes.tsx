@@ -14,6 +14,8 @@ const CourseDetailPage = lazy(() => import('../features/learner/CourseDetailPage
 const SkillsPage = lazy(() => import('../features/learner/SkillsPage'));
 const QuestsPage = lazy(() => import('../features/learner/QuestsPage'));
 const ExamsPage = lazy(() => import('../features/assessments/ExamsPage'));
+const ExamTakingPage = lazy(() => import('../features/assessments/ExamTakingPage'));
+const ExamResultPage = lazy(() => import('../features/assessments/ExamResultPage'));
 const StudioPage = lazy(() => import('../features/creator/StudioPage'));
 const DevPage = lazy(() => import('../features/dev/DevPage'));
 
@@ -48,10 +50,8 @@ export function AppRouter() {
 
             {/* Assessment Center (UI-03) */}
             <Route path="/app/exams" element={<ExamsPage />} />
-            <Route
-              path="/app/exams/:attemptId"
-              element={<ComingSoon title="Exam Player" />}
-            />
+            <Route path="/app/exams/attempts/:attemptId" element={<ExamTakingPage />} />
+            <Route path="/app/exams/attempts/:attemptId/result" element={<ExamResultPage />} />
 
             {/* Creator Studio (UI-05) */}
             <Route path="/studio" element={<Navigate to="/studio/courses" replace />} />

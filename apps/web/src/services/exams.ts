@@ -136,3 +136,23 @@ export async function submitExamAttempt(
 export async function fetchExamResult(attemptId: string): Promise<ExamResultSummaryDto> {
   return request<ExamResultSummaryDto>(`/api/v1/exam-attempts/${attemptId}/result`);
 }
+
+/**
+ * Submits a grade appeal for a completed, released examination.
+ */
+export async function createExamAppeal(
+  attemptId: string,
+  payload: { examItemGradeId?: string; reason: string },
+): Promise<unknown> {
+  return request(`/api/v1/exam-attempts/${attemptId}/appeals`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * Lists appeals filed for an examination attempt.
+ */
+export async function fetchExamAppeals(attemptId: string): Promise<unknown[]> {
+  return request<unknown[]>(`/api/v1/exam-attempts/${attemptId}/appeals`);
+}
