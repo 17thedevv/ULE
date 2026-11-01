@@ -3,6 +3,7 @@ import { AbpVerificationStudio } from './components/AbpVerificationStudio';
 import { AuthCourseStudio } from './components/AuthCourseStudio';
 import { HealthStatus } from './components/HealthStatus';
 import { LearnerEvidenceStudio } from './components/LearnerEvidenceStudio';
+import { LearnerExamStudio } from './components/LearnerExamStudio';
 import { getApiBaseUrl } from './services/api';
 
 export const App: React.FC = () => {
@@ -37,6 +38,7 @@ export const App: React.FC = () => {
         <div className="grid">
           <div className="column">
             <LearnerEvidenceStudio />
+            <LearnerExamStudio />
             <AuthCourseStudio />
             <AbpVerificationStudio />
           </div>

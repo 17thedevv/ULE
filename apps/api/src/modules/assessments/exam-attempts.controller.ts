@@ -21,6 +21,7 @@ import {
   ExamAttemptDto,
   ExamResponseDto,
   ExamResultSummaryDto,
+  LearnerEligibleExamDto,
 } from '@ule/contracts';
 import { AuthGuard } from '../auth/auth.guard';
 import { AuthUser } from '../auth/auth.types';
@@ -42,6 +43,47 @@ import {
 @UseGuards(AuthGuard)
 export class ExamAttemptsController {
   constructor(private readonly examAttemptsService: ExamAttemptsService) {}
+
+  @Get('learner/exams')
+  @ApiOperation({
+    summary: 'List authorized published examinations for the authenticated learner',
+    description:
+      'Returns eligible examinations where the learner has an active explicit grant, course enrollment, or ownership. Never leaks ungranted private exams.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'List of authorized examinations.',
+  })
+  async listEligibleExams(
+    @CurrentUser() user: AuthUser,
+  ): Promise<LearnerEligibleExamDto[]> {
+    return this.examAttemptsService.listEligibleExamsForLearner(user.id);
+  }
+
+  @Get('learner/exams/:assessmentVersionId')
+  @ApiOperation({
+    summary: 'Get authorized examination metadata for the authenticated learner',
+    description:
+      'Returns metadata and existing attempt status for a specific eligible AssessmentVersion. Throws 403 Forbidden if not authorized.',
+  })
+  @ApiParam({
+    name: 'assessmentVersionId',
+    description: 'UUID of the published AssessmentVersion',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Examination metadata retrieved.',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Learner is not authorized to access this examination.',
+  })
+  async getEligibleExam(
+    @CurrentUser() user: AuthUser,
+    @Param('assessmentVersionId') assessmentVersionId: string,
+  ): Promise<LearnerEligibleExamDto> {
+    return this.examAttemptsService.getEligibleExamForLearner(assessmentVersionId, user.id);
+  }
 
   @Post('exams/:assessmentVersionId/attempts')
   @HttpCode(HttpStatus.CREATED)
