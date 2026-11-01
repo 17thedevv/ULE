@@ -35,7 +35,7 @@ export default function QuestionBankPage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchQuestionBankItems(typeFilter ? { questionType: typeFilter } : undefined);
+      const data = await fetchQuestionBankItems(typeFilter ? { type: typeFilter } : undefined);
       setItems(data);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load question bank.';
@@ -69,23 +69,84 @@ export default function QuestionBankPage() {
     if (qType === 'MULTIPLE_CHOICE') {
       content = {
         options: [
-          { id: 'opt-1', text: 'Option A: Authoritative server state' },
-          { id: 'opt-2', text: 'Option B: Client-inferred state' },
+          { id: 'opt_1', text: 'Option A: Authoritative server state' },
+          { id: 'opt_2', text: 'Option B: Client-inferred state' },
         ],
       };
-      answerKey = { correctOptionId: 'opt-1' };
+      answerKey = { correctOptionIds: ['opt_1'] };
+    } else if (qType === 'SINGLE_CHOICE') {
+      content = {
+        options: [
+          { id: 'opt_1', text: 'Option A: Authoritative server state' },
+          { id: 'opt_2', text: 'Option B: Client-inferred state' },
+        ],
+      };
+      answerKey = { correctOptionId: 'opt_1' };
+    } else if (qType === 'TRUE_FALSE') {
+      content = {};
+      answerKey = { correctValue: true };
+    } else if (qType === 'CLOZE') {
+      content = {
+        templateText: 'ULE backend uses {{blank_1}} as the primary server framework.',
+        targetBlanks: [
+          { blankKey: 'blank_1', hint: 'Framework name' },
+        ],
+      };
+      answerKey = {
+        blanks: {
+          blank_1: ['NestJS', 'Nest.js'],
+        },
+      };
+    } else if (qType === 'SHORT_TEXT') {
+      content = { placeholder: 'Enter single word or term' };
+      answerKey = { acceptableAnswers: ['PostgreSQL', 'Postgres'] };
+    } else if (qType === 'NUMERIC') {
+      content = { unit: 'seconds' };
+      answerKey = { correctValue: 15, tolerance: 0, toleranceType: 'ABSOLUTE' };
     } else if (qType === 'ESSAY') {
+      content = { minWords: 10, maxWords: 500 };
+      answerKey = undefined; // Prohibited for essays in ULE
       rubric = {
         criteria: [
           {
-            id: 'c1',
-            title: 'Architectural Soundness',
+            id: 'crit-1',
+            name: 'Architectural Soundness',
+            description: 'Evaluation of system architecture and modular boundaries',
             maxPoints: points,
             levels: [
-              { points, description: 'Clearly decouples services with versioned contracts' },
+              {
+                score: points,
+                label: 'Exemplary',
+                description: 'Clearly decouples services with versioned contracts',
+              },
             ],
           },
         ],
+      };
+    } else if (qType === 'MATCHING') {
+      content = {
+        premises: [
+          { id: 'p_1', text: 'PostgreSQL' },
+          { id: 'p_2', text: 'React + Vite' },
+        ],
+        targets: [
+          { id: 't_1', text: 'Authoritative database' },
+          { id: 't_2', text: 'Single Page Application' },
+        ],
+      };
+      answerKey = {
+        matches: { p_1: 't_1', p_2: 't_2' },
+      };
+    } else if (qType === 'ORDERING') {
+      content = {
+        items: [
+          { id: 'o_1', text: 'Define API contract' },
+          { id: 'o_2', text: 'Implement backend service' },
+          { id: 'o_3', text: 'Integrate frontend client' },
+        ],
+      };
+      answerKey = {
+        correctOrder: ['o_1', 'o_2', 'o_3'],
       };
     }
 
@@ -198,10 +259,15 @@ export default function QuestionBankPage() {
                     color: 'var(--ui-text)',
                   }}
                 >
-                  <option value="MULTIPLE_CHOICE">MULTIPLE_CHOICE (Automated)</option>
-                  <option value="ESSAY">ESSAY (Rubric / Human)</option>
-                  <option value="CODE_EXECUTION">CODE_EXECUTION (Automated)</option>
-                  <option value="FILE_RESPONSE">FILE_RESPONSE (Human)</option>
+                  <option value="SINGLE_CHOICE">SINGLE_CHOICE (Single select)</option>
+                  <option value="MULTIPLE_CHOICE">MULTIPLE_CHOICE (Multi-select)</option>
+                  <option value="TRUE_FALSE">TRUE_FALSE (Binary boolean)</option>
+                  <option value="CLOZE">CLOZE (Fill-in-the-blank)</option>
+                  <option value="SHORT_TEXT">SHORT_TEXT (Short phrase)</option>
+                  <option value="NUMERIC">NUMERIC (Number with tolerance)</option>
+                  <option value="ESSAY">ESSAY (Rubric / Human evaluated)</option>
+                  <option value="MATCHING">MATCHING (Pair association)</option>
+                  <option value="ORDERING">ORDERING (Sequence)</option>
                 </select>
               </label>
 
@@ -292,11 +358,16 @@ export default function QuestionBankPage() {
             fontSize: '0.85rem',
           }}
         >
-          <option value="">All Question Types</option>
+          <option value="">All Question Types (9 allowlisted)</option>
+          <option value="SINGLE_CHOICE">SINGLE_CHOICE</option>
           <option value="MULTIPLE_CHOICE">MULTIPLE_CHOICE</option>
+          <option value="TRUE_FALSE">TRUE_FALSE</option>
+          <option value="CLOZE">CLOZE</option>
+          <option value="SHORT_TEXT">SHORT_TEXT</option>
+          <option value="NUMERIC">NUMERIC</option>
           <option value="ESSAY">ESSAY</option>
-          <option value="CODE_EXECUTION">CODE_EXECUTION</option>
-          <option value="FILE_RESPONSE">FILE_RESPONSE</option>
+          <option value="MATCHING">MATCHING</option>
+          <option value="ORDERING">ORDERING</option>
         </select>
       </div>
 

@@ -111,23 +111,43 @@ export default function CourseDraftEditor() {
 
     let config: Record<string, unknown> = {};
     if (newBlockType === 'video') {
-      config = { url: newBlockUrl, allowSkip: true };
+      config = {
+        url: newBlockUrl,
+        durationSeconds: 120,
+        transcript: '',
+        allowSkip: true,
+      };
     } else if (newBlockType === 'multiple-choice') {
       config = {
-        prompt: 'Select the correct architectural principle:',
+        question: 'Select the correct architectural principle:',
         options: [
-          { id: 'opt-1', text: 'Loose coupling with clear boundaries' },
-          { id: 'opt-2', text: 'Tight direct database connections from clients' },
+          { id: 'opt_1', text: 'Loose coupling with clear modular boundaries' },
+          { id: 'opt_2', text: 'Tight direct database connections from clients' },
         ],
-        correctOptionId: 'opt-1',
+        answerKey: {
+          correctOptionId: 'opt_1',
+          explanation: 'Clients must connect via versioned HTTP APIs, never directly to PostgreSQL.',
+        },
+        feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
+        allowHints: false,
       };
     } else if (newBlockType === 'cloze') {
       config = {
-        template: 'ULE backend uses [[NestJS]] with [[PostgreSQL]] database.',
-        blanks: [
-          { id: 'b1', answer: 'NestJS' },
-          { id: 'b2', answer: 'PostgreSQL' },
+        prompt: 'Complete the sentence with the correct technologies.',
+        templateText: 'ULE backend uses {{blank_1}} with {{blank_2}} database.',
+        targetBlanks: [
+          { id: 'b_1', blankKey: 'blank_1', hintText: 'Backend framework' },
+          { id: 'b_2', blankKey: 'blank_2', hintText: 'Relational database' },
         ],
+        answerKey: {
+          blanks: {
+            blank_1: ['NestJS', 'Nest.js'],
+            blank_2: ['PostgreSQL', 'Postgres'],
+          },
+          explanation: 'ULE is built on NestJS and PostgreSQL.',
+        },
+        feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
+        allowHints: false,
       };
     }
 

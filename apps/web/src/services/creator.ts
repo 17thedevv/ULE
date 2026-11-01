@@ -200,11 +200,11 @@ export interface CreateQuestionBankItemDto {
 }
 
 export async function fetchQuestionBankItems(query?: {
-  questionType?: string;
+  type?: string;
   tag?: string;
 }): Promise<QuestionBankItemDto[]> {
   const params = new URLSearchParams();
-  if (query?.questionType) params.append('questionType', query.questionType);
+  if (query?.type) params.append('type', query.type);
   if (query?.tag) params.append('tag', query.tag);
   const qStr = params.toString() ? `?${params.toString()}` : '';
   return request<QuestionBankItemDto[]>(`/api/v1/question-bank${qStr}`);

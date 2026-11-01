@@ -29,6 +29,7 @@ body {
   --text-primary: var(--ui-text);
   --text-secondary: var(--ui-text-muted);
   --text-muted: var(--ui-text-muted);
+  --border: var(--ui-border);
   --border-color: var(--ui-border);
   --color-primary: var(--ui-primary);
   --color-primary-hover: var(--ui-primary-hover);

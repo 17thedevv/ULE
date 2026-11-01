@@ -194,35 +194,103 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
       {/* VIDEO PLAYER */}
       {blockTypeId === 'video' && (() => {
         const video = run.block.learnerConfig as unknown as VideoLearnerView;
+        const isEmbed =
+          video.url?.includes('youtube.com') ||
+          video.url?.includes('youtu.be') ||
+          video.url?.includes('vimeo.com');
+
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <div
               style={{
                 background: 'var(--ui-surface-muted)',
                 border: '1px solid var(--ui-border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '2rem 1rem',
-                textAlign: 'center',
+                borderRadius: 'var(--ui-radius-sm)',
+                overflow: 'hidden',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
               }}
             >
-              <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>▶️</div>
-              <p style={{ fontWeight: 600, color: 'var(--ui-text)', margin: '0 0 0.5rem' }}>
-                Video Stream Resource
-              </p>
-              <code style={{ fontSize: '0.8rem', wordBreak: 'break-all' }}>{video.url}</code>
-              {video.durationSeconds && (
-                <p style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)', marginTop: '0.5rem' }}>
-                  Duration: ~{Math.round(video.durationSeconds / 60)} min
-                </p>
+              {isEmbed ? (
+                <iframe
+                  title={run.block.title || 'Video Resource'}
+                  src={video.url}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                  style={{
+                    width: '100%',
+                    height: '360px',
+                    border: 'none',
+                    display: 'block',
+                  }}
+                />
+              ) : (
+                <video
+                  controls
+                  preload="metadata"
+                  src={video.url}
+                  style={{
+                    width: '100%',
+                    maxHeight: '420px',
+                    backgroundColor: '#000000',
+                    display: 'block',
+                  }}
+                >
+                  <track kind="captions" />
+                  Your browser does not support HTML5 video streaming. Direct resource:{' '}
+                  <a href={video.url} target="_blank" rel="noopener noreferrer">
+                    {video.url}
+                  </a>
+                </video>
               )}
+
+              <div
+                style={{
+                  width: '100%',
+                  padding: '0.75rem 1rem',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '0.5rem',
+                  borderTop: '1px solid var(--ui-border)',
+                  background: 'var(--ui-surface)',
+                  fontSize: '0.8rem',
+                  color: 'var(--ui-text-muted)',
+                }}
+              >
+                <span>
+                  Source: <code>{video.url}</code>
+                </span>
+                {video.durationSeconds && (
+                  <span>
+                    Duration: ~{Math.round(video.durationSeconds / 60)} min ({video.durationSeconds}s)
+                  </span>
+                )}
+              </div>
             </div>
 
             {video.transcript && (
-              <details style={{ background: 'var(--ui-surface-muted)', padding: '0.75rem', borderRadius: 'var(--radius-sm)' }}>
+              <details
+                style={{
+                  background: 'var(--ui-surface-subtle)',
+                  padding: '0.75rem',
+                  borderRadius: 'var(--ui-radius-sm)',
+                  border: '1px solid var(--ui-border)',
+                }}
+              >
                 <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
                   View Video Transcript
                 </summary>
-                <p style={{ fontSize: '0.85rem', color: 'var(--ui-text-muted)', marginTop: '0.5rem', whiteSpace: 'pre-wrap' }}>
+                <p
+                  style={{
+                    fontSize: '0.85rem',
+                    color: 'var(--ui-text-muted)',
+                    marginTop: '0.5rem',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
                   {video.transcript}
                 </p>
               </details>
@@ -233,7 +301,7 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
                 padding: '0.75rem',
                 background: 'var(--ui-warning-bg)',
                 border: '1px solid var(--ui-warning)',
-                borderRadius: 'var(--radius-sm)',
+                borderRadius: 'var(--ui-radius-sm)',
                 fontSize: '0.82rem',
                 color: 'var(--ui-warning)',
               }}

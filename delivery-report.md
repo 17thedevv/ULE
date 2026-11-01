@@ -99,7 +99,8 @@ Semantic tokens are implemented in `apps/web/src/styles/tokens.css` with instant
 ## 5. Verification Results & CI Status
 
 ### Web Frontend Suite
-All 17 test files passed (83 unit and component integration tests, 100% pass):
+All 18 test files passed (88 unit and component integration tests, 100% pass):
+- `src/features/creator/contracts-hardening.test.ts` (5 tests - contract hardening)
 - `src/theme/theme.test.ts` (10 tests)
 - `src/theme/ThemeSwitcher.test.tsx` (3 tests)
 - `src/components/ui/primitives.test.tsx` (7 tests)
@@ -117,6 +118,20 @@ All 17 test files passed (83 unit and component integration tests, 100% pass):
 - `src/services/abp.test.ts` (6 tests)
 - `src/services/api.test.ts` (4 tests)
 - `src/App.test.tsx` (3 tests)
+
+### Contract Hardening & Bug Fixes (P1 & P2 Alignment)
+- **Question Bank Schema Alignment (PR #8)**:
+  - Form `MULTIPLE_CHOICE` generates `answerKey.correctOptionIds` array (rather than scalar `correctOptionId`).
+  - Form `ESSAY` uses criterion `name` (rather than `title`) and strictly avoids automated answer keys.
+  - Query parameter in `fetchQuestionBankItems` aligned to `type` (rather than `questionType`).
+  - Question type selector strictly constrained to the 9 allowlisted types in `QuestionTypesRegistry` (`SINGLE_CHOICE`, `MULTIPLE_CHOICE`, `TRUE_FALSE`, `CLOZE`, `SHORT_TEXT`, `NUMERIC`, `ESSAY`, `MATCHING`, `ORDERING`).
+- **ABP Course Builder Schema Alignment (PR #3)**:
+  - `multiple-choice` block config aligned with `MultipleChoiceConfig` (`question`, `options`, `answerKey.correctOptionId`).
+  - `cloze` block config aligned with `ClozeConfig` (`prompt`, `templateText` with `{{blank_X}}`, `targetBlanks`, `answerKey.blanks`).
+  - `video` block config aligned with `VideoConfig` (`url`, `durationSeconds`, `allowSkip`).
+- **CSS Tokens & Player UX**:
+  - `--ui-radius-sm`, `--ui-radius-md`, `--ui-radius-lg`, `--ui-surface-subtle`, and `--border` explicitly defined in `tokens.css` and `global.css`.
+  - `LearningPlayer` directly renders interactive HTML5 `<video controls>` / responsive embed players with transcript viewer.
 
 ### Full Build & Monorepo Static Checks
 - `pnpm --filter @ule/web typecheck` -> **0 errors** (`tsc --noEmit`)
