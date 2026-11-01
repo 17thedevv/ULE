@@ -1,0 +1,82 @@
+import React, { lazy, Suspense } from 'react';
+import {
+  Navigate,
+  Route,
+  BrowserRouter as Router,
+  Routes,
+} from 'react-router-dom';
+import { AppShell } from './AppShell';
+import { LoadingState } from '../components/states/LoadingState';
+
+const LearnerDashboard = lazy(() => import('../features/learner/LearnerDashboard'));
+const CoursesPage = lazy(() => import('../features/learner/CoursesPage'));
+const CourseDetailPage = lazy(() => import('../features/learner/CourseDetailPage'));
+const SkillsPage = lazy(() => import('../features/learner/SkillsPage'));
+const QuestsPage = lazy(() => import('../features/learner/QuestsPage'));
+const ExamsPage = lazy(() => import('../features/assessments/ExamsPage'));
+const ExamTakingPage = lazy(() => import('../features/assessments/ExamTakingPage'));
+const ExamResultPage = lazy(() => import('../features/assessments/ExamResultPage'));
+const GradingQueuePage = lazy(() => import('../features/grading/GradingQueuePage'));
+const RubricEvaluationPage = lazy(() => import('../features/grading/RubricEvaluationPage'));
+const AppealsReviewPage = lazy(() => import('../features/grading/AppealsReviewPage'));
+const StudioPage = lazy(() => import('../features/creator/StudioPage'));
+const CourseDraftEditor = lazy(() => import('../features/creator/CourseDraftEditor'));
+const QuestionBankPage = lazy(() => import('../features/creator/QuestionBankPage'));
+const DevPage = lazy(() => import('../features/dev/DevPage'));
+
+export function AppRouter() {
+  return (
+    <Router>
+      <AppShell>
+        <Suspense fallback={<LoadingState message="Loading page…" />}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/app" replace />} />
+
+            {/* Learner Workspace (UI-02) */}
+            <Route path="/app" element={<LearnerDashboard />} />
+            <Route path="/app/courses" element={<CoursesPage />} />
+            <Route path="/app/courses/:courseVersionId" element={<CourseDetailPage />} />
+            <Route path="/app/skills" element={<SkillsPage />} />
+            <Route path="/app/quests" element={<QuestsPage />} />
+
+            {/* Assessment Center (UI-03) */}
+            <Route path="/app/exams" element={<ExamsPage />} />
+            <Route path="/app/exams/attempts/:attemptId" element={<ExamTakingPage />} />
+            <Route path="/app/exams/attempts/:attemptId/result" element={<ExamResultPage />} />
+
+            {/* Creator Studio (UI-05) */}
+            <Route path="/studio" element={<Navigate to="/studio/courses" replace />} />
+            <Route path="/studio/courses" element={<StudioPage />} />
+            <Route path="/studio/courses/:courseId/edit" element={<CourseDraftEditor />} />
+            <Route path="/studio/question-bank" element={<QuestionBankPage />} />
+            {/* Grading Workspace (UI-04) */}
+            <Route path="/studio/grading" element={<GradingQueuePage />} />
+            <Route path="/studio/grading/attempts/:attemptId" element={<RubricEvaluationPage />} />
+            <Route path="/studio/grading/appeals/:appealId" element={<AppealsReviewPage />} />
+
+            {/* Technical Verification (Preserved) */}
+            <Route path="/dev" element={<Navigate to="/dev/verification" replace />} />
+            <Route path="/dev/*" element={<DevPage />} />
+
+            {/* Fallback */}
+            <Route
+              path="*"
+              element={
+                <div style={{ padding: '2rem' }}>
+                  <h1 style={{ color: 'var(--ui-text)', marginBottom: '0.5rem' }}>
+                    Page not found
+                  </h1>
+                  <p style={{ color: 'var(--ui-text-muted)' }}>
+                    <a href="/app" style={{ color: 'var(--ui-primary)' }}>
+                      Return to Dashboard
+                    </a>
+                  </p>
+                </div>
+              }
+            />
+          </Routes>
+        </Suspense>
+      </AppShell>
+    </Router>
+  );
+}

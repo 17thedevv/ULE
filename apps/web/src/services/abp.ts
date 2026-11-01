@@ -5,6 +5,7 @@ import {
   DraftBlockInstanceDto,
   DraftValidationResponseDto,
   ExecuteRunCommandRequest,
+  ReorderDraftBlocksRequest,
   RunResultsDto,
   StartRunRequest,
   UpdateDraftBlockRequest,
@@ -70,6 +71,19 @@ export async function updateDraftBlock(
     `/api/v1/courses/${courseId}/draft/blocks/${blockId}`,
     {
       method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function reorderDraftBlocks(
+  courseId: string,
+  payload: ReorderDraftBlocksRequest,
+): Promise<DraftBlockInstanceDto[]> {
+  return request<DraftBlockInstanceDto[]>(
+    `/api/v1/courses/${courseId}/draft/blocks/reorder`,
+    {
+      method: 'PUT',
       body: JSON.stringify(payload),
     },
   );

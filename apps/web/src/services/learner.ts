@@ -1,5 +1,7 @@
 import {
+  CourseEnrollmentDto,
   CourseProgressDto,
+  CourseQuestInstanceDto,
   LearnerCourseVersionDto,
   LearnerSkillProjectionDto,
   LearningEvidenceDto,
@@ -63,6 +65,59 @@ export async function fetchSkillProjections(
 
   if (!res.ok) {
     throw new Error(`Failed to fetch skill projections: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+export async function fetchCourseQuests(
+  versionId: string,
+): Promise<CourseQuestInstanceDto[]> {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/v1/learner/courses/${versionId}/quests`, {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch course quests: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+export async function fetchCourseEnrollment(
+  versionId: string,
+): Promise<CourseEnrollmentDto | null> {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/v1/learner/courses/${versionId}/enrollment`, {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+
+  if (res.status === 404) {
+    return null;
+  }
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch course enrollment: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+export async function enrollInCourse(
+  versionId: string,
+): Promise<{ enrollment: CourseEnrollmentDto; quests: CourseQuestInstanceDto[] }> {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/v1/learner/courses/${versionId}/enroll`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to enroll in course: ${res.statusText}`);
   }
 
   return res.json();
