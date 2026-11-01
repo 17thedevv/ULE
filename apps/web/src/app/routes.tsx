@@ -20,6 +20,8 @@ const GradingQueuePage = lazy(() => import('../features/grading/GradingQueuePage
 const RubricEvaluationPage = lazy(() => import('../features/grading/RubricEvaluationPage'));
 const AppealsReviewPage = lazy(() => import('../features/grading/AppealsReviewPage'));
 const StudioPage = lazy(() => import('../features/creator/StudioPage'));
+const CourseDraftEditor = lazy(() => import('../features/creator/CourseDraftEditor'));
+const QuestionBankPage = lazy(() => import('../features/creator/QuestionBankPage'));
 const DevPage = lazy(() => import('../features/dev/DevPage'));
 
 function ComingSoon({ title }: { title: string }) {
@@ -59,6 +61,8 @@ export function AppRouter() {
             {/* Creator Studio (UI-05) */}
             <Route path="/studio" element={<Navigate to="/studio/courses" replace />} />
             <Route path="/studio/courses" element={<StudioPage />} />
+            <Route path="/studio/courses/:courseId/edit" element={<CourseDraftEditor />} />
+            <Route path="/studio/question-bank" element={<QuestionBankPage />} />
             {/* Grading Workspace (UI-04) */}
             <Route path="/studio/grading" element={<GradingQueuePage />} />
             <Route path="/studio/grading/attempts/:attemptId" element={<RubricEvaluationPage />} />
