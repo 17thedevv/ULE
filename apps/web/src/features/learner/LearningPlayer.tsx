@@ -9,6 +9,8 @@ import { executeRunCommand } from '../../services/abp';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
+import { normalizeVideoEmbedUrl } from './video-embed';
+import { buildClozeSubmissionPayload } from './cloze-submission';
 
 interface LearningPlayerProps {
   run: ABRunDto;
@@ -88,9 +90,10 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
       setLoading(true);
       setError(null);
       const idempotencyKey = `submit_cloze_${run.id}_${Date.now()}`;
+      const payload = buildClozeSubmissionPayload(clozeAnswers);
       const updated = await executeRunCommand(run.id, {
         command: 'SUBMIT_RESPONSE',
-        payload: { blanks: clozeAnswers },
+        payload,
         idempotencyKey,
       });
       onRunUpdated(updated);
@@ -194,10 +197,7 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
       {/* VIDEO PLAYER */}
       {blockTypeId === 'video' && (() => {
         const video = run.block.learnerConfig as unknown as VideoLearnerView;
-        const isEmbed =
-          video.url?.includes('youtube.com') ||
-          video.url?.includes('youtu.be') ||
-          video.url?.includes('vimeo.com');
+        const { embedUrl, isEmbed } = normalizeVideoEmbedUrl(video?.url);
 
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -212,10 +212,10 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
                 alignItems: 'center',
               }}
             >
-              {isEmbed ? (
+              {isEmbed && embedUrl ? (
                 <iframe
                   title={run.block.title || 'Video Resource'}
-                  src={video.url}
+                  src={embedUrl}
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                   allowFullScreen
                   style={{
@@ -440,19 +440,17 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
                     const match = part.match(/{{([^}]+)}}/);
                     if (match) {
                       const blankKey = match[1];
-                      const blankDef = cloze.targetBlanks?.find((b) => b.blankKey === blankKey);
-                      const blankId = blankDef?.id ?? blankKey;
 
                       return (
                         <input
                           key={index}
                           type="text"
                           aria-label={`Blank ${blankKey}`}
-                          value={clozeAnswers[blankId] || ''}
+                          value={clozeAnswers[blankKey] || ''}
                           onChange={(e) =>
                             setClozeAnswers((prev) => ({
                               ...prev,
-                              [blankId]: e.target.value,
+                              [blankKey]: e.target.value,
                             }))
                           }
                           disabled={loading || isClosed}

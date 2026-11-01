@@ -5,6 +5,7 @@ import {
   fetchQuestionBankItems,
   publishQuestionVersion,
 } from '../../services/creator';
+import { buildQuestionPayload } from './question-payload-builder';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
@@ -30,6 +31,39 @@ export default function QuestionBankPage() {
   const [creating, setCreating] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
+  // Interactive customizable question content state
+  const [optionsList, setOptionsList] = useState<Array<{ id: string; text: string }>>([
+    { id: 'opt_1', text: 'Option A: Authoritative server state' },
+    { id: 'opt_2', text: 'Option B: Client-inferred state' },
+  ]);
+  const [singleChoiceOption, setSingleChoiceOption] = useState<string>('opt_1');
+  const [multiChoiceOptions, setMultiChoiceOptions] = useState<string[]>(['opt_1']);
+  const [trueFalseValue, setTrueFalseValue] = useState<boolean>(true);
+  const [matchingPairs, setMatchingPairs] = useState<
+    Array<{ premiseId: string; premiseText: string; targetId: string; targetText: string }>
+  >([
+    { premiseId: 'p_1', premiseText: 'PostgreSQL', targetId: 't_1', targetText: 'Authoritative database' },
+    { premiseId: 'p_2', premiseText: 'React + Vite', targetId: 't_2', targetText: 'Single Page Application' },
+  ]);
+  const [orderingItems, setOrderingItems] = useState<Array<{ id: string; text: string }>>([
+    { id: 'o_1', text: 'Define API contract' },
+    { id: 'o_2', text: 'Implement backend service' },
+    { id: 'o_3', text: 'Integrate frontend client' },
+  ]);
+  const [clozeTemplate, setClozeTemplate] = useState<string>(
+    'ULE backend uses {{blank_1}} as the primary server framework.',
+  );
+  const [clozeBlankKey, setClozeBlankKey] = useState<string>('blank_1');
+  const [clozeVariants, setClozeVariants] = useState<string>('NestJS, Nest.js');
+  const [shortTextAnswers, setShortTextAnswers] = useState<string>('PostgreSQL, Postgres');
+  const [numericValue, setNumericValue] = useState<number>(15);
+  const [numericTolerance, setNumericTolerance] = useState<number>(0);
+  const [numericUnit, setNumericUnit] = useState<string>('seconds');
+  const [essayCriterionName, setEssayCriterionName] = useState<string>('Architectural Soundness');
+  const [essayCriterionDescription, setEssayCriterionDescription] = useState<string>(
+    'Evaluation of system architecture and modular boundaries',
+  );
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -62,105 +96,39 @@ export default function QuestionBankPage() {
       .map((t) => t.trim())
       .filter(Boolean);
 
-    let content: Record<string, unknown> = {};
-    let answerKey: Record<string, unknown> | undefined;
-    let rubric: Record<string, unknown> | undefined;
-
-    if (qType === 'MULTIPLE_CHOICE') {
-      content = {
-        options: [
-          { id: 'opt_1', text: 'Option A: Authoritative server state' },
-          { id: 'opt_2', text: 'Option B: Client-inferred state' },
-        ],
-      };
-      answerKey = { correctOptionIds: ['opt_1'] };
-    } else if (qType === 'SINGLE_CHOICE') {
-      content = {
-        options: [
-          { id: 'opt_1', text: 'Option A: Authoritative server state' },
-          { id: 'opt_2', text: 'Option B: Client-inferred state' },
-        ],
-      };
-      answerKey = { correctOptionId: 'opt_1' };
-    } else if (qType === 'TRUE_FALSE') {
-      content = {};
-      answerKey = { correctValue: true };
-    } else if (qType === 'CLOZE') {
-      content = {
-        templateText: 'ULE backend uses {{blank_1}} as the primary server framework.',
-        targetBlanks: [
-          { blankKey: 'blank_1', hint: 'Framework name' },
-        ],
-      };
-      answerKey = {
-        blanks: {
-          blank_1: ['NestJS', 'Nest.js'],
-        },
-      };
-    } else if (qType === 'SHORT_TEXT') {
-      content = { placeholder: 'Enter single word or term' };
-      answerKey = { acceptableAnswers: ['PostgreSQL', 'Postgres'] };
-    } else if (qType === 'NUMERIC') {
-      content = { unit: 'seconds' };
-      answerKey = { correctValue: 15, tolerance: 0, toleranceType: 'ABSOLUTE' };
-    } else if (qType === 'ESSAY') {
-      content = { minWords: 10, maxWords: 500 };
-      answerKey = undefined; // Prohibited for essays in ULE
-      rubric = {
-        criteria: [
-          {
-            id: 'crit-1',
-            name: 'Architectural Soundness',
-            description: 'Evaluation of system architecture and modular boundaries',
-            maxPoints: points,
-            levels: [
-              {
-                score: points,
-                label: 'Exemplary',
-                description: 'Clearly decouples services with versioned contracts',
-              },
-            ],
-          },
-        ],
-      };
-    } else if (qType === 'MATCHING') {
-      content = {
-        premises: [
-          { id: 'p_1', text: 'PostgreSQL' },
-          { id: 'p_2', text: 'React + Vite' },
-        ],
-        targets: [
-          { id: 't_1', text: 'Authoritative database' },
-          { id: 't_2', text: 'Single Page Application' },
-        ],
-      };
-      answerKey = {
-        matches: { p_1: 't_1', p_2: 't_2' },
-      };
-    } else if (qType === 'ORDERING') {
-      content = {
-        items: [
-          { id: 'o_1', text: 'Define API contract' },
-          { id: 'o_2', text: 'Implement backend service' },
-          { id: 'o_3', text: 'Integrate frontend client' },
-        ],
-      };
-      answerKey = {
-        correctOrder: ['o_1', 'o_2', 'o_3'],
-      };
-    }
+    const payload = buildQuestionPayload({
+      title,
+      prompt,
+      type: qType,
+      points,
+      tags,
+      optionsList,
+      singleChoiceOption,
+      multiChoiceOptions,
+      trueFalseValue,
+      matchingPairs,
+      orderingItems,
+      clozeTemplate,
+      clozeTargetBlanks: [{ blankKey: clozeBlankKey, hint: 'Framework name' }],
+      clozeAcceptedVariants: {
+        [clozeBlankKey]: clozeVariants
+          .split(',')
+          .map((v) => v.trim())
+          .filter(Boolean),
+      },
+      shortTextAnswers: shortTextAnswers
+        .split(',')
+        .map((a) => a.trim())
+        .filter(Boolean),
+      numericValue,
+      numericTolerance,
+      numericUnit,
+      essayCriterionName,
+      essayCriterionDescription,
+    });
 
     try {
-      await createQuestionBankItem({
-        title: title.trim(),
-        prompt: prompt.trim(),
-        type: qType,
-        defaultPoints: points,
-        content,
-        answerKey,
-        rubric,
-        tags,
-      });
+      await createQuestionBankItem(payload);
       setTitle('');
       setPrompt('');
       setShowAddForm(false);
@@ -314,6 +282,478 @@ export default function QuestionBankPage() {
                 }}
               />
             </label>
+
+            {/* Interactive Question Options & Answer Key Configuration */}
+            <div
+              style={{
+                padding: '0.85rem',
+                borderRadius: 'var(--ui-radius-sm)',
+                border: '1px solid var(--ui-border)',
+                background: 'var(--ui-surface-subtle)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.75rem',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--ui-text)' }}>
+                  Question Configuration & Answer Key ({qType})
+                </span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--ui-text-muted)' }}>
+                  Interactive Creator Template
+                </span>
+              </div>
+
+              {/* SINGLE CHOICE & MULTIPLE CHOICE CONFIGURATION */}
+              {(qType === 'SINGLE_CHOICE' || qType === 'MULTIPLE_CHOICE') && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Options ({qType === 'SINGLE_CHOICE' ? 'Select 1 correct option' : 'Check all correct options'}):
+                  </span>
+                  {optionsList.map((opt, idx) => {
+                    const isChecked = qType === 'SINGLE_CHOICE'
+                      ? singleChoiceOption === opt.id
+                      : multiChoiceOptions.includes(opt.id);
+
+                    return (
+                      <div key={opt.id} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <input
+                          type={qType === 'SINGLE_CHOICE' ? 'radio' : 'checkbox'}
+                          name="qbank_choice"
+                          checked={isChecked}
+                          onChange={() => {
+                            if (qType === 'SINGLE_CHOICE') {
+                              setSingleChoiceOption(opt.id);
+                            } else {
+                              setMultiChoiceOptions((prev) =>
+                                prev.includes(opt.id)
+                                  ? prev.filter((id) => id !== opt.id)
+                                  : [...prev, opt.id],
+                              );
+                            }
+                          }}
+                        />
+                        <input
+                          type="text"
+                          value={opt.text}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setOptionsList((prev) =>
+                              prev.map((o, i) => (i === idx ? { ...o, text: val } : o)),
+                            );
+                          }}
+                          style={{
+                            flex: 1,
+                            padding: '0.3rem 0.5rem',
+                            borderRadius: 'var(--ui-radius-sm)',
+                            border: '1px solid var(--ui-border)',
+                            backgroundColor: 'var(--ui-bg)',
+                            color: 'var(--ui-text)',
+                            fontSize: '0.85rem',
+                          }}
+                        />
+                        {optionsList.length > 2 && (
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              setOptionsList((prev) => prev.filter((_, i) => i !== idx));
+                              setMultiChoiceOptions((prev) => prev.filter((id) => id !== opt.id));
+                              if (singleChoiceOption === opt.id) {
+                                const remaining = optionsList.filter((_, i) => i !== idx);
+                                if (remaining.length > 0) setSingleChoiceOption(remaining[0].id);
+                              }
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div style={{ marginTop: '0.25rem' }}>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        const newId = `opt_${Date.now()}`;
+                        setOptionsList((prev) => [...prev, { id: newId, text: `Option ${prev.length + 1}` }]);
+                      }}
+                    >
+                      + Add Option
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* TRUE / FALSE CONFIGURATION */}
+              {qType === 'TRUE_FALSE' && (
+                <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>Correct Value:</span>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="tf_value"
+                      checked={trueFalseValue === true}
+                      onChange={() => setTrueFalseValue(true)}
+                    />
+                    True
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="tf_value"
+                      checked={trueFalseValue === false}
+                      onChange={() => setTrueFalseValue(false)}
+                    />
+                    False
+                  </label>
+                </div>
+              )}
+
+              {/* CLOZE CONFIGURATION */}
+              {qType === 'CLOZE' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Template Text (Use {'{{blank_key}}'} markers):
+                    <input
+                      type="text"
+                      value={clozeTemplate}
+                      onChange={(e) => setClozeTemplate(e.target.value)}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        marginTop: '0.2rem',
+                        padding: '0.3rem 0.5rem',
+                        borderRadius: 'var(--ui-radius-sm)',
+                        border: '1px solid var(--ui-border)',
+                        backgroundColor: 'var(--ui-bg)',
+                        color: 'var(--ui-text)',
+                        fontSize: '0.85rem',
+                      }}
+                    />
+                  </label>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <label style={{ width: '40%', fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                      Blank Key:
+                      <input
+                        type="text"
+                        value={clozeBlankKey}
+                        onChange={(e) => setClozeBlankKey(e.target.value)}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          marginTop: '0.2rem',
+                          padding: '0.3rem 0.5rem',
+                          borderRadius: 'var(--ui-radius-sm)',
+                          border: '1px solid var(--ui-border)',
+                          backgroundColor: 'var(--ui-bg)',
+                          color: 'var(--ui-text)',
+                          fontSize: '0.85rem',
+                        }}
+                      />
+                    </label>
+                    <label style={{ flex: 1, fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                      Accepted Answer Variants (comma separated):
+                      <input
+                        type="text"
+                        value={clozeVariants}
+                        onChange={(e) => setClozeVariants(e.target.value)}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          marginTop: '0.2rem',
+                          padding: '0.3rem 0.5rem',
+                          borderRadius: 'var(--ui-radius-sm)',
+                          border: '1px solid var(--ui-border)',
+                          backgroundColor: 'var(--ui-bg)',
+                          color: 'var(--ui-text)',
+                          fontSize: '0.85rem',
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {/* SHORT TEXT CONFIGURATION */}
+              {qType === 'SHORT_TEXT' && (
+                <label style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                  Acceptable Answers (comma separated):
+                  <input
+                    type="text"
+                    value={shortTextAnswers}
+                    onChange={(e) => setShortTextAnswers(e.target.value)}
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      marginTop: '0.2rem',
+                      padding: '0.3rem 0.5rem',
+                      borderRadius: 'var(--ui-radius-sm)',
+                      border: '1px solid var(--ui-border)',
+                      backgroundColor: 'var(--ui-bg)',
+                      color: 'var(--ui-text)',
+                      fontSize: '0.85rem',
+                    }}
+                  />
+                </label>
+              )}
+
+              {/* NUMERIC CONFIGURATION */}
+              {qType === 'NUMERIC' && (
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <label style={{ flex: 1, fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Expected Value:
+                    <input
+                      type="number"
+                      value={numericValue}
+                      onChange={(e) => setNumericValue(parseFloat(e.target.value) || 0)}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        marginTop: '0.2rem',
+                        padding: '0.3rem 0.5rem',
+                        borderRadius: 'var(--ui-radius-sm)',
+                        border: '1px solid var(--ui-border)',
+                        backgroundColor: 'var(--ui-bg)',
+                        color: 'var(--ui-text)',
+                        fontSize: '0.85rem',
+                      }}
+                    />
+                  </label>
+                  <label style={{ width: 100, fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Tolerance:
+                    <input
+                      type="number"
+                      value={numericTolerance}
+                      onChange={(e) => setNumericTolerance(parseFloat(e.target.value) || 0)}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        marginTop: '0.2rem',
+                        padding: '0.3rem 0.5rem',
+                        borderRadius: 'var(--ui-radius-sm)',
+                        border: '1px solid var(--ui-border)',
+                        backgroundColor: 'var(--ui-bg)',
+                        color: 'var(--ui-text)',
+                        fontSize: '0.85rem',
+                      }}
+                    />
+                  </label>
+                  <label style={{ width: 120, fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Unit:
+                    <input
+                      type="text"
+                      value={numericUnit}
+                      onChange={(e) => setNumericUnit(e.target.value)}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        marginTop: '0.2rem',
+                        padding: '0.3rem 0.5rem',
+                        borderRadius: 'var(--ui-radius-sm)',
+                        border: '1px solid var(--ui-border)',
+                        backgroundColor: 'var(--ui-bg)',
+                        color: 'var(--ui-text)',
+                        fontSize: '0.85rem',
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
+
+              {/* ESSAY RUBRIC CONFIGURATION */}
+              {qType === 'ESSAY' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Rubric Criterion Name:
+                    <input
+                      type="text"
+                      value={essayCriterionName}
+                      onChange={(e) => setEssayCriterionName(e.target.value)}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        marginTop: '0.2rem',
+                        padding: '0.3rem 0.5rem',
+                        borderRadius: 'var(--ui-radius-sm)',
+                        border: '1px solid var(--ui-border)',
+                        backgroundColor: 'var(--ui-bg)',
+                        color: 'var(--ui-text)',
+                        fontSize: '0.85rem',
+                      }}
+                    />
+                  </label>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Evaluation Guidance / Description:
+                    <input
+                      type="text"
+                      value={essayCriterionDescription}
+                      onChange={(e) => setEssayCriterionDescription(e.target.value)}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        marginTop: '0.2rem',
+                        padding: '0.3rem 0.5rem',
+                        borderRadius: 'var(--ui-radius-sm)',
+                        border: '1px solid var(--ui-border)',
+                        backgroundColor: 'var(--ui-bg)',
+                        color: 'var(--ui-text)',
+                        fontSize: '0.85rem',
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
+
+              {/* MATCHING PAIRS CONFIGURATION */}
+              {qType === 'MATCHING' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Matching Pairs (Premise ➔ Target Association):
+                  </span>
+                  {matchingPairs.map((pair, idx) => (
+                    <div key={pair.premiseId} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <input
+                        type="text"
+                        placeholder="Premise text"
+                        value={pair.premiseText}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setMatchingPairs((prev) =>
+                            prev.map((p, i) => (i === idx ? { ...p, premiseText: val } : p)),
+                          );
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '0.3rem 0.5rem',
+                          borderRadius: 'var(--ui-radius-sm)',
+                          border: '1px solid var(--ui-border)',
+                          backgroundColor: 'var(--ui-bg)',
+                          color: 'var(--ui-text)',
+                          fontSize: '0.85rem',
+                        }}
+                      />
+                      <span style={{ color: 'var(--ui-text-muted)' }}>➔</span>
+                      <input
+                        type="text"
+                        placeholder="Target text"
+                        value={pair.targetText}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setMatchingPairs((prev) =>
+                            prev.map((p, i) => (i === idx ? { ...p, targetText: val } : p)),
+                          );
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '0.3rem 0.5rem',
+                          borderRadius: 'var(--ui-radius-sm)',
+                          border: '1px solid var(--ui-border)',
+                          backgroundColor: 'var(--ui-bg)',
+                          color: 'var(--ui-text)',
+                          fontSize: '0.85rem',
+                        }}
+                      />
+                      {matchingPairs.length > 2 && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setMatchingPairs((prev) => prev.filter((_, i) => i !== idx))}
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                  <div>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        const newIdx = matchingPairs.length + 1;
+                        setMatchingPairs((prev) => [
+                          ...prev,
+                          {
+                            premiseId: `p_${Date.now()}`,
+                            premiseText: `Premise ${newIdx}`,
+                            targetId: `t_${Date.now()}`,
+                            targetText: `Target ${newIdx}`,
+                          },
+                        ]);
+                      }}
+                    >
+                      + Add Pair
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* ORDERING SEQUENCE CONFIGURATION */}
+              {qType === 'ORDERING' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Sequence Items (In correct order from top to bottom):
+                  </span>
+                  {orderingItems.map((item, idx) => (
+                    <div key={item.id} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <span style={{ width: 20, fontSize: '0.8rem', fontWeight: 600, color: 'var(--ui-text-muted)' }}>
+                        {idx + 1}.
+                      </span>
+                      <input
+                        type="text"
+                        value={item.text}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setOrderingItems((prev) =>
+                            prev.map((it, i) => (i === idx ? { ...it, text: val } : it)),
+                          );
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '0.3rem 0.5rem',
+                          borderRadius: 'var(--ui-radius-sm)',
+                          border: '1px solid var(--ui-border)',
+                          backgroundColor: 'var(--ui-bg)',
+                          color: 'var(--ui-text)',
+                          fontSize: '0.85rem',
+                        }}
+                      />
+                      {orderingItems.length > 2 && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setOrderingItems((prev) => prev.filter((_, i) => i !== idx))}
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                  <div>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        const newId = `o_${Date.now()}`;
+                        setOrderingItems((prev) => [
+                          ...prev,
+                          { id: newId, text: `Step ${prev.length + 1}` },
+                        ]);
+                      }}
+                    >
+                      + Add Step
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--ui-text)' }}>
               Tags (comma separated):

@@ -63,7 +63,7 @@ Semantic tokens are implemented in `apps/web/src/styles/tokens.css` with instant
   - Muted Text `#252525` on `#ffffff`: **15.4:1** (Passes WCAG AAA $\ge 7:1$)
   - Primary `#003bb9` on `#ffffff`: **9.0:1** (Passes WCAG AAA $\ge 7:1$)
   - Semantic Status: Success `#00512f` (**8.9:1**), Warning `#704100` (**8.8:1**), Danger `#990017` (**8.4:1**) — all exceed WCAG AAA $\ge 7:1$.
-  - Focus Ring: High-visibility 3px `#ff9e00` outline with 3px offset.
+  - Focus Ring: High-visibility 3px `#000000` outline with 2px offset and 2px `#ffffff` separation shadow, achieving **21.0:1** contrast against white background and fully satisfying WCAG 2.2 SC 2.4.13 (Focus Appearance, $\ge 3:1$).
 
 ---
 
@@ -101,8 +101,8 @@ Semantic tokens are implemented in `apps/web/src/styles/tokens.css` with instant
 ## 5. Verification Results & CI Status
 
 ### Web Frontend Suite
-All 18 test files passed (88 unit and component integration tests, 100% pass):
-- `src/features/creator/contracts-hardening.test.ts` (5 tests - contract hardening)
+All 18 test files passed (100 unit and component integration tests, 100% pass):
+- `src/features/creator/contracts-hardening.test.ts` (17 tests - runtime payload builders, schema alignment & embed normalization)
 - `src/theme/theme.test.ts` (10 tests)
 - `src/theme/ThemeSwitcher.test.tsx` (3 tests)
 - `src/components/ui/primitives.test.tsx` (7 tests)
@@ -121,19 +121,27 @@ All 18 test files passed (88 unit and component integration tests, 100% pass):
 - `src/services/api.test.ts` (4 tests)
 - `src/App.test.tsx` (3 tests)
 
-### Contract Hardening & Bug Fixes (P1 & P2 Alignment)
-- **Question Bank Schema Alignment (PR #8)**:
+### Contract Hardening & Bug Fixes (Final Alignment)
+- **Cloze Learning Player Alignment (PR #3 ABP & PR #9 Exam Autograder)**:
+  - Answers are keyed strictly by `blankKey` (e.g. `blank_1`, not internal DB ID `b_1`).
+  - Submission payload is dual-keyed: `{ answers: clozeAnswers, blanks: clozeAnswers }`, fully conforming to `ClozeBlockDefinition.evaluate()` and `deterministic-auto-grader.service.ts`.
+- **Question Bank Schema Alignment (PR #8 & QuestionTypesRegistry)**:
+  - Form `MATCHING` generates `answerKey.pairs` (not `matches`).
+  - Form `ORDERING` generates `answerKey.correctSequence` (not `correctOrder`).
   - Form `MULTIPLE_CHOICE` generates `answerKey.correctOptionIds` array (rather than scalar `correctOptionId`).
   - Form `ESSAY` uses criterion `name` (rather than `title`) and strictly avoids automated answer keys.
   - Query parameter in `fetchQuestionBankItems` aligned to `type` (rather than `questionType`).
   - Question type selector strictly constrained to the 9 allowlisted types in `QuestionTypesRegistry` (`SINGLE_CHOICE`, `MULTIPLE_CHOICE`, `TRUE_FALSE`, `CLOZE`, `SHORT_TEXT`, `NUMERIC`, `ESSAY`, `MATCHING`, `ORDERING`).
+- **Creator Customizability**:
+  - Replaced hardcoded static templates with interactive sub-editors for Option choices, Matching pairs, Sequence steps, Cloze template & blanks, Short text, Numeric tolerance, and Rubrics.
+- **Video Embed Normalization**:
+  - Standard YouTube watch/short URLs and Vimeo URLs are automatically converted to secure embed iframe endpoints (`youtube-nocookie.com/embed/*`, `player.vimeo.com/video/*`), with HTML5 `<video>` fallback for raw files.
 - **ABP Course Builder Schema Alignment (PR #3)**:
   - `multiple-choice` block config aligned with `MultipleChoiceConfig` (`question`, `options`, `answerKey.correctOptionId`).
   - `cloze` block config aligned with `ClozeConfig` (`prompt`, `templateText` with `{{blank_X}}`, `targetBlanks`, `answerKey.blanks`).
   - `video` block config aligned with `VideoConfig` (`url`, `durationSeconds`, `allowSkip`).
-- **CSS Tokens & Player UX**:
-  - `--ui-radius-sm`, `--ui-radius-md`, `--ui-radius-lg`, `--ui-surface-subtle`, and `--border` explicitly defined in `tokens.css` and `global.css`.
-  - `LearningPlayer` directly renders interactive HTML5 `<video controls>` / responsive embed players with transcript viewer.
+- **Accessibility & Focus Indicators**:
+  - Contrast theme focus ring set to `#000000` with 2px offset and 2px `#ffffff` shadow ring, achieving **21.0:1** contrast on white (WCAG 2.2 SC 2.4.13 $\ge 3:1$).
 
 ### Full Build & Monorepo Static Checks
 - `pnpm --filter @ule/web typecheck` -> **0 errors** (`tsc --noEmit`)

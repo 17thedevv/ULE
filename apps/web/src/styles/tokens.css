@@ -178,7 +178,7 @@
   --ui-primary-hover: #002a88;
   --ui-primary-contrast: #ffffff;
 
-  --ui-focus-ring: #ff9e00;
+  --ui-focus-ring: #000000;
 
   --ui-success: #00512f;
   --ui-warning: #704100;
@@ -202,10 +202,16 @@
   --ui-topbar-border: #111111;
 }
 
-/* ── Global focus ring ──────────────────────────────────────────────────── */
+/* ── Global focus ring (WCAG 2.2 SC 2.4.13 Focus Appearance) ───────────── */
 :where(a, button, input, select, textarea, [tabindex]):focus-visible {
   outline: 3px solid var(--ui-focus-ring);
-  outline-offset: 3px;
+  outline-offset: 2px;
+}
+
+[data-theme='contrast'] :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid #000000;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px #ffffff;
 }
 
 /* ── Reduced motion ─────────────────────────────────────────────────────── */
