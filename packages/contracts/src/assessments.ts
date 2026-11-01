@@ -620,3 +620,66 @@ export interface ExamGradingQueueItemDto {
   pendingItems: ExamGradingQueuePendingItemDto[];
 }
 
+// ----------------------------------------------------
+// Phase 6: Learner Exam Web MVP Contracts
+// ----------------------------------------------------
+
+export interface ExamAttemptQuestionItemDto {
+  id: string; // itemRefId
+  questionVersionId: string;
+  type: QuestionType;
+  title: string;
+  prompt: string;
+  content: Record<string, unknown>;
+  points: number;
+  orderIndex: number;
+  isRequired: boolean;
+}
+
+export interface ExamAttemptSectionDto {
+  id: string;
+  title: string;
+  description?: string | null;
+  orderIndex: number;
+  items: ExamAttemptQuestionItemDto[];
+}
+
+export interface ExamAttemptQuestionsDto {
+  attemptId: string;
+  assessmentVersionId: string;
+  status: ExamAttemptStatus;
+  startedAt: string;
+  deadlineAt: string | null;
+  durationMinutes: number | null;
+  totalPoints: number;
+  itemCount: number;
+  sections: ExamAttemptSectionDto[];
+}
+
+export interface LearnerEligibleExamDto {
+  assessmentId: string;
+  assessmentVersionId: string;
+  versionNumber: number;
+  title: string;
+  description: string | null;
+  instructions: string | null;
+  durationMinutes: number | null;
+  maxAttempts: number;
+  passingScore: number | null;
+  totalPoints: number;
+  itemCount: number;
+  existingAttemptsCount: number;
+  activeAttempt: {
+    id: string;
+    status: ExamAttemptStatus;
+    startedAt: string;
+    deadlineAt: string | null;
+  } | null;
+  latestAttempt: {
+    id: string;
+    status: ExamAttemptStatus;
+    startedAt: string;
+    completedAt: string | null;
+  } | null;
+}
+

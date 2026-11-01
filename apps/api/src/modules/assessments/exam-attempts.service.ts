@@ -18,12 +18,15 @@ import {
 import {
   ExamAccessGrantDto,
   ExamAttemptDto,
+  ExamAttemptQuestionsDto,
+  ExamAttemptStatus,
   ExamFeedbackPolicy,
   ExamGradeAggregationStatus,
   ExamItemGradeDto,
   ExamResponseDto,
   ExamResultSummaryDto,
   GrantExamAccessDto,
+  LearnerEligibleExamDto,
   QuestionType,
   SaveExamResponseDto,
   StartExamAttemptDto,
@@ -36,33 +39,7 @@ import {
 } from './evaluators/deterministic-auto-grader.service';
 import { QuestionTypesRegistry } from './questions/question-types.registry';
 
-export interface ExamAttemptQuestionsDto {
-  attemptId: string;
-  assessmentVersionId: string;
-  status: string;
-  startedAt: string;
-  deadlineAt: string | null;
-  durationMinutes: number | null;
-  totalPoints: number;
-  itemCount: number;
-  sections: Array<{
-    id: string;
-    title: string;
-    description?: string | null;
-    orderIndex: number;
-    items: Array<{
-      id: string;
-      questionVersionId: string;
-      type: QuestionType;
-      title: string;
-      prompt: string;
-      content: Record<string, unknown>;
-      points: number;
-      orderIndex: number;
-      isRequired: boolean;
-    }>;
-  }>;
-}
+export type { ExamAttemptQuestionsDto };
 
 interface SnapshotItemPayload {
   id: string;
@@ -1003,6 +980,195 @@ export class ExamAttemptsService {
       status: grant.status,
       revokedAt: grant.revokedAt ? grant.revokedAt.toISOString() : null,
       createdAt: grant.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Lists all authorized published examinations for the authenticated learner.
+   * Scoped strictly to standalone access grants, course enrollments, or ownership.
+   */
+  async listEligibleExamsForLearner(userId: string): Promise<LearnerEligibleExamDto[]> {
+    // 1. Standalone active access grants
+    const grants = await this.prisma.examAccessGrant.findMany({
+      where: {
+        userId,
+        status: 'ACTIVE',
+        revokedAt: null,
+      },
+      select: { assessmentDefinitionId: true },
+    });
+    const grantedAssessmentIds = grants.map((g) => g.assessmentDefinitionId);
+
+    // 2. Active course enrollments with valid non-revoked CourseAccessGrant
+    const enrollments = await this.prisma.courseEnrollment.findMany({
+      where: {
+        userId,
+        status: 'ACTIVE',
+      },
+      include: {
+        courseVersion: {
+          include: {
+            accessGrants: {
+              where: { userId },
+            },
+          },
+        },
+      },
+    });
+
+    const validCourseIds: string[] = [];
+    for (const e of enrollments) {
+      const grant = e.courseVersion.accessGrants[0];
+      if (!grant || (grant.status === 'ACTIVE' && grant.revokedAt === null)) {
+        validCourseIds.push(e.courseVersion.courseId);
+      }
+    }
+
+    // 3. Find eligible assessment definitions
+    const definitions = await this.prisma.assessmentDefinition.findMany({
+      where: {
+        OR: [
+          ...(grantedAssessmentIds.length > 0 ? [{ id: { in: grantedAssessmentIds } }] : []),
+          ...(validCourseIds.length > 0 ? [{ courseId: { in: validCourseIds } }] : []),
+          { ownerId: userId },
+        ],
+        publishedVersionCount: { gt: 0 },
+      },
+      include: {
+        versions: {
+          orderBy: { versionNumber: 'desc' },
+          take: 1,
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const results: LearnerEligibleExamDto[] = [];
+    const now = new Date();
+
+    for (const def of definitions) {
+      const version = def.versions[0];
+      if (!version) continue;
+
+      const attempts = await this.prisma.examAttempt.findMany({
+        where: {
+          assessmentVersionId: version.id,
+          learnerId: userId,
+        },
+        orderBy: { attemptNumber: 'desc' },
+      });
+
+      const active = attempts.find((a) => a.status === 'IN_PROGRESS');
+      if (active && this.isAttemptOverdue(active.deadlineAt, now)) {
+        await this.reconcileExpirationIfOverdue(active.id, active.deadlineAt, now);
+        active.status = 'EXPIRED';
+        active.completedAt = active.deadlineAt;
+      }
+
+      const activeStatus = active && active.status === 'IN_PROGRESS';
+
+      results.push({
+        assessmentId: def.id,
+        assessmentVersionId: version.id,
+        versionNumber: version.versionNumber,
+        title: version.title,
+        description: version.description,
+        instructions: version.instructions,
+        durationMinutes: version.durationMinutes,
+        maxAttempts: version.maxAttempts ?? def.maxAttempts ?? 1,
+        passingScore: version.passingScore,
+        totalPoints: version.totalPoints,
+        itemCount: version.itemCount,
+        existingAttemptsCount: attempts.length,
+        activeAttempt: activeStatus
+          ? {
+              id: active.id,
+              status: active.status as ExamAttemptStatus,
+              startedAt: active.startedAt.toISOString(),
+              deadlineAt: active.deadlineAt ? active.deadlineAt.toISOString() : null,
+            }
+          : null,
+        latestAttempt: attempts[0]
+          ? {
+              id: attempts[0].id,
+              status: attempts[0].status as ExamAttemptStatus,
+              startedAt: attempts[0].startedAt.toISOString(),
+              completedAt: attempts[0].completedAt ? attempts[0].completedAt.toISOString() : null,
+            }
+          : null,
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Retrieves authorized examination metadata and attempt status for a specific AssessmentVersion.
+   * Fail-closed: Throws 403 Forbidden if the learner is not authorized.
+   */
+  async getEligibleExamForLearner(
+    versionId: string,
+    userId: string,
+  ): Promise<LearnerEligibleExamDto> {
+    const version = await this.prisma.assessmentVersion.findUnique({
+      where: { id: versionId },
+      include: { assessmentDefinition: true },
+    });
+
+    if (!version) {
+      throw new NotFoundException(`AssessmentVersion '${versionId}' not found.`);
+    }
+
+    const def = version.assessmentDefinition;
+    await this.verifyLearnerEligibility(def.id, def.courseId, def.ownerId, userId);
+
+    const attempts = await this.prisma.examAttempt.findMany({
+      where: {
+        assessmentVersionId: version.id,
+        learnerId: userId,
+      },
+      orderBy: { attemptNumber: 'desc' },
+    });
+
+    const now = new Date();
+    const active = attempts.find((a) => a.status === 'IN_PROGRESS');
+    if (active && this.isAttemptOverdue(active.deadlineAt, now)) {
+      await this.reconcileExpirationIfOverdue(active.id, active.deadlineAt, now);
+      active.status = 'EXPIRED';
+      active.completedAt = active.deadlineAt;
+    }
+
+    const activeStatus = active && active.status === 'IN_PROGRESS';
+
+    return {
+      assessmentId: def.id,
+      assessmentVersionId: version.id,
+      versionNumber: version.versionNumber,
+      title: version.title,
+      description: version.description,
+      instructions: version.instructions,
+      durationMinutes: version.durationMinutes,
+      maxAttempts: version.maxAttempts ?? def.maxAttempts ?? 1,
+      passingScore: version.passingScore,
+      totalPoints: version.totalPoints,
+      itemCount: version.itemCount,
+      existingAttemptsCount: attempts.length,
+      activeAttempt: activeStatus
+        ? {
+            id: active.id,
+            status: active.status as ExamAttemptStatus,
+            startedAt: active.startedAt.toISOString(),
+            deadlineAt: active.deadlineAt ? active.deadlineAt.toISOString() : null,
+          }
+        : null,
+      latestAttempt: attempts[0]
+        ? {
+            id: attempts[0].id,
+            status: attempts[0].status as ExamAttemptStatus,
+            startedAt: attempts[0].startedAt.toISOString(),
+            completedAt: attempts[0].completedAt ? attempts[0].completedAt.toISOString() : null,
+          }
+        : null,
     };
   }
 
