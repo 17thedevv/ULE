@@ -16,6 +16,9 @@ const QuestsPage = lazy(() => import('../features/learner/QuestsPage'));
 const ExamsPage = lazy(() => import('../features/assessments/ExamsPage'));
 const ExamTakingPage = lazy(() => import('../features/assessments/ExamTakingPage'));
 const ExamResultPage = lazy(() => import('../features/assessments/ExamResultPage'));
+const GradingQueuePage = lazy(() => import('../features/grading/GradingQueuePage'));
+const RubricEvaluationPage = lazy(() => import('../features/grading/RubricEvaluationPage'));
+const AppealsReviewPage = lazy(() => import('../features/grading/AppealsReviewPage'));
 const StudioPage = lazy(() => import('../features/creator/StudioPage'));
 const DevPage = lazy(() => import('../features/dev/DevPage'));
 
@@ -56,10 +59,10 @@ export function AppRouter() {
             {/* Creator Studio (UI-05) */}
             <Route path="/studio" element={<Navigate to="/studio/courses" replace />} />
             <Route path="/studio/courses" element={<StudioPage />} />
-            <Route
-              path="/studio/grading"
-              element={<ComingSoon title="Grading Workspace (UI-04)" />}
-            />
+            {/* Grading Workspace (UI-04) */}
+            <Route path="/studio/grading" element={<GradingQueuePage />} />
+            <Route path="/studio/grading/attempts/:attemptId" element={<RubricEvaluationPage />} />
+            <Route path="/studio/grading/appeals/:appealId" element={<AppealsReviewPage />} />
 
             {/* Technical Verification (Preserved) */}
             <Route path="/dev" element={<Navigate to="/dev/verification" replace />} />
