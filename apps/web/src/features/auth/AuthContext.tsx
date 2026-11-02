@@ -135,6 +135,7 @@ export function AuthProvider({ children, initialSession }: AuthProviderProps) {
         }
         setUser(null);
         setSession(null);
+        setError(null);
       } else {
         const msg = err instanceof Error ? err.message : 'Failed to retrieve session';
         setError(msg);
@@ -188,16 +189,17 @@ export function AuthProvider({ children, initialSession }: AuthProviderProps) {
   );
 
   const logout = useCallback(async (): Promise<void> => {
-    clearTimer();
+    setError(null);
     try {
       await signOut();
-    } catch {
-      // Best effort cleanup even if remote signOut fails
-    } finally {
+      clearTimer();
       setUser(null);
       setSession(null);
       setSessionExpired(false);
-      setError(null);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Sign out failed.';
+      setError(msg);
+      throw err;
     }
   }, [clearTimer]);
 

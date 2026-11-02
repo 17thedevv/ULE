@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AuthApiError,
+  checkAuthStatus,
   emitSessionExpired,
   fetchCurrentUser,
   isSessionExpired,
+  sanitizeReturnUrl,
   signInWithEmail,
   signOut,
   signUpWithEmail,
@@ -215,6 +217,61 @@ describe('Auth Service (services/auth.ts)', () => {
 
       await signOut();
       expect(authClient.signOut).toHaveBeenCalled();
+    });
+
+    it('throws AuthApiError with statusCode 500 when remote signOut returns error', async () => {
+      vi.mocked(authClient.signOut).mockResolvedValue({
+        error: { message: 'Network disconnected during sign-out' },
+      } as unknown as Awaited<ReturnType<typeof authClient.signOut>>);
+
+      await expect(signOut()).rejects.toThrow('Network disconnected during sign-out');
+      await expect(signOut()).rejects.toMatchObject({
+        statusCode: 500,
+      });
+    });
+  });
+
+  describe('checkAuthStatus', () => {
+    it('calls emitSessionExpired when response status is 401', () => {
+      const callback = vi.fn();
+      const unsubscribe = subscribeSessionExpired(callback);
+
+      checkAuthStatus({ status: 401 });
+      expect(callback).toHaveBeenCalledTimes(1);
+
+      unsubscribe();
+    });
+
+    it('does NOT call emitSessionExpired when response status is 403, 500, or 200', () => {
+      const callback = vi.fn();
+      const unsubscribe = subscribeSessionExpired(callback);
+
+      checkAuthStatus({ status: 403 });
+      checkAuthStatus({ status: 500 });
+      checkAuthStatus({ status: 200 });
+      expect(callback).not.toHaveBeenCalled();
+
+      unsubscribe();
+    });
+  });
+
+  describe('sanitizeReturnUrl', () => {
+    it('preserves valid relative paths and search params', () => {
+      expect(sanitizeReturnUrl('/app/courses')).toBe('/app/courses');
+      expect(sanitizeReturnUrl('/studio/grading?filter=pending')).toBe(
+        '/studio/grading?filter=pending',
+      );
+    });
+
+    it('falls back to default path for open redirects, malformed URIs and external protocols', () => {
+      expect(sanitizeReturnUrl('//attacker.com')).toBe('/app');
+      expect(sanitizeReturnUrl('/\\attacker.com')).toBe('/app');
+      expect(sanitizeReturnUrl('https://evil.com/app')).toBe('/app');
+      expect(sanitizeReturnUrl('javascript:alert(1)')).toBe('/app');
+      expect(sanitizeReturnUrl('%25')).toBe('/app');
+      expect(sanitizeReturnUrl('')).toBe('/app');
+      expect(sanitizeReturnUrl(null)).toBe('/app');
+      expect(sanitizeReturnUrl(undefined, '/custom')).toBe('/custom');
     });
   });
 

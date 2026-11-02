@@ -34,7 +34,7 @@ function MockCoursesPage() {
   );
 }
 
-function SmokeAppRouter({ initialRoute = '/app/courses' }: { initialRoute?: string }) {
+function MockSessionAppRouter({ initialRoute = '/app/courses' }: { initialRoute?: string }) {
   return (
     <MemoryRouter initialEntries={[initialRoute]}>
       <AuthProvider>
@@ -62,18 +62,18 @@ function SmokeAppRouter({ initialRoute = '/app/courses' }: { initialRoute?: stri
   );
 }
 
-describe('Real-Session Smoke Verification: Product Authentication & Session UX', () => {
+describe('Mocked Session Flow: Product Authentication & Session UX', () => {
   const authenticatedUser = {
-    id: 'usr-smoke-1',
-    name: 'Smoke Test Learner',
-    email: 'smoke.learner@ule.internal',
+    id: 'usr-flow-1',
+    name: 'Flow Test Learner',
+    email: 'flow.learner@ule.internal',
     emailVerified: true,
     createdAt: '2026-11-02T00:00:00.000Z',
   };
 
   const activeSession = {
-    id: 'sess-smoke-1',
-    userId: 'usr-smoke-1',
+    id: 'sess-flow-1',
+    userId: 'usr-flow-1',
     expiresAt: new Date(Date.now() + 3600000).toISOString(),
   };
 
@@ -81,13 +81,15 @@ describe('Real-Session Smoke Verification: Product Authentication & Session UX',
     vi.clearAllMocks();
   });
 
-  it('executes full session lifecycle: unauthenticated redirect -> login -> auth UX -> session expiry -> logout', async () => {
+  it(
+    'executes full mocked session workflow: unauthenticated redirect -> login -> auth UX -> session expiry -> logout',
+    async () => {
     // 1. Initial State: Unauthenticated (backend GET /api/v1/me returns 401)
     vi.mocked(fetchCurrentUser).mockRejectedValueOnce(
       new AuthApiError(401, 'Unauthorized session.'),
     );
 
-    render(<SmokeAppRouter initialRoute="/app/courses" />);
+    render(<MockSessionAppRouter initialRoute="/app/courses" />);
 
     // ProtectedRoute intercepts and redirects unauthenticated visitor to /login with from parameter
     await waitFor(() => {
@@ -110,7 +112,7 @@ describe('Real-Session Smoke Verification: Product Authentication & Session UX',
     });
 
     fireEvent.change(screen.getByLabelText(/email address/i), {
-      target: { value: 'smoke.learner@ule.internal' },
+      target: { value: 'flow.learner@ule.internal' },
     });
     fireEvent.change(screen.getByLabelText(/password/i), {
       target: { value: 'SecureLearnerPass123!' },
@@ -126,8 +128,8 @@ describe('Real-Session Smoke Verification: Product Authentication & Session UX',
     });
 
     // Topbar displays authenticated learner's identity and Sign Out button
-    expect(screen.getByText('Smoke Test Learner')).toBeInTheDocument();
-    expect(screen.getByText('S')).toBeInTheDocument(); // Initial avatar
+    expect(screen.getByText('Flow Test Learner')).toBeInTheDocument();
+    expect(screen.getByText('F')).toBeInTheDocument(); // Initial avatar
     const signOutButton = screen.getByRole('button', { name: /sign out/i });
     expect(signOutButton).toBeInTheDocument();
 
@@ -149,7 +151,7 @@ describe('Real-Session Smoke Verification: Product Authentication & Session UX',
     });
 
     fireEvent.change(screen.getByLabelText(/email address/i), {
-      target: { value: 'smoke.learner@ule.internal' },
+      target: { value: 'flow.learner@ule.internal' },
     });
     fireEvent.change(screen.getByLabelText(/password/i), {
       target: { value: 'SecureLearnerPass123!' },
@@ -173,6 +175,6 @@ describe('Real-Session Smoke Verification: Product Authentication & Session UX',
     await waitFor(() => {
       expect(screen.getByRole('link', { name: 'Sign In' })).toBeInTheDocument();
     });
-    expect(screen.queryByText('Smoke Test Learner')).not.toBeInTheDocument();
-  });
+    expect(screen.queryByText('Flow Test Learner')).not.toBeInTheDocument();
+  }, 15000);
 });

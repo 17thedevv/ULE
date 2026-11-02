@@ -40,6 +40,38 @@ export function subscribeSessionExpired(callback: () => void): () => void {
 }
 
 /**
+ * Checks an HTTP response status and dispatches a session-expired event
+ * if the backend returned 401 Unauthorized.
+ * Note: 403 Forbidden indicates permission denial and is NOT treated as session expiration.
+ */
+export function checkAuthStatus(response: { status: number }): void {
+  if (response.status === 401) {
+    emitSessionExpired();
+  }
+}
+
+/**
+ * Normalizes and validates return URLs to prevent open redirects and malformed URIs.
+ * Returns a safe internal relative path (starts with single '/'), or defaultPath.
+ */
+export function sanitizeReturnUrl(rawFrom: string | null | undefined, defaultPath = '/app'): string {
+  if (!rawFrom || typeof rawFrom !== 'string') {
+    return defaultPath;
+  }
+  const trimmed = rawFrom.trim();
+  // Safe internal paths must start with a single '/' and not '//' or '/\' or protocol 'xyz:'
+  if (
+    trimmed.startsWith('/') &&
+    !trimmed.startsWith('//') &&
+    !trimmed.startsWith('/\\') &&
+    !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)
+  ) {
+    return trimmed;
+  }
+  return defaultPath;
+}
+
+/**
  * Checks whether the given session has passed its expiration timestamp.
  */
 export function isSessionExpired(session?: SessionDto | null): boolean {
@@ -66,6 +98,7 @@ export async function fetchCurrentUser(): Promise<MeResponseDto> {
   });
 
   if (response.status === 401) {
+    checkAuthStatus(response);
     throw new AuthApiError(401, 'Unauthorized. Missing or expired session token.');
   }
 
@@ -130,9 +163,17 @@ export async function signUpWithEmail(payload: {
 
 /**
  * Terminates the active session via Better Auth sign-out.
+ * Throws AuthApiError if the server rejects or fails the sign-out request.
  */
 export async function signOut(): Promise<void> {
-  await authClient.signOut();
+  const res = await authClient.signOut();
+  if (res?.error) {
+    throw new AuthApiError(
+      500,
+      res.error.message || 'Failed to terminate session on server.',
+      res.error,
+    );
+  }
 }
 
 export type { UserDto, SessionDto, MeResponseDto };

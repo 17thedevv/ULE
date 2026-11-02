@@ -1,11 +1,13 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { sanitizeReturnUrl } from '../../services/auth';
 
 export default function UnauthorizedPage() {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
-  const fromParam = searchParams.get('from') || (location.state as { from?: string })?.from || '';
-  const loginUrl = fromParam ? `/login?from=${encodeURIComponent(fromParam)}` : '/login';
+  const rawFrom = searchParams.get('from') || (location.state as { from?: string })?.from || '';
+  const safeFrom = sanitizeReturnUrl(rawFrom, '');
+  const loginUrl = safeFrom ? `/login?from=${encodeURIComponent(safeFrom)}` : '/login';
 
   return (
     <div

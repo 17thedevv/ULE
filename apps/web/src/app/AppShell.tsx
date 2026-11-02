@@ -168,6 +168,21 @@ interface TopbarProps {
 
 function Topbar({ isSidebarOpen, onToggleSidebar, toggleRef }: TopbarProps) {
   const { user, isAuthenticated, isLoading, logout } = useAuth();
+  const [signoutError, setSignoutError] = useState<string | null>(null);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+
+  const handleLogout = async () => {
+    setIsSigningOut(true);
+    setSignoutError(null);
+    try {
+      await logout();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Sign out failed. Please retry.';
+      setSignoutError(msg);
+    } finally {
+      setIsSigningOut(false);
+    }
+  };
 
   return (
     <header
@@ -300,9 +315,23 @@ function Topbar({ isSidebarOpen, onToggleSidebar, toggleRef }: TopbarProps) {
             >
               {user.name || user.email}
             </span>
+            {signoutError && (
+              <span
+                role="alert"
+                style={{
+                  fontSize: '0.75rem',
+                  color: 'var(--ui-danger)',
+                  fontWeight: 500,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {signoutError}
+              </span>
+            )}
             <button
               type="button"
-              onClick={() => logout()}
+              onClick={handleLogout}
+              disabled={isSigningOut}
               className="btn-signout"
               aria-label="Sign out"
               style={{
@@ -313,11 +342,12 @@ function Topbar({ isSidebarOpen, onToggleSidebar, toggleRef }: TopbarProps) {
                 background: 'var(--ui-surface-muted)',
                 color: 'var(--ui-text)',
                 border: '1px solid var(--ui-border)',
-                cursor: 'pointer',
+                cursor: isSigningOut ? 'not-allowed' : 'pointer',
+                opacity: isSigningOut ? 0.7 : 1,
                 whiteSpace: 'nowrap',
               }}
             >
-              Sign Out
+              {isSigningOut ? 'Signing out…' : 'Sign Out'}
             </button>
           </>
         ) : (

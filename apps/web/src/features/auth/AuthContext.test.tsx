@@ -59,7 +59,7 @@ function ConsumerComponent() {
         Sign Up Button
       </button>
 
-      <button type="button" onClick={() => logout()}>
+      <button type="button" onClick={() => logout().catch(() => {})}>
         Sign Out Button
       </button>
 
@@ -231,6 +231,54 @@ describe('AuthContext & AuthProvider', () => {
     expect(signOut).toHaveBeenCalled();
     expect(screen.getByTestId('auth-status')).toHaveTextContent('unauthenticated');
     expect(screen.getByTestId('auth-user')).toHaveTextContent('no-user');
+  });
+
+  it('does not clear user state when logout fails', async () => {
+    const mockUser = {
+      id: 'usr-1',
+      name: 'Alice Learner',
+      email: 'alice@ule.internal',
+      emailVerified: true,
+      createdAt: '2026-11-01T00:00:00.000Z',
+    };
+
+    vi.mocked(signOut).mockRejectedValueOnce(new Error('Sign out network error'));
+
+    render(
+      <AuthProvider initialSession={{ user: mockUser }}>
+        <ConsumerComponent />
+      </AuthProvider>,
+    );
+
+    expect(screen.getByTestId('auth-status')).toHaveTextContent('authenticated');
+
+    await act(async () => {
+      screen.getByText('Sign Out Button').click();
+    });
+
+    // Since sign-out failed on server, user is NOT falsely wiped as logged out!
+    expect(screen.getByTestId('auth-status')).toHaveTextContent('authenticated');
+    expect(screen.getByTestId('auth-user')).toHaveTextContent('Alice Learner');
+    expect(screen.getByTestId('auth-error')).toHaveTextContent('Sign out network error');
+  });
+
+  it('captures service failure on 503 during session refresh without marking as session expired', async () => {
+    vi.mocked(fetchCurrentUser).mockRejectedValueOnce(
+      new Error('Database unavailable (HTTP 503)'),
+    );
+
+    render(
+      <AuthProvider>
+        <ConsumerComponent />
+      </AuthProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('auth-loading')).toHaveTextContent('idle');
+    });
+
+    expect(screen.getByTestId('auth-error')).toHaveTextContent('Database unavailable (HTTP 503)');
+    expect(screen.getByTestId('auth-expired')).toHaveTextContent('active');
   });
 
   it('handles session expiration via broadcast event', async () => {

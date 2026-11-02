@@ -208,4 +208,88 @@ describe('LoginPage', () => {
     expect(screen.getByText(/Existing Signed User/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /continue to dashboard/i })).toBeInTheDocument();
   });
+
+  it('safely handles malformed return URL without throwing URIError and navigates to safe fallback', async () => {
+    mockLogin.mockResolvedValueOnce({
+      user: {
+        id: 'u-1',
+        name: 'Learner User',
+        email: 'learner@ule.internal',
+        emailVerified: true,
+        createdAt: '2026-11-01',
+      },
+    });
+
+    vi.spyOn(authContextModule, 'useAuth').mockReturnValue({
+      user: null,
+      session: null,
+      isAuthenticated: false,
+      isLoading: false,
+      sessionExpired: false,
+      error: null,
+      login: mockLogin,
+      signUp: mockSignUp,
+      logout: mockLogout,
+      refreshSession: vi.fn(),
+      clearSessionExpired: mockClearSessionExpired,
+    });
+
+    expect(() => renderLoginPage('/login?from=%25')).not.toThrow();
+
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: 'learner@ule.internal' },
+    });
+    fireEvent.change(screen.getByLabelText(/password/i), {
+      target: { value: 'Secret123!' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalled();
+      expect(screen.getByTestId('dashboard-page')).toBeInTheDocument();
+    });
+  });
+
+  it('neutralizes open redirect URLs and redirects to /app dashboard', async () => {
+    mockLogin.mockResolvedValueOnce({
+      user: {
+        id: 'u-1',
+        name: 'Learner User',
+        email: 'learner@ule.internal',
+        emailVerified: true,
+        createdAt: '2026-11-01',
+      },
+    });
+
+    vi.spyOn(authContextModule, 'useAuth').mockReturnValue({
+      user: null,
+      session: null,
+      isAuthenticated: false,
+      isLoading: false,
+      sessionExpired: false,
+      error: null,
+      login: mockLogin,
+      signUp: mockSignUp,
+      logout: mockLogout,
+      refreshSession: vi.fn(),
+      clearSessionExpired: mockClearSessionExpired,
+    });
+
+    renderLoginPage('/login?from=%2F%2Fmalicious-phishing.com%2Fsteal');
+
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: 'learner@ule.internal' },
+    });
+    fireEvent.change(screen.getByLabelText(/password/i), {
+      target: { value: 'Secret123!' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalled();
+      expect(screen.getByTestId('dashboard-page')).toBeInTheDocument();
+    });
+  });
 });

@@ -18,6 +18,7 @@ import {
   UpdateDraftBlockRequest,
 } from '@ule/contracts';
 import { getApiBaseUrl } from './api';
+import { checkAuthStatus } from './auth';
 
 export class CreatorApiError extends Error {
   constructor(
@@ -45,6 +46,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
 
   if (!response.ok) {
+    checkAuthStatus(response);
     let errorMsg = `HTTP ${response.status}: ${response.statusText}`;
     let details: unknown;
     try {

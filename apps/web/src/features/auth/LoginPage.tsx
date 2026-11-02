@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { sanitizeReturnUrl } from '../../services/auth';
 import { useAuth } from './AuthContext';
 
 export default function LoginPage() {
@@ -10,7 +11,7 @@ export default function LoginPage() {
 
   const searchParams = new URLSearchParams(location.search);
   const rawFrom = searchParams.get('from');
-  const returnTo = rawFrom ? decodeURIComponent(rawFrom) : '/app';
+  const returnTo = sanitizeReturnUrl(rawFrom, '/app');
   const isReasonExpired = searchParams.get('reason') === 'session_expired' || sessionExpired;
 
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');

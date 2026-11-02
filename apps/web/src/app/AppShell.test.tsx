@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -77,7 +77,7 @@ describe('AppShell Component (UI-01)', () => {
     expect(signInLink).toHaveAttribute('href', '/login');
   });
 
-  it('renders user identity and Sign Out button when authenticated', () => {
+  it('renders user identity and Sign Out button when authenticated', async () => {
     const mockLogout = vi.fn();
     vi.spyOn(authContextModule, 'useAuth').mockReturnValue({
       user: {
@@ -111,7 +111,47 @@ describe('AppShell Component (UI-01)', () => {
     const signOutBtn = screen.getByRole('button', { name: /sign out/i });
     expect(signOutBtn).toBeInTheDocument();
 
-    fireEvent.click(signOutBtn);
+    await act(async () => {
+      fireEvent.click(signOutBtn);
+    });
     expect(mockLogout).toHaveBeenCalled();
+  });
+
+  it('displays sign-out error and preserves active UI when logout fails', async () => {
+    const mockLogout = vi.fn().mockRejectedValueOnce(new Error('Network disconnected'));
+    vi.spyOn(authContextModule, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-alice',
+        name: 'Alice Learner',
+        email: 'alice@ule.internal',
+        emailVerified: true,
+        createdAt: '2026-11-01',
+      },
+      session: {
+        id: 'sess-alice',
+        userId: 'usr-alice',
+        expiresAt: '2099-01-01',
+      },
+      isAuthenticated: true,
+      isLoading: false,
+      sessionExpired: false,
+      error: null,
+      login: vi.fn(),
+      signUp: vi.fn(),
+      logout: mockLogout,
+      refreshSession: vi.fn(),
+      clearSessionExpired: vi.fn(),
+    });
+
+    renderShell();
+
+    const signOutBtn = screen.getByRole('button', { name: /sign out/i });
+    await act(async () => {
+      fireEvent.click(signOutBtn);
+    });
+
+    expect(mockLogout).toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Network disconnected');
+    expect(screen.getByText('Alice Learner')).toBeInTheDocument();
   });
 });

@@ -114,4 +114,30 @@ describe('ProtectedRoute', () => {
     expect(screen.getByTestId('protected-content')).toBeInTheDocument();
     expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
   });
+
+  it('renders Service Unavailable error state and retry button when auth verification fails with server error', () => {
+    const mockRefresh = vi.fn();
+    vi.spyOn(authContextModule, 'useAuth').mockReturnValue({
+      user: null,
+      session: null,
+      isAuthenticated: false,
+      isLoading: false,
+      sessionExpired: false,
+      error: 'Backend API service unavailable (503)',
+      login: vi.fn(),
+      signUp: vi.fn(),
+      logout: vi.fn(),
+      refreshSession: mockRefresh,
+      clearSessionExpired: vi.fn(),
+    });
+
+    renderWithRouter('/protected');
+    expect(screen.getByText('Service Unavailable')).toBeInTheDocument();
+    expect(screen.getByText(/Backend API service unavailable/)).toBeInTheDocument();
+    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('protected-content')).not.toBeInTheDocument();
+
+    const retryBtn = screen.getByRole('button', { name: /retry/i });
+    expect(retryBtn).toBeInTheDocument();
+  });
 });
