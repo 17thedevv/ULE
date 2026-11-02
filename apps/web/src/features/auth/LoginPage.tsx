@@ -20,6 +20,21 @@ export default function LoginPage() {
   const [name, setName] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [alreadySignedInSignoutError, setAlreadySignedInSignoutError] = useState<string | null>(null);
+  const [alreadySignedInIsSigningOut, setAlreadySignedInIsSigningOut] = useState(false);
+
+  const handleAlreadySignedInSignOut = async () => {
+    setAlreadySignedInIsSigningOut(true);
+    setAlreadySignedInSignoutError(null);
+    try {
+      await logout();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Sign out failed. Please retry.';
+      setAlreadySignedInSignoutError(msg);
+    } finally {
+      setAlreadySignedInIsSigningOut(false);
+    }
+  };
 
   // If already authenticated and not expired, display signed-in status
   if (isAuthenticated && user && !isReasonExpired) {
@@ -68,6 +83,45 @@ export default function LoginPage() {
             You are signed in as <strong style={{ color: 'var(--ui-text)' }}>{user.name}</strong> (
             {user.email}).
           </p>
+
+          {alreadySignedInSignoutError && (
+            <div
+              role="alert"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.5rem',
+                padding: '0.5rem 0.75rem',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--ui-danger-subtle, #fee2e2)',
+                color: 'var(--ui-danger, #b91c1c)',
+                fontSize: '0.8rem',
+                fontWeight: 500,
+                textAlign: 'left',
+                marginBottom: '1rem',
+              }}
+            >
+              <span>{alreadySignedInSignoutError}</span>
+              <button
+                type="button"
+                aria-label="Dismiss sign-out error"
+                onClick={() => setAlreadySignedInSignoutError(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--ui-danger, #b91c1c)',
+                  cursor: 'pointer',
+                  fontSize: '0.85rem',
+                  lineHeight: 1,
+                  padding: '2px',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             <button
               type="button"
@@ -87,9 +141,8 @@ export default function LoginPage() {
             </button>
             <button
               type="button"
-              onClick={async () => {
-                await logout();
-              }}
+              onClick={handleAlreadySignedInSignOut}
+              disabled={alreadySignedInIsSigningOut}
               style={{
                 padding: '0.5rem 1rem',
                 borderRadius: 'var(--radius-sm)',
@@ -98,10 +151,11 @@ export default function LoginPage() {
                 background: 'transparent',
                 color: 'var(--ui-text)',
                 border: '1px solid var(--ui-border)',
-                cursor: 'pointer',
+                cursor: alreadySignedInIsSigningOut ? 'not-allowed' : 'pointer',
+                opacity: alreadySignedInIsSigningOut ? 0.7 : 1,
               }}
             >
-              Sign Out
+              {alreadySignedInIsSigningOut ? 'Signing out…' : 'Sign Out'}
             </button>
           </div>
         </div>

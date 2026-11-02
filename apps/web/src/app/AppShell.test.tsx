@@ -153,5 +153,10 @@ describe('AppShell Component (UI-01)', () => {
     expect(mockLogout).toHaveBeenCalled();
     expect(await screen.findByRole('alert')).toHaveTextContent('Network disconnected');
     expect(screen.getByText('Alice Learner')).toBeInTheDocument();
+
+    // Verify dismiss button closes the alert
+    const dismissBtn = screen.getByRole('button', { name: 'Dismiss sign-out error' });
+    fireEvent.click(dismissBtn);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

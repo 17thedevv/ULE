@@ -319,13 +319,32 @@ function Topbar({ isSidebarOpen, onToggleSidebar, toggleRef }: TopbarProps) {
               <span
                 role="alert"
                 style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.35rem',
                   fontSize: '0.75rem',
                   color: 'var(--ui-danger)',
                   fontWeight: 500,
                   whiteSpace: 'nowrap',
                 }}
               >
-                {signoutError}
+                <span>{signoutError}</span>
+                <button
+                  type="button"
+                  aria-label="Dismiss sign-out error"
+                  onClick={() => setSignoutError(null)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--ui-danger)',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem',
+                    padding: '0 2px',
+                    lineHeight: 1,
+                  }}
+                >
+                  ✕
+                </button>
               </span>
             )}
             <button

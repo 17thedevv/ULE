@@ -209,6 +209,49 @@ describe('LoginPage', () => {
     expect(screen.getByRole('button', { name: /continue to dashboard/i })).toBeInTheDocument();
   });
 
+  it('handles sign out failure in already signed in state with dismissible alert', async () => {
+    mockLogout.mockRejectedValueOnce(new Error('Sign-out failed on server'));
+
+    vi.spyOn(authContextModule, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-signed',
+        name: 'Existing Signed User',
+        email: 'signed@ule.internal',
+        emailVerified: true,
+        createdAt: '2026-11-01',
+      },
+      session: {
+        id: 's-1',
+        userId: 'usr-signed',
+        expiresAt: '2099-01-01',
+      },
+      isAuthenticated: true,
+      isLoading: false,
+      sessionExpired: false,
+      error: null,
+      login: mockLogin,
+      signUp: mockSignUp,
+      logout: mockLogout,
+      refreshSession: vi.fn(),
+      clearSessionExpired: mockClearSessionExpired,
+    });
+
+    renderLoginPage();
+
+    const signoutBtn = screen.getByRole('button', { name: 'Sign Out' });
+    fireEvent.click(signoutBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('Sign-out failed on server');
+    });
+
+    // Dismiss the error banner
+    const dismissBtn = screen.getByRole('button', { name: 'Dismiss sign-out error' });
+    fireEvent.click(dismissBtn);
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('safely handles malformed return URL without throwing URIError and navigates to safe fallback', async () => {
     mockLogin.mockResolvedValueOnce({
       user: {

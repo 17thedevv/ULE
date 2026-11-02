@@ -70,7 +70,10 @@ describe('Auth Service (services/auth.ts)', () => {
       );
     });
 
-    it('throws AuthApiError with statusCode 401 on unauthorized response', async () => {
+    it('throws AuthApiError with statusCode 401 on unauthorized response and does not emit session-expired event', async () => {
+      const expiredSpy = vi.fn();
+      const unsubscribe = subscribeSessionExpired(expiredSpy);
+
       global.fetch = vi.fn().mockResolvedValue({
         ok: false,
         status: 401,
@@ -82,6 +85,10 @@ describe('Auth Service (services/auth.ts)', () => {
       await expect(fetchCurrentUser()).rejects.toMatchObject({
         statusCode: 401,
       });
+
+      // Anonymous visitors must NOT receive a session-expired event on initialization
+      expect(expiredSpy).not.toHaveBeenCalled();
+      unsubscribe();
     });
 
     it('throws AuthApiError with statusCode 403 on forbidden response', async () => {

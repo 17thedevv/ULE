@@ -98,7 +98,6 @@ export async function fetchCurrentUser(): Promise<MeResponseDto> {
   });
 
   if (response.status === 401) {
-    checkAuthStatus(response);
     throw new AuthApiError(401, 'Unauthorized. Missing or expired session token.');
   }
 
