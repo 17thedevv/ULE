@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ApiErrorResponse } from '@ule/contracts';
-import { sanitizeLogMessage } from '../utils/sanitize-error';
+import { getAuthCallbackPath, sanitizeLogMessage } from '../utils/sanitize-error';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -18,12 +18,18 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
+    const callbackPath = getAuthCallbackPath(request.url);
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message: string | string[] = 'Internal server error';
     let error = 'Internal Server Error';
 
-    if (exception instanceof HttpException) {
+    if (callbackPath) {
+      if (exception instanceof HttpException) status = exception.getStatus();
+      this.logger.warn(`Authentication callback failed (${status}) on ${request.method} ${callbackPath}`);
+      message = 'Authentication callback failed';
+      error = 'Authentication Error';
+    } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const res = exception.getResponse();
 
@@ -66,7 +72,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message,
       error,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path: callbackPath ?? request.url,
     };
 
     response.status(status).json(errorPayload);

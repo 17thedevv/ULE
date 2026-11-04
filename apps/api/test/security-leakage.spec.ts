@@ -3,6 +3,7 @@ import {
   HttpException,
   HttpStatus,
   InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
@@ -140,6 +141,25 @@ describe('Security: Internal Error & Credential Leakage Prevention', () => {
       const payload = mockResponse.json.mock.calls[0][0];
       expect(payload.statusCode).toBe(404);
       expect(payload.message).toBe('Resource not found');
+    });
+
+    it('omits OAuth callback secrets from exception logs and responses', () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      mockRequest.url = '/api/v1/auth/callback/google?code=test-code&state=test-state';
+      try {
+        filter.catch(new Error('Provider returned test-token'), mockArgumentsHost);
+
+        expect(warn).toHaveBeenCalledWith(
+          'Authentication callback failed (500) on GET /api/v1/auth/callback/google',
+        );
+        expect(mockResponse.json).toHaveBeenCalledWith(expect.objectContaining({
+          path: '/api/v1/auth/callback/google',
+          message: 'Authentication callback failed',
+        }));
+        expect(JSON.stringify(mockResponse.json.mock.calls)).not.toMatch(/test-(code|state|token)/);
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 });

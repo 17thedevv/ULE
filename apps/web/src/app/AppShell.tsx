@@ -8,6 +8,7 @@ interface NavItem {
   path: string;
   icon: string;
   devOnly?: boolean;
+  authenticatedOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -19,6 +20,8 @@ const NAV_ITEMS: NavItem[] = [
   { label: '── Creator', path: '/studio', icon: '✏️' },
   { label: 'My Studio', path: '/studio/courses', icon: '🗂️' },
   { label: 'Grading', path: '/studio/grading', icon: '🎓' },
+  { label: '── Account', path: '/account', icon: '', authenticatedOnly: true },
+  { label: 'Sign-in Methods', path: '/account/security', icon: '⚙️', authenticatedOnly: true },
   { label: '── Dev', path: '/dev', icon: '🔧', devOnly: true },
   { label: 'Verification', path: '/dev/verification', icon: '🔍', devOnly: true },
 ];
@@ -34,6 +37,7 @@ interface SidebarProps {
 
 function Sidebar({ isOpen, onClose }: SidebarProps) {
   const location = useLocation();
+  const { isAuthenticated } = useAuth();
   const isFirstRender = useRef(true);
 
   // Close sidebar on route change (mobile)
@@ -55,7 +59,9 @@ function Sidebar({ isOpen, onClose }: SidebarProps) {
     return () => document.removeEventListener('keydown', handler);
   }, [isOpen, onClose]);
 
-  const visibleItems = NAV_ITEMS.filter((item) => !item.devOnly || isDev);
+  const visibleItems = NAV_ITEMS.filter(
+    (item) => (!item.devOnly || isDev) && (!item.authenticatedOnly || isAuthenticated),
+  );
 
   return (
     <>

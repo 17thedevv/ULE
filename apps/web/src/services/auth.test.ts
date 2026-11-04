@@ -7,6 +7,7 @@ import {
   isSessionExpired,
   sanitizeReturnUrl,
   signInWithEmail,
+  signInWithGoogle,
   signOut,
   signUpWithEmail,
   subscribeSessionExpired,
@@ -17,6 +18,7 @@ vi.mock('./auth-client', () => ({
   authClient: {
     signIn: {
       email: vi.fn(),
+      social: vi.fn(),
     },
     signUp: {
       email: vi.fn(),
@@ -34,6 +36,28 @@ describe('Auth Service (services/auth.ts)', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
+  });
+
+  it('starts Google through Better Auth with same-origin success and error callbacks', async () => {
+    const social = vi.mocked(authClient.signIn.social);
+    social.mockResolvedValue({
+      data: { url: 'https://accounts.google.com/o/oauth2/v2/auth', redirect: true },
+      error: null,
+    } as Awaited<ReturnType<typeof authClient.signIn.social>>);
+
+    await signInWithGoogle('/studio/courses?tab=published');
+
+    const request = social.mock.calls[0][0];
+    expect(request).toMatchObject({ provider: 'google' });
+    const callback = new URL(request?.callbackURL ?? '');
+    const failure = new URL(request?.errorCallbackURL ?? '');
+    expect(callback.origin).toBe(window.location.origin);
+    expect(callback.pathname).toBe('/auth/complete');
+    expect(callback.searchParams.get('from')).toBe('/studio/courses?tab=published');
+    expect(failure.origin).toBe(callback.origin);
+    expect(failure.pathname).toBe(callback.pathname);
+    expect(failure.searchParams.get('from')).toBe('/studio/courses?tab=published');
+    expect(failure.searchParams.get('failed')).toBe('1');
   });
 
   describe('fetchCurrentUser', () => {
@@ -273,6 +297,8 @@ describe('Auth Service (services/auth.ts)', () => {
     it('falls back to default path for open redirects, malformed URIs and external protocols', () => {
       expect(sanitizeReturnUrl('//attacker.com')).toBe('/app');
       expect(sanitizeReturnUrl('/\\attacker.com')).toBe('/app');
+      expect(sanitizeReturnUrl('/auth/..//attacker.com')).toBe('/app');
+      expect(sanitizeReturnUrl('/\t/attacker.com')).toBe('/app');
       expect(sanitizeReturnUrl('https://evil.com/app')).toBe('/app');
       expect(sanitizeReturnUrl('javascript:alert(1)')).toBe('/app');
       expect(sanitizeReturnUrl('%25')).toBe('/app');
