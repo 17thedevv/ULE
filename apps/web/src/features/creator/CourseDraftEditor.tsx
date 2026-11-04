@@ -15,6 +15,7 @@ import {
   publishCourseVersion,
   reorderDraftBlocks,
   updateCourseDraft,
+  updateDraftBlock,
   validateDraftBlocks,
 } from '../../services/creator';
 import { Badge } from '../../components/ui/Badge';
@@ -22,6 +23,26 @@ import { Button } from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
 import { ErrorState } from '../../components/states/ErrorState';
 import { LoadingState } from '../../components/states/LoadingState';
+import { BlockPreview } from './block-editors/BlockPreview';
+import { ClozeBlockEditor } from './block-editors/ClozeBlockEditor';
+import { MultipleChoiceBlockEditor } from './block-editors/MultipleChoiceBlockEditor';
+import { VideoBlockEditor } from './block-editors/VideoBlockEditor';
+
+function isRevisionConflict(err: unknown): boolean {
+  if (!err) return false;
+  if (
+    typeof err === 'object' &&
+    'statusCode' in err &&
+    (err as { statusCode: number }).statusCode === 409
+  ) {
+    return true;
+  }
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    return msg.includes('conflict') || msg.includes('revision');
+  }
+  return false;
+}
 
 export default function CourseDraftEditor() {
   const { courseId } = useParams<{ courseId: string }>();
@@ -39,23 +60,57 @@ export default function CourseDraftEditor() {
   const [publishing, setPublishing] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [conflictError, setConflictError] = useState<string | null>(null);
 
   // Add block state
   const [showAddBlock, setShowAddBlock] = useState<boolean>(false);
   const [newBlockTitle, setNewBlockTitle] = useState<string>('');
   const [newBlockType, setNewBlockType] = useState<string>('video');
-  const [newBlockUrl, setNewBlockUrl] = useState<string>('https://example.com/video.mp4');
+  const [newBlockConfig, setNewBlockConfig] = useState<Record<string, unknown>>({});
+  const [newBlockIsValid, setNewBlockIsValid] = useState<boolean>(false);
   const [addingBlock, setAddingBlock] = useState<boolean>(false);
+
+  // Edit existing block state
+  const [editingBlock, setEditingBlock] = useState<DraftBlockInstanceDto | null>(null);
+  const [editBlockTitle, setEditBlockTitle] = useState<string>('');
+  const [editBlockConfig, setEditBlockConfig] = useState<Record<string, unknown>>({});
+  const [editBlockIsValid, setEditBlockIsValid] = useState<boolean>(true);
+  const [savingBlock, setSavingBlock] = useState<boolean>(false);
+
+  // Preview state
+  const [previewData, setPreviewData] = useState<{
+    blockTypeId: string;
+    title: string;
+    config: Record<string, unknown>;
+    isUnsaved: boolean;
+  } | null>(null);
 
   // Edit draft title/description
   const [draftTitle, setDraftTitle] = useState<string>('');
   const [draftDesc, setDraftDesc] = useState<string>('');
   const [savingMeta, setSavingMeta] = useState<boolean>(false);
 
+  const handleNewBlockChange = useCallback(
+    (cfg: unknown, valid: boolean) => {
+      setNewBlockConfig(cfg as Record<string, unknown>);
+      setNewBlockIsValid(valid);
+    },
+    [],
+  );
+
+  const handleEditBlockChange = useCallback(
+    (cfg: unknown, valid: boolean) => {
+      setEditBlockConfig(cfg as Record<string, unknown>);
+      setEditBlockIsValid(valid);
+    },
+    [],
+  );
+
   const loadData = useCallback(async () => {
     if (!courseId) return;
     setLoading(true);
     setError(null);
+    setConflictError(null);
     try {
       const [draftData, blockList, versionList] = await Promise.all([
         fetchCourseDraft(courseId),
@@ -84,6 +139,7 @@ export default function CourseDraftEditor() {
     if (!courseId || !draft) return;
     setActionError(null);
     setActionSuccess(null);
+    setConflictError(null);
     setSavingMeta(true);
     try {
       const updated = await updateCourseDraft(courseId, {
@@ -94,8 +150,14 @@ export default function CourseDraftEditor() {
       setDraft(updated);
       setActionSuccess('Course draft metadata updated.');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to update metadata.';
-      setActionError(msg);
+      if (isRevisionConflict(err)) {
+        setConflictError(
+          'Draft revision conflict: Another change occurred. Please reload before saving.',
+        );
+      } else {
+        const msg = err instanceof Error ? err.message : 'Failed to update metadata.';
+        setActionError(msg);
+      }
     } finally {
       setSavingMeta(false);
     }
@@ -105,68 +167,93 @@ export default function CourseDraftEditor() {
     e.preventDefault();
     if (!courseId || !draft || !newBlockTitle.trim()) return;
 
+    if (!newBlockIsValid) {
+      setActionError('Please complete all required fields and resolve configuration errors before adding the block.');
+      return;
+    }
+
     setActionError(null);
     setActionSuccess(null);
+    setConflictError(null);
     setAddingBlock(true);
-
-    let config: Record<string, unknown> = {};
-    if (newBlockType === 'video') {
-      config = {
-        url: newBlockUrl,
-        durationSeconds: 120,
-        transcript: '',
-        allowSkip: true,
-      };
-    } else if (newBlockType === 'multiple-choice') {
-      config = {
-        question: 'Select the correct architectural principle:',
-        options: [
-          { id: 'opt_1', text: 'Loose coupling with clear modular boundaries' },
-          { id: 'opt_2', text: 'Tight direct database connections from clients' },
-        ],
-        answerKey: {
-          correctOptionId: 'opt_1',
-          explanation: 'Clients must connect via versioned HTTP APIs, never directly to PostgreSQL.',
-        },
-        feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
-        allowHints: false,
-      };
-    } else if (newBlockType === 'cloze') {
-      config = {
-        prompt: 'Complete the sentence with the correct technologies.',
-        templateText: 'ULE backend uses {{blank_1}} with {{blank_2}} database.',
-        targetBlanks: [
-          { id: 'b_1', blankKey: 'blank_1', hintText: 'Backend framework' },
-          { id: 'b_2', blankKey: 'blank_2', hintText: 'Relational database' },
-        ],
-        answerKey: {
-          blanks: {
-            blank_1: ['NestJS', 'Nest.js'],
-            blank_2: ['PostgreSQL', 'Postgres'],
-          },
-          explanation: 'ULE is built on NestJS and PostgreSQL.',
-        },
-        feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
-        allowHints: false,
-      };
-    }
 
     try {
       await addDraftBlock(courseId, {
         title: newBlockTitle.trim(),
         blockTypeId: newBlockType,
-        config,
+        config: newBlockConfig,
         expectedRevision: draft.revision,
       });
       setNewBlockTitle('');
+      setNewBlockConfig({});
       setShowAddBlock(false);
-      setActionSuccess('Activity block added successfully.');
+      setActionSuccess(`Activity block '${newBlockTitle.trim()}' added successfully.`);
       await loadData();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to add block.';
-      setActionError(msg);
+      if (isRevisionConflict(err)) {
+        setConflictError(
+          'Draft revision conflict: The draft was modified. Please reload before adding new blocks.',
+        );
+      } else {
+        const msg = err instanceof Error ? err.message : 'Failed to add block.';
+        setActionError(msg);
+      }
     } finally {
       setAddingBlock(false);
+    }
+  };
+
+  const handleStartEdit = (block: DraftBlockInstanceDto) => {
+    setShowAddBlock(false);
+    setEditingBlock(block);
+    setEditBlockTitle(block.title);
+    setEditBlockConfig(block.config || {});
+    setEditBlockIsValid(true);
+    setActionError(null);
+    setActionSuccess(null);
+    setConflictError(null);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingBlock(null);
+    setEditBlockTitle('');
+    setEditBlockConfig({});
+  };
+
+  const handleSaveEditBlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!courseId || !draft || !editingBlock || !editBlockTitle.trim()) return;
+
+    if (!editBlockIsValid) {
+      setActionError('Please resolve configuration errors before saving.');
+      return;
+    }
+
+    setActionError(null);
+    setActionSuccess(null);
+    setConflictError(null);
+    setSavingBlock(true);
+
+    try {
+      await updateDraftBlock(courseId, editingBlock.id, {
+        title: editBlockTitle.trim(),
+        config: editBlockConfig,
+        expectedRevision: draft.revision,
+      });
+      setEditingBlock(null);
+      setActionSuccess(`Activity block '${editBlockTitle.trim()}' updated successfully.`);
+      await loadData();
+    } catch (err) {
+      if (isRevisionConflict(err)) {
+        setConflictError(
+          'Draft revision conflict: Another change occurred. Please reload before saving.',
+        );
+      } else {
+        const msg = err instanceof Error ? err.message : 'Failed to update block.';
+        setActionError(msg);
+      }
+    } finally {
+      setSavingBlock(false);
     }
   };
 
@@ -174,13 +261,23 @@ export default function CourseDraftEditor() {
     if (!courseId || !draft) return;
     setActionError(null);
     setActionSuccess(null);
+    setConflictError(null);
     try {
       await deleteDraftBlock(courseId, blockId, draft.revision);
+      if (editingBlock?.id === blockId) {
+        setEditingBlock(null);
+      }
       setActionSuccess('Activity block deleted.');
       await loadData();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to delete block.';
-      setActionError(msg);
+      if (isRevisionConflict(err)) {
+        setConflictError(
+          'Draft revision conflict: Another change occurred. Please reload before deleting.',
+        );
+      } else {
+        const msg = err instanceof Error ? err.message : 'Failed to delete block.';
+        setActionError(msg);
+      }
     }
   };
 
@@ -196,6 +293,7 @@ export default function CourseDraftEditor() {
     const blockIds = newBlocks.map((b) => b.id);
     setActionError(null);
     setActionSuccess(null);
+    setConflictError(null);
     try {
       await reorderDraftBlocks(courseId, {
         blockIds,
@@ -204,8 +302,14 @@ export default function CourseDraftEditor() {
       setActionSuccess('Blocks reordered successfully.');
       await loadData();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to reorder blocks.';
-      setActionError(msg);
+      if (isRevisionConflict(err)) {
+        setConflictError(
+          'Draft revision conflict: Another change occurred. Please reload before reordering.',
+        );
+      } else {
+        const msg = err instanceof Error ? err.message : 'Failed to reorder blocks.';
+        setActionError(msg);
+      }
     }
   };
 
@@ -213,6 +317,7 @@ export default function CourseDraftEditor() {
     if (!courseId) return;
     setActionError(null);
     setActionSuccess(null);
+    setConflictError(null);
     setValidating(true);
     try {
       const res = await validateDraftBlocks(courseId);
@@ -234,6 +339,7 @@ export default function CourseDraftEditor() {
     if (!courseId) return;
     setActionError(null);
     setActionSuccess(null);
+    setConflictError(null);
     setPublishing(true);
     try {
       const newVersion = await publishCourseVersion(courseId);
@@ -299,14 +405,65 @@ export default function CourseDraftEditor() {
         </div>
       </div>
 
+      {/* Revision Conflict Alert with Recovery */}
+      {conflictError && (
+        <div
+          role="alert"
+          style={{
+            padding: '0.85rem 1rem',
+            backgroundColor: 'var(--ui-warning-bg, #fef3c7)',
+            border: '1px solid var(--ui-warning, #f59e0b)',
+            color: 'var(--ui-text, #1f2937)',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: '0.875rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '0.5rem',
+          }}
+        >
+          <div>
+            <strong>⚠️ Concurrency Conflict:</strong> {conflictError}
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={loadData}
+          >
+            🔄 Reload Course Draft
+          </Button>
+        </div>
+      )}
+
       {actionError && (
-        <div style={{ padding: '0.75rem', backgroundColor: 'var(--ui-surface)', border: '1px solid var(--ui-danger)', color: 'var(--ui-danger)', borderRadius: 'var(--ui-radius-sm)', fontSize: '0.85rem' }}>
+        <div
+          role="alert"
+          style={{
+            padding: '0.75rem',
+            backgroundColor: 'var(--ui-surface)',
+            border: '1px solid var(--ui-danger)',
+            color: 'var(--ui-danger)',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: '0.85rem',
+          }}
+        >
           ⚠️ {actionError}
         </div>
       )}
 
       {actionSuccess && (
-        <div style={{ padding: '0.75rem', backgroundColor: 'var(--ui-surface)', border: '1px solid var(--ui-success)', color: 'var(--ui-success)', borderRadius: 'var(--ui-radius-sm)', fontSize: '0.85rem' }}>
+        <div
+          role="status"
+          style={{
+            padding: '0.75rem',
+            backgroundColor: 'var(--ui-surface)',
+            border: '1px solid var(--ui-success)',
+            color: 'var(--ui-success)',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: '0.85rem',
+          }}
+        >
           ✓ {actionSuccess}
         </div>
       )}
@@ -356,7 +513,7 @@ export default function CourseDraftEditor() {
                 display: 'block',
                 marginTop: '0.25rem',
                 padding: '0.4rem',
-                borderRadius: 'var(--ui-radius-sm)',
+                borderRadius: 'var(--radius-sm)',
                 border: '1px solid var(--ui-border)',
                 backgroundColor: 'var(--ui-bg)',
                 color: 'var(--ui-text)',
@@ -375,7 +532,7 @@ export default function CourseDraftEditor() {
                 display: 'block',
                 marginTop: '0.25rem',
                 padding: '0.4rem',
-                borderRadius: 'var(--ui-radius-sm)',
+                borderRadius: 'var(--radius-sm)',
                 border: '1px solid var(--ui-border)',
                 backgroundColor: 'var(--ui-bg)',
                 color: 'var(--ui-text)',
@@ -393,7 +550,7 @@ export default function CourseDraftEditor() {
         </form>
       </Card>
 
-      {/* Activity Blocks */}
+      {/* Activity Blocks Section */}
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
           <div>
@@ -404,32 +561,48 @@ export default function CourseDraftEditor() {
               Learners progress through blocks in sequential order index.
             </p>
           </div>
-          <Button variant="primary" onClick={() => setShowAddBlock(!showAddBlock)}>
+          <Button
+            variant="primary"
+            onClick={() => {
+              if (showAddBlock) {
+                setShowAddBlock(false);
+              } else {
+                setEditingBlock(null);
+                setShowAddBlock(true);
+              }
+            }}
+          >
             {showAddBlock ? 'Cancel' : '+ Add Activity Block'}
           </Button>
         </div>
 
         {/* Add Block Form Drawer */}
         {showAddBlock && (
-          <Card style={{ marginBottom: '1rem', border: '1px solid var(--ui-primary)' }}>
-            <h3 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--ui-text)', margin: '0 0 0.75rem' }}>
-              Add Activity Block
-            </h3>
-            <form onSubmit={handleAddBlock} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <Card style={{ marginBottom: '1.25rem', border: '2px solid var(--ui-primary)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--ui-text)', margin: 0 }}>
+                Add Activity Block
+              </h3>
+              <Button variant="ghost" size="sm" onClick={() => setShowAddBlock(false)}>
+                ✕ Close
+              </Button>
+            </div>
+
+            <form onSubmit={handleAddBlock} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                <label style={{ flex: 1, minWidth: 200, fontSize: '0.85rem', fontWeight: 600, color: 'var(--ui-text)' }}>
-                  Block Title:
+                <label style={{ flex: 1, minWidth: 220, fontSize: '0.85rem', fontWeight: 600, color: 'var(--ui-text)' }}>
+                  Block Title: <span style={{ color: 'var(--ui-danger)' }}>*</span>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. Architecture Overview Video"
+                    placeholder="e.g. Core Architecture Knowledge Check"
                     value={newBlockTitle}
                     onChange={(e) => setNewBlockTitle(e.target.value)}
                     style={{
                       display: 'block',
                       marginTop: '0.25rem',
                       padding: '0.4rem',
-                      borderRadius: 'var(--ui-radius-sm)',
+                      borderRadius: 'var(--radius-sm)',
                       border: '1px solid var(--ui-border)',
                       backgroundColor: 'var(--ui-bg)',
                       color: 'var(--ui-text)',
@@ -442,50 +615,197 @@ export default function CourseDraftEditor() {
                   Block Type:
                   <select
                     value={newBlockType}
-                    onChange={(e) => setNewBlockType(e.target.value)}
+                    onChange={(e) => {
+                      setNewBlockType(e.target.value);
+                      setNewBlockConfig({});
+                    }}
                     style={{
                       display: 'block',
                       marginTop: '0.25rem',
                       padding: '0.4rem',
-                      borderRadius: 'var(--ui-radius-sm)',
+                      borderRadius: 'var(--radius-sm)',
                       border: '1px solid var(--ui-border)',
                       backgroundColor: 'var(--ui-bg)',
                       color: 'var(--ui-text)',
                     }}
                   >
                     <option value="video">📺 Video (Completion only)</option>
-                    <option value="multiple-choice">❓ Multiple Choice (Graded)</option>
+                    <option value="multiple-choice">❓ Multiple Choice (Graded Single-Select)</option>
                     <option value="cloze">✍️ Cloze / Fill-in-Blank (Graded)</option>
                   </select>
                 </label>
               </div>
 
+              {/* Type-Specific Editor */}
               {newBlockType === 'video' && (
-                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--ui-text)' }}>
-                  Video URL:
-                  <input
-                    type="url"
-                    required
-                    value={newBlockUrl}
-                    onChange={(e) => setNewBlockUrl(e.target.value)}
-                    style={{
-                      display: 'block',
-                      marginTop: '0.25rem',
-                      padding: '0.4rem',
-                      borderRadius: 'var(--ui-radius-sm)',
-                      border: '1px solid var(--ui-border)',
-                      backgroundColor: 'var(--ui-bg)',
-                      color: 'var(--ui-text)',
-                      width: '100%',
-                    }}
-                  />
-                </label>
+                <VideoBlockEditor
+                  key="add-video"
+                  initialConfig={newBlockConfig}
+                  onChange={handleNewBlockChange}
+                />
               )}
 
-              <div>
-                <Button type="submit" variant="primary" disabled={addingBlock || !newBlockTitle.trim()}>
-                  {addingBlock ? 'Adding…' : 'Add Block'}
+              {newBlockType === 'multiple-choice' && (
+                <MultipleChoiceBlockEditor
+                  key="add-mcq"
+                  initialConfig={newBlockConfig}
+                  onChange={handleNewBlockChange}
+                />
+              )}
+
+              {newBlockType === 'cloze' && (
+                <ClozeBlockEditor
+                  key="add-cloze"
+                  initialConfig={newBlockConfig}
+                  onChange={handleNewBlockChange}
+                />
+              )}
+
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginTop: '0.5rem',
+                  flexWrap: 'wrap',
+                  gap: '0.5rem',
+                }}
+              >
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    setPreviewData({
+                      blockTypeId: newBlockType,
+                      title: newBlockTitle.trim() || 'New Activity Block Preview',
+                      config: newBlockConfig,
+                      isUnsaved: true,
+                    })
+                  }
+                >
+                  👁️ Preview New Block
                 </Button>
+
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <Button type="button" variant="ghost" onClick={() => setShowAddBlock(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    disabled={addingBlock || !newBlockTitle.trim() || !newBlockIsValid}
+                  >
+                    {addingBlock ? 'Adding…' : 'Add Block to Draft'}
+                  </Button>
+                </div>
+              </div>
+            </form>
+          </Card>
+        )}
+
+        {/* Edit Block Form Drawer */}
+        {editingBlock && (
+          <Card style={{ marginBottom: '1.25rem', border: '2px solid var(--ui-primary)', background: 'var(--ui-surface)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Badge variant="primary">Editing Block</Badge>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--ui-text-muted)' }}>
+                    Type: <code>{editingBlock.blockTypeId}</code> (v{editingBlock.typeVersion})
+                  </span>
+                </div>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--ui-text)', margin: '0.25rem 0 0' }}>
+                  Edit: {editingBlock.title}
+                </h3>
+              </div>
+              <Button variant="ghost" size="sm" onClick={handleCancelEdit}>
+                ✕ Cancel
+              </Button>
+            </div>
+
+            <form onSubmit={handleSaveEditBlock} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--ui-text)' }}>
+                Block Title: <span style={{ color: 'var(--ui-danger)' }}>*</span>
+                <input
+                  type="text"
+                  required
+                  value={editBlockTitle}
+                  onChange={(e) => setEditBlockTitle(e.target.value)}
+                  style={{
+                    display: 'block',
+                    marginTop: '0.25rem',
+                    padding: '0.4rem',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--ui-border)',
+                    backgroundColor: 'var(--ui-bg)',
+                    color: 'var(--ui-text)',
+                    width: '100%',
+                  }}
+                />
+              </label>
+
+              {/* Type-Specific Editor */}
+              {editingBlock.blockTypeId === 'video' && (
+                <VideoBlockEditor
+                  key={`edit-${editingBlock.id}`}
+                  initialConfig={editingBlock.config}
+                  onChange={handleEditBlockChange}
+                />
+              )}
+
+              {editingBlock.blockTypeId === 'multiple-choice' && (
+                <MultipleChoiceBlockEditor
+                  key={`edit-${editingBlock.id}`}
+                  initialConfig={editingBlock.config}
+                  onChange={handleEditBlockChange}
+                />
+              )}
+
+              {editingBlock.blockTypeId === 'cloze' && (
+                <ClozeBlockEditor
+                  key={`edit-${editingBlock.id}`}
+                  initialConfig={editingBlock.config}
+                  onChange={handleEditBlockChange}
+                />
+              )}
+
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginTop: '0.5rem',
+                  flexWrap: 'wrap',
+                  gap: '0.5rem',
+                }}
+              >
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    setPreviewData({
+                      blockTypeId: editingBlock.blockTypeId,
+                      title: editBlockTitle.trim() || editingBlock.title,
+                      config: editBlockConfig,
+                      isUnsaved: true,
+                    })
+                  }
+                >
+                  👁️ Preview Changes
+                </Button>
+
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <Button type="button" variant="ghost" onClick={handleCancelEdit}>
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    disabled={savingBlock || !editBlockTitle.trim() || !editBlockIsValid}
+                  >
+                    {savingBlock ? 'Saving…' : 'Save Block Changes'}
+                  </Button>
+                </div>
               </div>
             </form>
           </Card>
@@ -495,29 +815,81 @@ export default function CourseDraftEditor() {
         {blocks.length === 0 && (
           <Card>
             <p style={{ fontSize: '0.85rem', color: 'var(--ui-text-muted)', margin: 0 }}>
-              No activity blocks in this course draft yet. Click "+ Add Activity Block" to add your first learning activity.
+              No activity blocks in this course draft yet. Click "+ Add Activity Block" to author your first learning activity.
             </p>
           </Card>
         )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           {blocks.map((block, idx) => (
-            <Card key={block.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Card
+              key={block.id}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '0.75rem',
+                border: editingBlock?.id === block.id ? '2px solid var(--ui-primary)' : undefined,
+              }}
+            >
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 <Badge variant="neutral">#{idx + 1}</Badge>
                 <div>
                   <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--ui-text)', margin: '0 0 0.15rem' }}>
                     {block.title}
                   </h4>
-                  <span style={{ fontSize: '0.78rem', color: 'var(--ui-text-muted)' }}>
-                    Type: <code>{block.blockTypeId}</code> (v{block.typeVersion})
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--ui-text-muted)' }}>
+                      Type: <code>{block.blockTypeId}</code> (v{block.typeVersion})
+                    </span>
+                    {block.blockTypeId === 'multiple-choice' && (
+                      <span style={{ fontSize: '0.75rem', color: 'var(--ui-text-muted)' }}>
+                        • {Array.isArray((block.config as Record<string, unknown>)?.options)
+                          ? ((block.config as Record<string, unknown>).options as unknown[]).length
+                          : 0}{' '}
+                        choices
+                      </span>
+                    )}
+                    {block.blockTypeId === 'cloze' && (
+                      <span style={{ fontSize: '0.75rem', color: 'var(--ui-text-muted)' }}>
+                        • {Array.isArray((block.config as Record<string, unknown>)?.targetBlanks)
+                          ? ((block.config as Record<string, unknown>).targetBlanks as unknown[]).length
+                          : 0}{' '}
+                        blanks
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                 <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() =>
+                    setPreviewData({
+                      blockTypeId: block.blockTypeId,
+                      title: block.title,
+                      config: block.config || {},
+                      isUnsaved: false,
+                    })
+                  }
+                  aria-label={`Preview ${block.title}`}
+                >
+                  👁️ Preview
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleStartEdit(block)}
+                  aria-label={`Edit ${block.title}`}
+                >
+                  ✏️ Edit
+                </Button>
+                <Button
                   variant="ghost"
+                  size="sm"
                   disabled={idx === 0}
                   onClick={() => handleMoveBlock(idx, 'UP')}
                   aria-label={`Move ${block.title} up`}
@@ -526,6 +898,7 @@ export default function CourseDraftEditor() {
                 </Button>
                 <Button
                   variant="ghost"
+                  size="sm"
                   disabled={idx === blocks.length - 1}
                   onClick={() => handleMoveBlock(idx, 'DOWN')}
                   aria-label={`Move ${block.title} down`}
@@ -534,6 +907,7 @@ export default function CourseDraftEditor() {
                 </Button>
                 <Button
                   variant="danger"
+                  size="sm"
                   onClick={() => handleDeleteBlock(block.id)}
                   aria-label={`Delete ${block.title}`}
                 >
@@ -562,6 +936,17 @@ export default function CourseDraftEditor() {
             ))}
           </ul>
         </Card>
+      )}
+
+      {/* Creator Preview Dialog Modal */}
+      {previewData && (
+        <BlockPreview
+          blockTypeId={previewData.blockTypeId}
+          title={previewData.title}
+          config={previewData.config}
+          isUnsaved={previewData.isUnsaved}
+          onClose={() => setPreviewData(null)}
+        />
       )}
     </div>
   );
