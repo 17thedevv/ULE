@@ -580,7 +580,7 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
       expect(mcqRun.body.block.learnerConfig.answerKey).toBeUndefined();
     });
 
-    it('revoked grant prevents starting new runs and blocks commands on existing runs with 403', async () => {
+    it('revoked grant blocks run reads, starts, and commands until re-granted', async () => {
       // Start an active run first
       const activeRun = await request(app.getHttpServer())
         .post('/api/v1/runs')
@@ -593,12 +593,25 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         .expect(HttpStatus.CREATED);
 
       const runIdToRevoke = activeRun.body.id;
+      const runPath = `/api/v1/runs/${runIdToRevoke}`;
+
+      await request(app.getHttpServer())
+        .get(runPath)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
 
       // Owner revokes Bob's grant
       await request(app.getHttpServer())
         .delete(`/api/v1/courses/${courseAId}/versions/${courseAVersion1Id}/grants/${grantId}`)
         .set('Cookie', ownerCookie)
         .expect(HttpStatus.OK);
+
+      for (const path of [runPath, `${runPath}/results`]) {
+        await request(app.getHttpServer())
+          .get(path)
+          .set('Cookie', learnerCookie)
+          .expect(HttpStatus.NOT_FOUND);
+      }
 
       // Starting new run fails (404)
       await request(app.getHttpServer())
@@ -630,6 +643,13 @@ describe('Phase 3: Trusted Learning Evidence & Minimal LII Foundation Integratio
         .expect(HttpStatus.CREATED);
 
       expect(reGrantRes.body.status).toBe('ACTIVE');
+      expect(reGrantRes.body.id).toBe(grantId);
+
+      const restored = await request(app.getHttpServer())
+        .get(`${runPath}/results`)
+        .set('Cookie', learnerCookie)
+        .expect(HttpStatus.OK);
+      expect(restored.body.run.id).toBe(runIdToRevoke);
     });
 
     it('User Charlie cannot read Learner Bob runs, attempts, evidence, or skills', async () => {

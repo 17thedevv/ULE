@@ -191,7 +191,7 @@ export class RuntimeService {
   ): Promise<ABRunDto> {
     const db = txClient ?? this.prisma;
     const run = await db.aBRun.findUnique({
-      where: { id: runId },
+      where: this.readableRun(runId, userId),
       include: {
         courseVersion: true,
         attempts: { orderBy: { attemptNumber: 'desc' }, take: 1 },
@@ -200,7 +200,7 @@ export class RuntimeService {
       },
     });
 
-    if (!run || run.userId !== userId) {
+    if (!run) {
       throw new NotFoundException(`Run '${runId}' not found.`);
     }
 
@@ -809,7 +809,7 @@ export class RuntimeService {
    */
   async getRunResults(runId: string, userId: string): Promise<RunResultsDto> {
     const run = await this.prisma.aBRun.findUnique({
-      where: { id: runId },
+      where: this.readableRun(runId, userId),
       include: {
         courseVersion: true,
         attempts: { orderBy: { attemptNumber: 'asc' } },
@@ -818,7 +818,7 @@ export class RuntimeService {
       },
     });
 
-    if (!run || run.userId !== userId) {
+    if (!run) {
       throw new NotFoundException(`Run '${runId}' not found.`);
     }
 
@@ -847,6 +847,19 @@ export class RuntimeService {
         this.toAssessmentDto(ar, shouldRedactDeferred),
       ),
       events: run.events.map((e) => this.toEventDto(e, shouldRedactDeferred)),
+    };
+  }
+
+  private readableRun(runId: string, userId: string): Prisma.ABRunWhereUniqueInput {
+    return {
+      id: runId,
+      userId,
+      courseVersion: {
+        OR: [
+          { course: { ownerId: userId } },
+          { accessGrants: { some: { userId, status: 'ACTIVE' } } },
+        ],
+      },
     };
   }
 

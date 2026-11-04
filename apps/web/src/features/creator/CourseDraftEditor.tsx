@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   CourseDraftDto,
   CourseVersionDto,
@@ -941,6 +941,14 @@ export default function CourseDraftEditor() {
             {versions.map((ver) => (
               <li key={ver.id}>
                 <strong>Version {ver.versionNumber}</strong> — Published on {new Date(ver.createdAt).toLocaleString()} (Snapshot ID: <code>{ver.id.slice(0, 8)}…</code>)
+                {' · '}
+                <Link
+                  to={`/studio/courses/${courseId}/versions/${ver.id}/access`}
+                  aria-label={`Manage Learners for Version ${ver.versionNumber}`}
+                  style={{ color: 'var(--ui-primary)' }}
+                >
+                  Manage Learners
+                </Link>
               </li>
             ))}
           </ul>

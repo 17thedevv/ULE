@@ -55,7 +55,7 @@ export class RuntimeController {
   @ApiOperation({
     summary: 'Get runtime state',
     description:
-      'Reads permitted runtime state and sanitized block configuration for an active or closed run.',
+      'Reads the caller’s runtime state and sanitized block configuration while they own the course or hold an active grant for that version.',
   })
   @ApiParam({ name: 'runId', description: 'Run identifier (UUID)' })
   @ApiResponse({
@@ -63,6 +63,7 @@ export class RuntimeController {
     description: 'Current run state',
     type: ABRunResponseDto,
   })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Run not available to the caller' })
   async getRun(
     @Param('runId') runId: string,
     @CurrentUser('id') userId: string,
@@ -95,7 +96,7 @@ export class RuntimeController {
   @ApiOperation({
     summary: 'Get run attempts, assessments, and event audit trail',
     description:
-      'Retrieves the complete historical record of learner attempts, server assessment results, and runtime event facts.',
+      'Retrieves the caller’s run history while they own the course or hold an active grant for that version. Revocation preserves the history.',
   })
   @ApiParam({ name: 'runId', description: 'Run identifier (UUID)' })
   @ApiResponse({
@@ -103,6 +104,7 @@ export class RuntimeController {
     description: 'Historical attempts, assessments, and accepted events',
     type: RunResultsResponseDto,
   })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Run not available to the caller' })
   async getRunResults(
     @Param('runId') runId: string,
     @CurrentUser('id') userId: string,

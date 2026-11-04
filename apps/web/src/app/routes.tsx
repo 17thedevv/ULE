@@ -27,6 +27,7 @@ const RubricEvaluationPage = lazy(() => import('../features/grading/RubricEvalua
 const AppealsReviewPage = lazy(() => import('../features/grading/AppealsReviewPage'));
 const StudioPage = lazy(() => import('../features/creator/StudioPage'));
 const CourseDraftEditor = lazy(() => import('../features/creator/CourseDraftEditor'));
+const CourseAccessPage = lazy(() => import('../features/creator/CourseAccessPage'));
 const QuestionBankPage = lazy(() => import('../features/creator/QuestionBankPage'));
 const DevPage = lazy(() => import('../features/dev/DevPage'));
 
@@ -134,6 +135,14 @@ export function AppRouter() {
                 element={
                   <ProtectedRoute>
                     <CourseDraftEditor />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/studio/courses/:courseId/versions/:versionId/access"
+                element={
+                  <ProtectedRoute>
+                    <CourseAccessPage />
                   </ProtectedRoute>
                 }
               />

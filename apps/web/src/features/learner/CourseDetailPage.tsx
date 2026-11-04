@@ -29,7 +29,10 @@ import { LearningPlayer } from './LearningPlayer';
 
 export default function CourseDetailPage() {
   const { courseVersionId } = useParams<{ courseVersionId: string }>();
+  return <CourseDetail key={courseVersionId} courseVersionId={courseVersionId} />;
+}
 
+function CourseDetail({ courseVersionId }: { courseVersionId: string | undefined }) {
   const [course, setCourse] = useState<LearnerCourseVersionDto | null>(null);
   const [progress, setProgress] = useState<CourseProgressDto | null>(null);
   const [evidence, setEvidence] = useState<LearningEvidenceDto[]>([]);
@@ -49,7 +52,6 @@ export default function CourseDetailPage() {
 
       const allCourses = await fetchGrantedCourses();
       const current = allCourses.find((c) => c.id === courseVersionId) ?? null;
-      setCourse(current);
 
       if (!current) {
         throw new Error('Course not found or access grant has been revoked.');
@@ -59,19 +61,18 @@ export default function CourseDetailPage() {
         fetchCourseProgress(courseVersionId),
         fetchEvidenceSummary(courseVersionId),
         fetchSkillProjections(courseVersionId),
-        fetchCourseEnrollment(courseVersionId).catch(() => null),
+        fetchCourseEnrollment(courseVersionId),
       ]);
+      const qList = enr ? await fetchCourseQuests(courseVersionId).catch(() => []) : [];
 
+      setCourse(current);
       setProgress(prog);
       setEvidence(evList);
       setSkills(skList);
       setEnrollment(enr);
-
-      if (enr) {
-        const qList = await fetchCourseQuests(courseVersionId).catch(() => []);
-        setQuests(qList);
-      }
+      setQuests(qList);
     } catch (err) {
+      setCourse(null);
       setError(err instanceof Error ? err.message : 'Failed to load course details.');
     } finally {
       setLoading(false);
@@ -107,6 +108,7 @@ export default function CourseDetailPage() {
     if (!courseVersionId) return;
     try {
       setLoading(true);
+      setError(null);
       const res = await enrollInCourse(courseVersionId);
       setEnrollment(res.enrollment);
       setQuests(res.quests);
@@ -114,6 +116,24 @@ export default function CourseDetailPage() {
       setError(err instanceof Error ? err.message : 'Failed to enroll in quests.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRunUpdated = async (updated: ABRunDto) => {
+    setActiveRun((current) => (current?.id === updated.id ? updated : current));
+    if (!courseVersionId) return;
+    setError(null);
+    try {
+      const [prog, evList, skList] = await Promise.all([
+        fetchCourseProgress(courseVersionId),
+        fetchEvidenceSummary(courseVersionId),
+        fetchSkillProjections(courseVersionId),
+      ]);
+      setProgress(prog);
+      setEvidence(evList);
+      setSkills(skList);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh course details.');
     }
   };
 
@@ -164,17 +184,13 @@ export default function CourseDetailPage() {
         )}
       </div>
 
+      {error && <ErrorState message={error} />}
+
       {activeRun && (
         <LearningPlayer
+          key={activeRun.id}
           run={activeRun}
-          onRunUpdated={(updated) => {
-            setActiveRun(updated);
-            if (courseVersionId) {
-              fetchCourseProgress(courseVersionId).then(setProgress);
-              fetchEvidenceSummary(courseVersionId).then(setEvidence);
-              fetchSkillProjections(courseVersionId).then(setSkills);
-            }
-          }}
+          onRunUpdated={handleRunUpdated}
           onClose={() => setActiveRun(null)}
         />
       )}
