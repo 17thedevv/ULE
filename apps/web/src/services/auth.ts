@@ -59,16 +59,13 @@ export function sanitizeReturnUrl(rawFrom: string | null | undefined, defaultPat
     return defaultPath;
   }
   const trimmed = rawFrom.trim();
-  // Safe internal paths must start with a single '/' and not '//' or '/\' or protocol 'xyz:'
-  if (
-    trimmed.startsWith('/') &&
-    !trimmed.startsWith('//') &&
-    !trimmed.startsWith('/\\') &&
-    !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)
-  ) {
-    return trimmed;
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//') || trimmed.includes('\\')) {
+    return defaultPath;
   }
-  return defaultPath;
+  const origin = 'https://ule.invalid';
+  const url = new URL(trimmed, origin);
+  if (url.origin !== origin || url.pathname.startsWith('//')) return defaultPath;
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 /**
@@ -135,6 +132,33 @@ export async function signInWithEmail(credentials: {
   }
 
   return fetchCurrentUser();
+}
+
+export async function fetchGoogleLoginAvailability(): Promise<boolean> {
+  const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/providers`, {
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new AuthApiError(response.status, 'Could not check Google sign-in availability.');
+  }
+  const providers: { google?: boolean } = await response.json();
+  return providers.google === true;
+}
+
+export async function signInWithGoogle(returnTo: string): Promise<void> {
+  const callback = new URL('/auth/complete', window.location.origin);
+  callback.searchParams.set('from', sanitizeReturnUrl(returnTo));
+  const errorCallback = new URL(callback);
+  errorCallback.searchParams.set('failed', '1');
+
+  const result = await authClient.signIn.social({
+    provider: 'google',
+    callbackURL: callback.toString(),
+    errorCallbackURL: errorCallback.toString(),
+  });
+  if (result.error || !result.data?.url || !result.data.redirect) {
+    throw new Error('Google sign-in could not start. Please try again.');
+  }
 }
 
 /**

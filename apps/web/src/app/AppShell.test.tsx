@@ -75,6 +75,7 @@ describe('AppShell Component (UI-01)', () => {
     const signInLink = screen.getByRole('link', { name: /sign in/i });
     expect(signInLink).toBeInTheDocument();
     expect(signInLink).toHaveAttribute('href', '/login');
+    expect(screen.queryByRole('link', { name: 'Sign-in Methods' })).not.toBeInTheDocument();
   });
 
   it('renders user identity and Sign Out button when authenticated', async () => {
@@ -107,6 +108,10 @@ describe('AppShell Component (UI-01)', () => {
 
     expect(screen.getByText('Alice Learner')).toBeInTheDocument();
     expect(screen.getByText('A')).toBeInTheDocument(); // Avatar initial
+    expect(screen.getByRole('link', { name: 'Sign-in Methods' })).toHaveAttribute(
+      'href',
+      '/account/security',
+    );
 
     const signOutBtn = screen.getByRole('button', { name: /sign out/i });
     expect(signOutBtn).toBeInTheDocument();

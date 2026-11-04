@@ -11,6 +11,8 @@ import { AuthProvider } from '../features/auth/AuthContext';
 import { ProtectedRoute } from '../features/auth/ProtectedRoute';
 
 const LoginPage = lazy(() => import('../features/auth/LoginPage'));
+const GoogleAuthCompletePage = lazy(() => import('../features/auth/GoogleAuthCompletePage'));
+const SignInMethodsPage = lazy(() => import('../features/account/SignInMethodsPage'));
 const UnauthorizedPage = lazy(() => import('../features/auth/UnauthorizedPage'));
 const ForbiddenPage = lazy(() => import('../features/auth/ForbiddenPage'));
 
@@ -42,6 +44,15 @@ export function AppRouter() {
 
               {/* Product Authentication & Authorization Views */}
               <Route path="/login" element={<LoginPage />} />
+              <Route path="/auth/complete" element={<GoogleAuthCompletePage />} />
+              <Route
+                path="/account/security"
+                element={
+                  <ProtectedRoute>
+                    <SignInMethodsPage />
+                  </ProtectedRoute>
+                }
+              />
               <Route path="/401" element={<UnauthorizedPage />} />
               <Route path="/403" element={<ForbiddenPage />} />
 

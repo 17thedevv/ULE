@@ -1,13 +1,31 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { sanitizeReturnUrl } from '../../services/auth';
+import { Button } from '../../components/ui/Button';
+import { sanitizeReturnUrl, signInWithGoogle } from '../../services/auth';
 import { useAuth } from './AuthContext';
+import { useGoogleLoginAvailable } from './useGoogleLoginAvailable';
+
+function getGoogleError(reason: string | null): string | null {
+  switch (reason) {
+    case 'cancelled':
+      return 'Google sign-in was canceled. You can try again.';
+    case 'account_not_linked':
+      return 'Sign in to your existing ULE account with email and password, then connect Google in Sign-in Methods.';
+    case 'session':
+      return 'ULE could not verify a session after Google sign-in. Please try again.';
+    case 'failed':
+      return 'Google sign-in could not be completed. Please try again.';
+    default:
+      return null;
+  }
+}
 
 export default function LoginPage() {
   const { user, isAuthenticated, login, signUp, logout, sessionExpired, clearSessionExpired } =
     useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const googleAvailable = useGoogleLoginAvailable();
 
   const searchParams = new URLSearchParams(location.search);
   const rawFrom = searchParams.get('from');
@@ -20,8 +38,24 @@ export default function LoginPage() {
   const [name, setName] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
+  const [showGoogleError, setShowGoogleError] = useState(true);
   const [alreadySignedInSignoutError, setAlreadySignedInSignoutError] = useState<string | null>(null);
   const [alreadySignedInIsSigningOut, setAlreadySignedInIsSigningOut] = useState(false);
+  const error = formError ?? (showGoogleError ? getGoogleError(searchParams.get('google_error')) : null);
+
+  const handleGoogle = async () => {
+    if (submitting || redirecting) return;
+    setFormError(null);
+    setShowGoogleError(false);
+    setRedirecting(true);
+    try {
+      await signInWithGoogle(returnTo);
+    } catch {
+      setFormError('Google sign-in could not start. Please try again.');
+      setRedirecting(false);
+    }
+  };
 
   const handleAlreadySignedInSignOut = async () => {
     setAlreadySignedInIsSigningOut(true);
@@ -83,6 +117,8 @@ export default function LoginPage() {
             You are signed in as <strong style={{ color: 'var(--ui-text)' }}>{user.name}</strong> (
             {user.email}).
           </p>
+
+          {error && <p role="alert" style={{ color: 'var(--ui-danger)' }}>{error}</p>}
 
           {alreadySignedInSignoutError && (
             <div
@@ -165,7 +201,9 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (submitting || redirecting) return;
     setFormError(null);
+    setShowGoogleError(false);
 
     if (!email.trim() || !password) {
       setFormError('Please enter both your email address and password.');
@@ -276,7 +314,7 @@ export default function LoginPage() {
         )}
 
         {/* Error notification */}
-        {formError && (
+        {error && (
           <div
             role="alert"
             style={{
@@ -290,7 +328,7 @@ export default function LoginPage() {
               fontWeight: 500,
             }}
           >
-            {formError}
+            {error}
           </div>
         )}
 
@@ -348,6 +386,21 @@ export default function LoginPage() {
             Create Account
           </button>
         </div>
+
+        {googleAvailable && (
+          <div style={{ display: 'grid', gap: '0.6rem', marginBottom: '1.25rem', textAlign: 'center' }}>
+            <Button
+              type="button"
+              disabled={submitting}
+              isLoading={redirecting}
+              onClick={() => void handleGoogle()}
+              style={{ justifyContent: 'center' }}
+            >
+              {redirecting ? 'Redirecting to Google…' : 'Continue with Google'}
+            </Button>
+            <span style={{ color: 'var(--ui-text-muted)', fontSize: '0.8rem' }}>or use email</span>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} noValidate>
           {mode === 'signup' && (
@@ -455,7 +508,7 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || redirecting}
             style={{
               width: '100%',
               padding: '0.625rem',

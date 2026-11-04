@@ -6,8 +6,16 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { betterAuth } from 'better-auth';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
+import {
+  addOAuthServerContext,
+  APIError,
+  createAuthMiddleware,
+  getAuthoritativeSessionFromCtx,
+  getOAuthState,
+} from 'better-auth/api';
 import { toNodeHandler } from 'better-auth/node';
 import { bearer, jwt } from 'better-auth/plugins';
 import { mcp } from '@better-auth/mcp';
@@ -20,9 +28,13 @@ import type { McpProtectedResourceMetadataDto } from '@ule/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthSessionContext } from './auth.types';
 
+const googleOAuthRequest = new AsyncLocalStorage<boolean>();
+const googleScopes = new Set(['openid', 'email', 'profile']);
+
 function createAuthOptions(
   prisma: PrismaService,
   configService: ConfigService,
+  logger: Logger,
 ) {
   const secret = configService.get<string>('BETTER_AUTH_SECRET');
   if (!secret || secret.length < 32) {
@@ -47,6 +59,8 @@ function createAuthOptions(
   const mcpResource =
     configService.get<string>('MCP_RESOURCE_URI') ||
     `${baseURL}/${apiPrefix}/mcp`;
+  const googleClientId = configService.get<string>('GOOGLE_CLIENT_ID');
+  const googleClientSecret = configService.get<string>('GOOGLE_CLIENT_SECRET');
 
   return {
     database: prismaAdapter(prisma, {
@@ -56,9 +70,88 @@ function createAuthOptions(
     baseURL,
     basePath: `/${apiPrefix}/auth`,
     trustedOrigins,
+    logger: {
+      log(level, message) {
+        // Provider errors can contain OAuth state, tokens, or upstream response bodies.
+        const safeMessage = googleOAuthRequest.getStore()
+          ? 'Google OAuth request reported an error.'
+          : message;
+        if (level === 'error') logger.error(safeMessage);
+        else if (level === 'warn') logger.warn(safeMessage);
+        else logger.log(safeMessage);
+      },
+    },
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
+    },
+    socialProviders: googleClientId && googleClientSecret
+      ? {
+          google: {
+            clientId: googleClientId,
+            clientSecret: googleClientSecret,
+            includeGrantedScopes: false,
+            disableIdTokenSignIn: true,
+          },
+        }
+      : {},
+    account: {
+      encryptOAuthTokens: true,
+      accountLinking: {
+        enabled: true,
+        disableImplicitLinking: true,
+        allowDifferentEmails: false,
+        trustedProviders: [],
+      },
+    },
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        const isLink = ctx.path === '/link-social';
+        if ((!isLink && ctx.path !== '/sign-in/social') || ctx.body?.provider !== 'google') return;
+
+        const { scopes, additionalParams } = ctx.body;
+        if (
+          (Array.isArray(scopes) && scopes.some((scope) => !googleScopes.has(scope))) ||
+          (additionalParams && Object.keys(additionalParams).length > 0)
+        ) {
+          throw new APIError('BAD_REQUEST', {
+            code: 'google_scopes_not_allowed',
+            message: 'Google sign-in only requests OpenID, email and profile access.',
+          });
+        }
+
+        if (isLink) {
+          const session = await getAuthoritativeSessionFromCtx(ctx);
+          if (!session) {
+            throw new APIError('UNAUTHORIZED', {
+              code: 'link_session_required',
+              message: 'Sign in to your ULE account before connecting Google.',
+            });
+          }
+          await addOAuthServerContext({ uleLinkSessionId: session.session.id });
+        }
+      }),
+    },
+    user: {
+      async validateUserInfo({ source, user }, ctx) {
+        if (source.method !== 'oauth' || source.oauth?.providerId !== 'google') return;
+        if (user.emailVerified !== true) return { error: 'google_email_unverified' };
+        if (source.action !== 'link-account') return;
+
+        // The signed OAuth state identifies the initiator. A live session must still match it.
+        const state = await getOAuthState();
+        const session = await getAuthoritativeSessionFromCtx(ctx);
+        if (
+          !session ||
+          session.session.id !== state?.serverContext?.uleLinkSessionId ||
+          session.user.id !== state?.link?.userId
+        ) {
+          return { error: 'link_session_required' };
+        }
+        if (session.user.email.toLowerCase() !== user.email?.toLowerCase()) {
+          return { error: 'link_email_mismatch' };
+        }
+      },
     },
     plugins: [
       bearer(),
@@ -82,7 +175,7 @@ function createAuthOptions(
         metadataProfile: 'mcp-2026-07-28',
       }),
     ],
-  };
+  } satisfies BetterAuthOptions;
 }
 
 export type UleAuthOptions = ReturnType<typeof createAuthOptions>;
@@ -100,12 +193,16 @@ export class AuthService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    const options = createAuthOptions(this.prisma, this.configService);
+    const options = createAuthOptions(this.prisma, this.configService, this.logger);
     this.auth = betterAuth(options);
     this.nodeHandler = toNodeHandler(this.auth);
     this.logger.log(
       `Better Auth initialized with basePath ${options.basePath}`,
     );
+  }
+
+  isGoogleConfigured(): boolean {
+    return Boolean(this.auth.options.socialProviders.google);
   }
 
   async handleAuthRequest(req: Request, res: Response): Promise<void> {
@@ -150,6 +247,9 @@ export class AuthService implements OnModuleInit {
       /* eslint-enable @typescript-eslint/no-explicit-any */
     }
 
+    if (/\/(?:callback\/google|sign-in\/social|link-social|get-access-token|refresh-token|account-info)\/?$/i.test(req.path)) {
+      return googleOAuthRequest.run(true, () => this.nodeHandler(req, res));
+    }
     return this.nodeHandler(req, res);
   }
 

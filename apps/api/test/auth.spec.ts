@@ -60,6 +60,26 @@ describe('AuthService & Better Auth Integration', () => {
     expect(typeof authService.getSessionFromRequest).toBe('function');
   });
 
+  it('keeps Google disabled when OAuth credentials are absent', () => {
+    expect(authService.isGoogleConfigured()).toBe(false);
+    expect(authService.auth.options.emailAndPassword.enabled).toBe(true);
+  });
+
+  it('registers Google when both server credentials are configured', () => {
+    const configuredService = new AuthService(
+      mockPrisma as unknown as PrismaService,
+      new ConfigService({
+        BETTER_AUTH_SECRET: 'test-auth-secret-key-32-chars-long!',
+        GOOGLE_CLIENT_ID: 'example-client-id',
+        GOOGLE_CLIENT_SECRET: 'example-client-secret',
+      }),
+    );
+    configuredService.onModuleInit();
+
+    expect(configuredService.isGoogleConfigured()).toBe(true);
+    expect(configuredService.auth.options.emailAndPassword.enabled).toBe(true);
+  });
+
   it('returns null when request has no session cookie or authorization header', async () => {
     const req: any = {
       headers: {},

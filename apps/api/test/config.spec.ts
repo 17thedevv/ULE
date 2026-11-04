@@ -25,6 +25,38 @@ describe('Configuration Validation', () => {
     expect(result.BETTER_AUTH_URL).toBe('http://localhost:3000');
   });
 
+  it('accepts a configured Google OAuth credential pair and trims surrounding whitespace', () => {
+    const result = validate({
+      DATABASE_URL: validDbUrl,
+      BETTER_AUTH_SECRET: validSecret,
+      GOOGLE_CLIENT_ID: ' example-client-id ',
+      GOOGLE_CLIENT_SECRET: ' example-client-secret ',
+    });
+
+    expect(result.GOOGLE_CLIENT_ID).toBe('example-client-id');
+    expect(result.GOOGLE_CLIENT_SECRET).toBe('example-client-secret');
+  });
+
+  it('accepts leaving both Google OAuth credentials blank', () => {
+    expect(() => validate({
+      DATABASE_URL: validDbUrl,
+      BETTER_AUTH_SECRET: validSecret,
+      GOOGLE_CLIENT_ID: ' ',
+      GOOGLE_CLIENT_SECRET: '',
+    })).not.toThrow();
+  });
+
+  it.each(['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'])('rejects %s alone without revealing its value', (key) => {
+    const incompleteConfig = {
+      DATABASE_URL: validDbUrl,
+      BETTER_AUTH_SECRET: validSecret,
+      [key]: 'must-not-be-reported',
+    };
+
+    expect(() => validate(incompleteConfig)).toThrow(/Configure both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET/);
+    expect(() => validate(incompleteConfig)).not.toThrow('must-not-be-reported');
+  });
+
   it('should throw an informative error when DATABASE_URL is missing', () => {
     const invalidConfig = {
       NODE_ENV: 'development',

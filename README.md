@@ -98,6 +98,14 @@ cp .env.example .env
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/ule_dev?schema=public` | PostgreSQL connection string |
 | `VITE_API_BASE_URL` | `http://localhost:3000` | API base URL consumed by the React web frontend |
 
+#### Optional Google sign-in
+
+1. Create a Google OAuth **Web application** client. Register `http://localhost:3000/api/v1/auth/callback/google` as the authorized redirect URI for local development. For a deployment, use its public `BETTER_AUTH_URL` and API prefix. Add your test Google accounts if the consent screen is in Testing. [Google OAuth setup](https://developers.google.com/identity/protocols/oauth2/web-server)
+2. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the API process environment or `apps/api/.env`. Set `BETTER_AUTH_URL=http://localhost:3000` and allow the frontend origin `http://localhost:5173` in `CORS_ORIGIN` for local development. Keep the secret in the API environment.
+3. Set `VITE_GOOGLE_LOGIN_ENABLED=true` in the frontend environment or `apps/web/.env.local`. Restart the API and Vite. Production Vite builds read the flag at build time. With both Google credentials empty, email and password sign-in is available.
+
+To connect Google to an existing ULE account, sign in with email and password and open **Sign-in Methods**. Choose a Google account with the same verified email. The browser returns to ULE after the NestJS callback.
+
 ### C. Start Local PostgreSQL
 
 Using Docker Compose:

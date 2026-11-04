@@ -21,3 +21,8 @@ export function sanitizeLogMessage(message: string): string {
 
   return sanitized;
 }
+
+export function getAuthCallbackPath(url: string): string | undefined {
+  const path = url.split('?', 1)[0];
+  return path.includes('/auth/callback/') ? path : undefined;
+}

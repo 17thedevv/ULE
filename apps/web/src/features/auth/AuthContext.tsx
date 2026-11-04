@@ -68,6 +68,7 @@ export function AuthProvider({ children, initialSession }: AuthProviderProps) {
 
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasAuthenticatedRef = useRef<boolean>(!!initialSession?.user);
+  const refreshRequest = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     wasAuthenticatedRef.current = !!user;
@@ -117,10 +118,10 @@ export function AuthProvider({ children, initialSession }: AuthProviderProps) {
   }, [handleExpiry]);
 
   // Authoritative refresh against GET /api/v1/me
-  const refreshSession = useCallback(async (): Promise<void> => {
+  const refreshSession = useCallback((): Promise<void> => {
+    if (refreshRequest.current) return refreshRequest.current;
     setError(null);
-    try {
-      const res = await fetchCurrentUser();
+    refreshRequest.current = fetchCurrentUser().then((res) => {
       if (res.session && isSessionExpired(res.session)) {
         handleExpiry();
       } else {
@@ -128,7 +129,7 @@ export function AuthProvider({ children, initialSession }: AuthProviderProps) {
         setSession(res.session ?? null);
         setSessionExpired(false);
       }
-    } catch (err: unknown) {
+    }).catch((err: unknown) => {
       if (err instanceof AuthApiError && err.statusCode === 401) {
         if (wasAuthenticatedRef.current) {
           setSessionExpired(true);
@@ -140,9 +141,11 @@ export function AuthProvider({ children, initialSession }: AuthProviderProps) {
         const msg = err instanceof Error ? err.message : 'Failed to retrieve session';
         setError(msg);
       }
-    } finally {
+    }).finally(() => {
+      refreshRequest.current = null;
       setIsLoading(false);
-    }
+    });
+    return refreshRequest.current;
   }, [handleExpiry]);
 
   // Initialize session on mount if not provided via initialSession

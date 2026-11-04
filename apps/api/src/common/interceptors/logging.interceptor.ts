@@ -8,6 +8,7 @@ import {
 import { Request, Response } from 'express';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
+import { getAuthCallbackPath } from '../utils/sanitize-error';
 
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
@@ -19,7 +20,9 @@ export class LoggingInterceptor implements NestInterceptor {
     const res = ctx.getResponse<Response>();
 
     const method = req.method;
-    const url = req.originalUrl || req.url;
+    const originalUrl = req.originalUrl || req.url;
+    const callbackPath = getAuthCallbackPath(originalUrl);
+    const url = callbackPath ?? originalUrl;
     const startTime = Date.now();
 
     return next.handle().pipe(
@@ -32,8 +35,9 @@ export class LoggingInterceptor implements NestInterceptor {
         },
         error: (err) => {
           const duration = Date.now() - startTime;
+          const detail = callbackPath ? '' : `: ${err.message}`;
           this.logger.warn(
-            `[${method}] ${url} -> ERROR ${err.status || 500} (${duration}ms): ${err.message}`,
+            `[${method}] ${url} -> ERROR ${err.status || 500} (${duration}ms)${detail}`,
           );
         },
       }),

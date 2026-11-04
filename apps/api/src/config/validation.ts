@@ -59,9 +59,17 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   BETTER_AUTH_URL?: string = 'http://localhost:3000';
+
+  @IsString()
+  @IsOptional()
+  GOOGLE_CLIENT_ID?: string;
+
+  @IsString()
+  @IsOptional()
+  GOOGLE_CLIENT_SECRET?: string;
 }
 
-const SENSITIVE_KEY_PATTERN = /(url|secret|token|password|key|credential)/i;
+const SENSITIVE_KEY_PATTERN = /(url|secret|token|password|key|credential|client_id)/i;
 
 export function redactSensitiveValue(key: string, value: unknown): string {
   if (value === undefined || value === null) {
@@ -95,6 +103,14 @@ export function validate(config: Record<string, unknown>): EnvironmentVariables 
 
     throw new Error(
       `[ULE Configuration Error] Invalid environment configuration:\n${errorDetails}\n\nPlease verify your .env file or environment variables against .env.example.`,
+    );
+  }
+
+  validatedConfig.GOOGLE_CLIENT_ID = validatedConfig.GOOGLE_CLIENT_ID?.trim();
+  validatedConfig.GOOGLE_CLIENT_SECRET = validatedConfig.GOOGLE_CLIENT_SECRET?.trim();
+  if (Boolean(validatedConfig.GOOGLE_CLIENT_ID) !== Boolean(validatedConfig.GOOGLE_CLIENT_SECRET)) {
+    throw new Error(
+      '[ULE Configuration Error] Configure both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable Google sign-in, or leave both empty.',
     );
   }
 
