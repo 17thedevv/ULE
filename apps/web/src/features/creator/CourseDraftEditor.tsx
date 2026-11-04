@@ -71,7 +71,9 @@ export default function CourseDraftEditor() {
   const [addingBlock, setAddingBlock] = useState<boolean>(false);
 
   // Edit existing block state
-  const [editingBlock, setEditingBlock] = useState<DraftBlockInstanceDto | null>(null);
+  const [editingBlock, setEditingBlock] = useState<
+    (DraftBlockInstanceDto & { expectedRevision: number }) | null
+  >(null);
   const [editBlockTitle, setEditBlockTitle] = useState<string>('');
   const [editBlockConfig, setEditBlockConfig] = useState<Record<string, unknown>>({});
   const [editBlockIsValid, setEditBlockIsValid] = useState<boolean>(true);
@@ -106,16 +108,8 @@ export default function CourseDraftEditor() {
     [],
   );
 
-  const handleCancelEdit = useCallback(() => {
-    setEditingBlock(null);
-    setEditBlockTitle('');
-    setEditBlockConfig({});
-  }, []);
-
   const loadData = useCallback(async () => {
     if (!courseId) return;
-    handleCancelEdit();
-    setPreviewData(null);
     setLoading(true);
     setError(null);
     setConflictError(null);
@@ -137,7 +131,7 @@ export default function CourseDraftEditor() {
     } finally {
       setLoading(false);
     }
-  }, [courseId, handleCancelEdit]);
+  }, [courseId]);
 
   useEffect(() => {
     loadData();
@@ -212,15 +206,27 @@ export default function CourseDraftEditor() {
     }
   };
 
-  const handleStartEdit = (block: DraftBlockInstanceDto) => {
+  const handleStartEdit = (block: DraftBlockInstanceDto, expectedRevision: number) => {
     setShowAddBlock(false);
-    setEditingBlock(block);
+    setEditingBlock({ ...block, expectedRevision });
     setEditBlockTitle(block.title);
     setEditBlockConfig(block.config || {});
     setEditBlockIsValid(true);
     setActionError(null);
     setActionSuccess(null);
     setConflictError(null);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingBlock(null);
+    setEditBlockTitle('');
+    setEditBlockConfig({});
+  };
+
+  const handleReloadAfterConflict = () => {
+    handleCancelEdit();
+    setPreviewData(null);
+    void loadData();
   };
 
   const handleSaveEditBlock = async (e: React.FormEvent) => {
@@ -241,7 +247,7 @@ export default function CourseDraftEditor() {
       await updateDraftBlock(courseId, editingBlock.id, {
         title: editBlockTitle.trim(),
         config: editBlockConfig,
-        expectedRevision: draft.revision,
+        expectedRevision: editingBlock.expectedRevision,
       });
       setEditingBlock(null);
       setActionSuccess(`Activity block '${editBlockTitle.trim()}' updated successfully.`);
@@ -432,7 +438,7 @@ export default function CourseDraftEditor() {
           <Button
             variant="primary"
             size="sm"
-            onClick={loadData}
+            onClick={handleReloadAfterConflict}
           >
             🔄 Reload Course Draft
           </Button>
@@ -885,7 +891,7 @@ export default function CourseDraftEditor() {
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => handleStartEdit(block)}
+                  onClick={() => handleStartEdit(block, draft.revision)}
                   aria-label={`Edit ${block.title}`}
                 >
                   ✏️ Edit

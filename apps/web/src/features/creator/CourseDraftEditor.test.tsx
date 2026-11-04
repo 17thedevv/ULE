@@ -499,7 +499,8 @@ describe('CourseDraftEditor authoring workflows', () => {
     Object.assign(conflictError, { statusCode: 409 });
     vi.mocked(creatorService.updateDraftBlock)
       .mockResolvedValueOnce(latestBlock)
-      .mockRejectedValueOnce(conflictError);
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValue(latestBlock);
 
     const firstSession = within(renderEditor().container);
     const secondSession = within(renderEditor().container);
@@ -514,6 +515,11 @@ describe('CourseDraftEditor authoring workflows', () => {
     });
     fireEvent.click(secondSession.getByRole('button', { name: /Save Block Changes/i }));
     expect(await secondSession.findByText('#6')).toBeInTheDocument();
+    expect(creatorService.updateDraftBlock).toHaveBeenNthCalledWith(1, 'course-100', block.id, {
+      title: block.title,
+      config: expect.objectContaining(latestBlock.config),
+      expectedRevision: 5,
+    });
 
     fireEvent.click(firstSession.getByRole('button', { name: /Save Block Changes/i }));
     expect(await firstSession.findByRole('alert')).toHaveTextContent(/Concurrency Conflict/i);
@@ -531,6 +537,13 @@ describe('CourseDraftEditor authoring workflows', () => {
 
     fireEvent.click(firstSession.getByRole('button', { name: /Edit Conflict Block/i }));
     expect(firstSession.getByPlaceholderText(videoUrlPlaceholder)).toHaveValue(latestBlock.config.url);
+    fireEvent.click(firstSession.getByRole('button', { name: /Save Block Changes/i }));
+    expect(await firstSession.findByText(/updated successfully/i)).toBeInTheDocument();
+    expect(creatorService.updateDraftBlock).toHaveBeenNthCalledWith(3, 'course-100', block.id, {
+      title: block.title,
+      config: expect.objectContaining(latestBlock.config),
+      expectedRevision: 6,
+    });
   });
 
   it('10. Publishing displays the success message for the new version', async () => {
