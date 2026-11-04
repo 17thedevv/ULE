@@ -106,14 +106,23 @@ export default function CourseDraftEditor() {
     [],
   );
 
+  const handleCancelEdit = useCallback(() => {
+    setEditingBlock(null);
+    setEditBlockTitle('');
+    setEditBlockConfig({});
+  }, []);
+
   const loadData = useCallback(async () => {
     if (!courseId) return;
+    handleCancelEdit();
+    setPreviewData(null);
     setLoading(true);
     setError(null);
     setConflictError(null);
     try {
-      const [draftData, blockList, versionList] = await Promise.all([
-        fetchCourseDraft(courseId),
+      // Read the revision first so it cannot be newer than the block data.
+      const draftData = await fetchCourseDraft(courseId);
+      const [blockList, versionList] = await Promise.all([
         fetchDraftBlocks(courseId),
         fetchCourseVersions(courseId).catch(() => []),
       ]);
@@ -128,7 +137,7 @@ export default function CourseDraftEditor() {
     } finally {
       setLoading(false);
     }
-  }, [courseId]);
+  }, [courseId, handleCancelEdit]);
 
   useEffect(() => {
     loadData();
@@ -214,12 +223,6 @@ export default function CourseDraftEditor() {
     setConflictError(null);
   };
 
-  const handleCancelEdit = () => {
-    setEditingBlock(null);
-    setEditBlockTitle('');
-    setEditBlockConfig({});
-  };
-
   const handleSaveEditBlock = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!courseId || !draft || !editingBlock || !editBlockTitle.trim()) return;
@@ -246,7 +249,7 @@ export default function CourseDraftEditor() {
     } catch (err) {
       if (isRevisionConflict(err)) {
         setConflictError(
-          'Draft revision conflict: Another change occurred. Please reload before saving.',
+          'Draft revision conflict: Reload to discard unsaved edits, then reopen the block to edit the latest version.',
         );
       } else {
         const msg = err instanceof Error ? err.message : 'Failed to update block.';

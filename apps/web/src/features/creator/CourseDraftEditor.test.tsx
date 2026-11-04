@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import CourseDraftEditor from './CourseDraftEditor';
 import * as creatorService from '../../services/creator';
@@ -29,7 +29,7 @@ vi.mock('../../services/creator', async () => {
   };
 });
 
-describe('CourseDraftEditor End-to-End Authoring Workflows (Phase 7 PR #2)', () => {
+describe('CourseDraftEditor authoring workflows', () => {
   const mockDraft: CourseDraftDto = {
     id: 'draft-100',
     courseId: 'course-100',
@@ -471,7 +471,7 @@ describe('CourseDraftEditor End-to-End Authoring Workflows (Phase 7 PR #2)', () 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('9. Concurrency conflict (HTTP 409) displays a clear error and recovery path without silent retries', async () => {
+  it('9. Discards stale block edits after reloading a conflict between two sessions', async () => {
     const block: DraftBlockInstanceDto = {
       id: 'block-conflict-test',
       draftId: 'draft-100',
@@ -484,36 +484,56 @@ describe('CourseDraftEditor End-to-End Authoring Workflows (Phase 7 PR #2)', () 
       updatedAt: '2026-11-04T10:00:00Z',
     };
 
-    vi.mocked(creatorService.fetchCourseDraft).mockResolvedValue(mockDraft);
-    vi.mocked(creatorService.fetchDraftBlocks).mockResolvedValue([block]);
+    const latestBlock = { ...block, config: { url: 'https://example.com/newer-video.mp4' } };
+    vi.mocked(creatorService.fetchCourseDraft)
+      .mockResolvedValueOnce(mockDraft)
+      .mockResolvedValueOnce(mockDraft)
+      .mockResolvedValue({ ...mockDraft, revision: 6 });
+    vi.mocked(creatorService.fetchDraftBlocks)
+      .mockResolvedValueOnce([block])
+      .mockResolvedValueOnce([block])
+      .mockResolvedValue([latestBlock]);
     vi.mocked(creatorService.fetchCourseVersions).mockResolvedValue([]);
 
-    // Mock update throwing HTTP 409 revision conflict
     const conflictError = new Error('Draft revision conflict. Expected revision 5, but current revision is 6.');
     Object.assign(conflictError, { statusCode: 409 });
-    vi.mocked(creatorService.updateDraftBlock).mockRejectedValueOnce(conflictError);
+    vi.mocked(creatorService.updateDraftBlock)
+      .mockResolvedValueOnce(latestBlock)
+      .mockRejectedValueOnce(conflictError);
 
-    renderEditor();
-
-    await waitFor(() => {
-      expect(screen.getByText('Conflict Block')).toBeInTheDocument();
+    const firstSession = within(renderEditor().container);
+    const secondSession = within(renderEditor().container);
+    const videoUrlPlaceholder = /e\.g\. https:\/\/www\.youtube\.com/i;
+    fireEvent.click(await firstSession.findByRole('button', { name: /Edit Conflict Block/i }));
+    fireEvent.change(firstSession.getByPlaceholderText(videoUrlPlaceholder), {
+      target: { value: 'https://example.com/stale-video.mp4' },
     });
-
-    fireEvent.click(screen.getByRole('button', { name: /Edit Conflict Block/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Save Block Changes/i }));
-
-    // Concurrency Conflict alert banner must appear
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(/Concurrency Conflict/i);
-      expect(screen.getByRole('button', { name: /Reload Course Draft/i })).toBeInTheDocument();
+    fireEvent.click(await secondSession.findByRole('button', { name: /Edit Conflict Block/i }));
+    fireEvent.change(secondSession.getByPlaceholderText(videoUrlPlaceholder), {
+      target: { value: latestBlock.config.url },
     });
+    fireEvent.click(secondSession.getByRole('button', { name: /Save Block Changes/i }));
+    expect(await secondSession.findByText('#6')).toBeInTheDocument();
 
-    // Clicking Reload Course Draft triggers fresh reload
-    fireEvent.click(screen.getByRole('button', { name: /Reload Course Draft/i }));
-    expect(creatorService.fetchCourseDraft).toHaveBeenCalledTimes(2);
+    fireEvent.click(firstSession.getByRole('button', { name: /Save Block Changes/i }));
+    expect(await firstSession.findByRole('alert')).toHaveTextContent(/Concurrency Conflict/i);
+    expect(creatorService.updateDraftBlock).toHaveBeenNthCalledWith(2, 'course-100', block.id, {
+      title: block.title,
+      config: expect.objectContaining({ url: 'https://example.com/stale-video.mp4' }),
+      expectedRevision: 5,
+    });
+    fireEvent.click(firstSession.getByRole('button', { name: /Reload Course Draft/i }));
+
+    expect(await firstSession.findByText('#6')).toBeInTheDocument();
+    expect(firstSession.queryByRole('alert')).not.toBeInTheDocument();
+    expect(firstSession.queryByRole('button', { name: /Save Block Changes/i })).not.toBeInTheDocument();
+    expect(creatorService.updateDraftBlock).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(firstSession.getByRole('button', { name: /Edit Conflict Block/i }));
+    expect(firstSession.getByPlaceholderText(videoUrlPlaceholder)).toHaveValue(latestBlock.config.url);
   });
 
-  it('10. Publishing preserves creator-entered data and displays new published snapshot version', async () => {
+  it('10. Publishing displays the success message for the new version', async () => {
     const publishedVersion: CourseVersionDto = {
       id: 'version-snapshot-1',
       courseId: 'course-100',

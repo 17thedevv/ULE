@@ -32,6 +32,24 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
     name: 'Learner Bob',
   };
 
+  const authoredMcq = {
+    title: 'Lesson 1: Knowledge Check',
+    config: {
+      question: 'What tier does the React application belong to in ULE?',
+      options: [
+        { id: 'opt_client', text: 'Client Tier (API Client)', explanation: 'React is strictly a client.' },
+        { id: 'opt_backend', text: 'Backend Tier with Prisma access', explanation: 'React never accesses Prisma.' },
+      ],
+      answerKey: {
+        correctOptionId: 'opt_client',
+        explanation: 'Frontend is strictly an API client consuming REST endpoints.',
+      },
+      feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
+      allowHints: true,
+      hintText: 'Check the ULE system topology in docs/architecture/overview.md',
+    },
+  };
+
   let userACookie: string;
   let userBCookie: string;
 
@@ -223,27 +241,13 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
         .set('Cookie', userACookie)
         .send({
           blockTypeId: 'multiple-choice',
-          title: 'Lesson 1: Knowledge Check',
           expectedRevision: 2,
-          config: {
-            question: 'What tier does the React application belong to in ULE?',
-            options: [
-              { id: 'opt_client', text: 'Client Tier (API Client)', explanation: 'React is strictly a client.' },
-              { id: 'opt_backend', text: 'Backend Tier with Prisma access', explanation: 'React never accesses Prisma.' },
-            ],
-            answerKey: {
-              correctOptionId: 'opt_client',
-              explanation: 'Frontend is strictly an API client consuming REST endpoints.',
-            },
-            feedbackPolicy: 'IMMEDIATE_WITH_EXPLANATION',
-            allowHints: true,
-            hintText: 'Check the ULE system topology in docs/architecture/overview.md',
-          },
+          ...authoredMcq,
         })
         .expect(HttpStatus.CREATED);
 
       mcqBlockId = res.body.id;
-      expect(res.body.title).toBe('Lesson 1: Knowledge Check');
+      expect(res.body.title).toBe(authoredMcq.title);
       expect(res.body.orderIndex).toBe(1);
     });
 
@@ -315,7 +319,7 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
   });
 
   describe('4. CourseVersion Creation with Validated Activity Snapshot', () => {
-    it('creates immutable CourseVersion containing validated block snapshots', async () => {
+    it('publishes a CourseVersion that stores creator-authored activity content', async () => {
       const res = await request(app.getHttpServer())
         .post(`/api/v1/courses/${courseAId}/versions`)
         .set('Cookie', userACookie)
@@ -334,6 +338,15 @@ describe('Real PostgreSQL & Better Auth ABP Runtime Integration Tests', () => {
       expect(b1.blockTypeId).toBe('video');
       expect(b2.id).toBe(mcqBlockId);
       expect(b2.blockTypeId).toBe('multiple-choice');
+
+      const persistedVersion = await prisma.courseVersion.findUniqueOrThrow({
+        where: { id: courseVersion1Id },
+      });
+      expect(persistedVersion.snapshot).toMatchObject({
+        blocks: expect.arrayContaining([
+          expect.objectContaining({ id: mcqBlockId, ...authoredMcq }),
+        ]),
+      });
     });
 
     it('rejects version creation if draft has an invalid block', async () => {
