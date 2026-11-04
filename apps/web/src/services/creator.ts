@@ -74,6 +74,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
+export { request as requestCreatorApi };
+
 // ---------------------------------------------------------------------------
 // Courses & Drafts
 // ---------------------------------------------------------------------------
@@ -111,6 +113,15 @@ export async function publishCourseVersion(courseId: string): Promise<CourseVers
 
 export async function fetchCourseVersions(courseId: string): Promise<CourseVersionDto[]> {
   return request<CourseVersionDto[]>(`/api/v1/courses/${courseId}/versions`);
+}
+
+export async function fetchCourseVersion(
+  courseId: string,
+  versionId: string,
+): Promise<CourseVersionDto> {
+  return request<CourseVersionDto>(
+    `/api/v1/courses/${encodeURIComponent(courseId)}/versions/${encodeURIComponent(versionId)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

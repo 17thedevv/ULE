@@ -110,7 +110,9 @@ export async function fetchCourseEnrollment(
     throw new Error(`Failed to fetch course enrollment: ${res.statusText}`);
   }
 
-  return res.json();
+  // Nest's Express adapter sends an empty body for a null enrollment.
+  const body = await res.text();
+  return body === '' ? null : JSON.parse(body);
 }
 
 export async function enrollInCourse(

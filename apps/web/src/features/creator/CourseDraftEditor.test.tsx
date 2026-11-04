@@ -546,11 +546,11 @@ describe('CourseDraftEditor authoring workflows', () => {
     });
   });
 
-  it('10. Publishing displays the success message for the new version', async () => {
+  it('10. Publishing links to learner access for the new and previous versions', async () => {
     const publishedVersion: CourseVersionDto = {
-      id: 'version-snapshot-1',
+      id: 'version-snapshot-2',
       courseId: 'course-100',
-      versionNumber: 1,
+      versionNumber: 2,
       title: 'Distributed Systems & Algorithms',
       description: 'Advanced course on consensus and replication.',
       summary: null,
@@ -560,10 +560,13 @@ describe('CourseDraftEditor authoring workflows', () => {
       createdById: 'user-1',
       createdAt: '2026-11-04T11:00:00Z',
     };
+    const previousVersion = { ...publishedVersion, id: 'version-snapshot-1', versionNumber: 1 };
 
     vi.mocked(creatorService.fetchCourseDraft).mockResolvedValue(mockDraft);
     vi.mocked(creatorService.fetchDraftBlocks).mockResolvedValue([]);
-    vi.mocked(creatorService.fetchCourseVersions).mockResolvedValue([]);
+    vi.mocked(creatorService.fetchCourseVersions)
+      .mockResolvedValueOnce([previousVersion])
+      .mockResolvedValueOnce([previousVersion, publishedVersion]);
     vi.mocked(creatorService.publishCourseVersion).mockResolvedValue(publishedVersion);
 
     renderEditor();
@@ -577,8 +580,16 @@ describe('CourseDraftEditor authoring workflows', () => {
     await waitFor(() => {
       expect(creatorService.publishCourseVersion).toHaveBeenCalledWith('course-100');
       expect(
-        screen.getByText(/Course Version snapshot v1 published successfully/i),
+        screen.getByText(/Course Version snapshot v2 published successfully/i),
       ).toBeInTheDocument();
     });
+    expect(screen.getByRole('link', { name: 'Manage Learners for Version 1' })).toHaveAttribute(
+      'href',
+      '/studio/courses/course-100/versions/version-snapshot-1/access',
+    );
+    expect(screen.getByRole('link', { name: 'Manage Learners for Version 2' })).toHaveAttribute(
+      'href',
+      '/studio/courses/course-100/versions/version-snapshot-2/access',
+    );
   });
 });

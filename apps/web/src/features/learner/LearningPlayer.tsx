@@ -14,7 +14,7 @@ import { buildClozeSubmissionPayload } from './cloze-submission';
 
 interface LearningPlayerProps {
   run: ABRunDto;
-  onRunUpdated: (updatedRun: ABRunDto) => void;
+  onRunUpdated: (updatedRun: ABRunDto) => void | Promise<void>;
   onClose: () => void;
 }
 
@@ -28,8 +28,13 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
 
   const blockTypeId = run.block.blockTypeId;
   const isClosed = run.status === 'CLOSED';
+  const isGradedActivity = blockTypeId === 'multiple-choice' || blockTypeId === 'cloze';
+  const assessment = run.latestAssessment;
+  const feedback = assessment?.feedback;
+  const explanation = typeof feedback === 'object' && feedback !== null ? feedback.explanation : feedback;
+  const optionExplanation = typeof feedback === 'object' && feedback !== null ? feedback.optionExplanation : null;
 
-  const handleCompleteVideo = async () => {
+  const handleFinish = async () => {
     try {
       setLoading(true);
       setError(null);
@@ -38,10 +43,10 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
         command: 'FINISH',
         idempotencyKey,
       });
-      onRunUpdated(updated);
-      setStatusMessage('Video completed! Activity progress updated (strictly non-mastery).');
+      await onRunUpdated(updated);
+      setStatusMessage('Activity completed. Course progress updated.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to complete video activity.');
+      setError(err instanceof Error ? err.message : 'Failed to finish activity.');
     } finally {
       setLoading(false);
     }
@@ -56,7 +61,7 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
         command: 'REQUEST_HINT',
         idempotencyKey,
       });
-      onRunUpdated(updated);
+      await onRunUpdated(updated);
       setStatusMessage('Hint delivered by server. Support provenance recorded as SERVER_OBSERVED.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to request hint.');
@@ -76,7 +81,7 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
         payload: { selectedOptionId },
         idempotencyKey,
       });
-      onRunUpdated(updated);
+      await onRunUpdated(updated);
       setStatusMessage('Response submitted and evaluated by authoritative server.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit response.');
@@ -96,7 +101,7 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
         payload,
         idempotencyKey,
       });
-      onRunUpdated(updated);
+      await onRunUpdated(updated);
       setStatusMessage('Cloze blanks submitted and normalized by server.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit cloze response.');
@@ -313,7 +318,7 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
             <div>
               <Button
                 variant="primary"
-                onClick={handleCompleteVideo}
+                onClick={handleFinish}
                 isLoading={loading}
                 disabled={isClosed}
               >
@@ -406,19 +411,6 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
               >
                 Submit Answer
               </Button>
-
-              {run.latestAssessment && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--ui-text-muted)' }}>Latest Evaluation:</span>
-                  {run.latestAssessment.isCorrect === null ? (
-                    <Badge variant="warning">Deferred Feedback (Withheld)</Badge>
-                  ) : run.latestAssessment.isCorrect ? (
-                    <Badge variant="success">✓ Correct</Badge>
-                  ) : (
-                    <Badge variant="danger">✗ Incorrect</Badge>
-                  )}
-                </div>
-              )}
             </div>
           </div>
         );
@@ -486,22 +478,35 @@ export function LearningPlayer({ run, onRunUpdated, onClose }: LearningPlayerPro
               >
                 Submit Cloze Responses
               </Button>
-
-              {run.latestAssessment && (
-                <div>
-                  {run.latestAssessment.isCorrect === null ? (
-                    <Badge variant="warning">Deferred Feedback</Badge>
-                  ) : run.latestAssessment.isCorrect ? (
-                    <Badge variant="success">✓ Correct</Badge>
-                  ) : (
-                    <Badge variant="danger">✗ Incorrect</Badge>
-                  )}
-                </div>
-              )}
             </div>
           </div>
         );
       })()}
+
+      {isGradedActivity && run.latestAttempt && (
+        <div style={{ marginTop: '1rem' }}>
+          {assessment && (
+            <div style={{ marginBottom: '0.75rem' }}>
+              {assessment.isCorrect === null ? (
+                <Badge variant="warning">Feedback available after finishing</Badge>
+              ) : (
+                <>
+                  <Badge variant={assessment.isCorrect ? 'success' : 'danger'}>
+                    {assessment.isCorrect ? '✓ Correct' : '✗ Incorrect'}
+                  </Badge>
+                  {typeof explanation === 'string' && explanation && <p>{explanation}</p>}
+                  {typeof optionExplanation === 'string' && optionExplanation && <p>{optionExplanation}</p>}
+                </>
+              )}
+            </div>
+          )}
+          {run.status === 'ACTIVE' && (
+            <Button variant="secondary" onClick={handleFinish} isLoading={loading}>
+              Finish Activity
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

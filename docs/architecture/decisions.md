@@ -153,6 +153,7 @@
      - Course visibility remains strictly `PRIVATE`; courses are not public or discoverable.
      - Runtime authorization gate: `startRun()` requires caller to be either the course owner or hold an `ACTIVE` grant for the requested `courseVersionId`. Unauthorized starts return HTTP 404 (preventing existence leaks).
      - Explicit revocation policy: Revoking a grant immediately transitions its status to `REVOKED`, prevents starting new runs, and causes any subsequent runtime host commands on existing runs to fail closed with HTTP 403 Forbidden.
+     - To read a run, the caller must own the run and either own the course or hold an `ACTIVE` grant for that version. After revocation, run state and results return HTTP 404. Run history is retained and becomes readable to its learner again after re-grant.
      - Cross-user isolation: Learners cannot access drafts, blocks, answer keys, or other learners' runs or evidence. Course owners cannot use learner endpoints to impersonate learners.
   2. **Course-Scoped Skill Identity & Versioned Snapshot Mappings**:
      - `CourseSkill`: Aggregate entity strictly scoped to its parent course (`courseId`, `skillCode`, `name`, `description`, `revision`). Unique constraint `[courseId, skillCode]` ensures skills are never conflated across courses; no cross-course mastery transfer.
