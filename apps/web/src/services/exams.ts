@@ -6,6 +6,7 @@ import {
   LearnerEligibleExamDto,
 } from '@ule/contracts';
 import { getApiBaseUrl } from './api';
+import { checkAuthStatus } from './auth';
 
 export class ExamApiError extends Error {
   constructor(
@@ -33,6 +34,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   });
 
   if (!res.ok) {
+    checkAuthStatus(res);
     let errorMsg = `HTTP ${res.status}: ${res.statusText}`;
     let details: unknown;
     try {

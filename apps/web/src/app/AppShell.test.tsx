@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AppShell } from './AppShell';
+import * as authContextModule from '../features/auth/AuthContext';
 import { ThemeProvider } from '../theme/ThemeProvider';
 
 describe('AppShell Component (UI-01)', () => {
@@ -52,5 +53,110 @@ describe('AppShell Component (UI-01)', () => {
       'aria-expanded',
       'false',
     );
+  });
+
+  it('renders Sign In link when user is unauthenticated', () => {
+    vi.spyOn(authContextModule, 'useAuth').mockReturnValue({
+      user: null,
+      session: null,
+      isAuthenticated: false,
+      isLoading: false,
+      sessionExpired: false,
+      error: null,
+      login: vi.fn(),
+      signUp: vi.fn(),
+      logout: vi.fn(),
+      refreshSession: vi.fn(),
+      clearSessionExpired: vi.fn(),
+    });
+
+    renderShell();
+
+    const signInLink = screen.getByRole('link', { name: /sign in/i });
+    expect(signInLink).toBeInTheDocument();
+    expect(signInLink).toHaveAttribute('href', '/login');
+  });
+
+  it('renders user identity and Sign Out button when authenticated', async () => {
+    const mockLogout = vi.fn();
+    vi.spyOn(authContextModule, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-alice',
+        name: 'Alice Learner',
+        email: 'alice@ule.internal',
+        emailVerified: true,
+        createdAt: '2026-11-01',
+      },
+      session: {
+        id: 'sess-alice',
+        userId: 'usr-alice',
+        expiresAt: '2099-01-01',
+      },
+      isAuthenticated: true,
+      isLoading: false,
+      sessionExpired: false,
+      error: null,
+      login: vi.fn(),
+      signUp: vi.fn(),
+      logout: mockLogout,
+      refreshSession: vi.fn(),
+      clearSessionExpired: vi.fn(),
+    });
+
+    renderShell();
+
+    expect(screen.getByText('Alice Learner')).toBeInTheDocument();
+    expect(screen.getByText('A')).toBeInTheDocument(); // Avatar initial
+
+    const signOutBtn = screen.getByRole('button', { name: /sign out/i });
+    expect(signOutBtn).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(signOutBtn);
+    });
+    expect(mockLogout).toHaveBeenCalled();
+  });
+
+  it('displays sign-out error and preserves active UI when logout fails', async () => {
+    const mockLogout = vi.fn().mockRejectedValueOnce(new Error('Network disconnected'));
+    vi.spyOn(authContextModule, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-alice',
+        name: 'Alice Learner',
+        email: 'alice@ule.internal',
+        emailVerified: true,
+        createdAt: '2026-11-01',
+      },
+      session: {
+        id: 'sess-alice',
+        userId: 'usr-alice',
+        expiresAt: '2099-01-01',
+      },
+      isAuthenticated: true,
+      isLoading: false,
+      sessionExpired: false,
+      error: null,
+      login: vi.fn(),
+      signUp: vi.fn(),
+      logout: mockLogout,
+      refreshSession: vi.fn(),
+      clearSessionExpired: vi.fn(),
+    });
+
+    renderShell();
+
+    const signOutBtn = screen.getByRole('button', { name: /sign out/i });
+    await act(async () => {
+      fireEvent.click(signOutBtn);
+    });
+
+    expect(mockLogout).toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Network disconnected');
+    expect(screen.getByText('Alice Learner')).toBeInTheDocument();
+
+    // Verify dismiss button closes the alert
+    const dismissBtn = screen.getByRole('button', { name: 'Dismiss sign-out error' });
+    fireEvent.click(dismissBtn);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

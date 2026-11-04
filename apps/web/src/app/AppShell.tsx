@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
+import { useAuth } from '../features/auth/AuthContext';
 import { ThemeSwitcher } from '../theme/ThemeSwitcher';
 
 interface NavItem {
@@ -166,6 +167,23 @@ interface TopbarProps {
 }
 
 function Topbar({ isSidebarOpen, onToggleSidebar, toggleRef }: TopbarProps) {
+  const { user, isAuthenticated, isLoading, logout } = useAuth();
+  const [signoutError, setSignoutError] = useState<string | null>(null);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+
+  const handleLogout = async () => {
+    setIsSigningOut(true);
+    setSignoutError(null);
+    try {
+      await logout();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Sign out failed. Please retry.';
+      setSignoutError(msg);
+    } finally {
+      setIsSigningOut(false);
+    }
+  };
+
   return (
     <header
       style={{
@@ -243,6 +261,135 @@ function Topbar({ isSidebarOpen, onToggleSidebar, toggleRef }: TopbarProps) {
       </NavLink>
 
       <div style={{ flex: 1 }} />
+
+      {/* User Session State */}
+      <div
+        className="topbar-auth"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.625rem',
+        }}
+      >
+        {isLoading ? (
+          <span
+            style={{
+              fontSize: '0.8rem',
+              color: 'var(--ui-text-muted)',
+            }}
+          >
+            Checking session…
+          </span>
+        ) : isAuthenticated && user ? (
+          <>
+            <span
+              className="user-avatar"
+              aria-hidden="true"
+              style={{
+                width: '28px',
+                height: '28px',
+                borderRadius: '50%',
+                background: 'var(--ui-primary)',
+                color: 'var(--ui-primary-contrast)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                flexShrink: 0,
+              }}
+            >
+              {user.name ? user.name.charAt(0).toUpperCase() : user.email.charAt(0).toUpperCase()}
+            </span>
+            <span
+              className="topbar-username"
+              style={{
+                fontSize: '0.85rem',
+                fontWeight: 500,
+                color: 'var(--ui-text)',
+                maxWidth: '160px',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {user.name || user.email}
+            </span>
+            {signoutError && (
+              <span
+                role="alert"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.35rem',
+                  fontSize: '0.75rem',
+                  color: 'var(--ui-danger)',
+                  fontWeight: 500,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <span>{signoutError}</span>
+                <button
+                  type="button"
+                  aria-label="Dismiss sign-out error"
+                  onClick={() => setSignoutError(null)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--ui-danger)',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem',
+                    padding: '0 2px',
+                    lineHeight: 1,
+                  }}
+                >
+                  ✕
+                </button>
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleLogout}
+              disabled={isSigningOut}
+              className="btn-signout"
+              aria-label="Sign out"
+              style={{
+                padding: '4px 10px',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                background: 'var(--ui-surface-muted)',
+                color: 'var(--ui-text)',
+                border: '1px solid var(--ui-border)',
+                cursor: isSigningOut ? 'not-allowed' : 'pointer',
+                opacity: isSigningOut ? 0.7 : 1,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {isSigningOut ? 'Signing out…' : 'Sign Out'}
+            </button>
+          </>
+        ) : (
+          <NavLink
+            to="/login"
+            className="btn-signin"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              padding: '4px 12px',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              textDecoration: 'none',
+              background: 'var(--ui-primary)',
+              color: 'var(--ui-primary-contrast)',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Sign In
+          </NavLink>
+        )}
+      </div>
 
       <ThemeSwitcher compact />
     </header>
@@ -343,6 +490,10 @@ export function AppShell({ children }: AppShellProps) {
           .sidebar-mobile   { display: flex; }
           .topbar-hamburger { display: flex; }
           .topbar-title     { display: none; }
+        }
+
+        @media (max-width: 640px) {
+          .topbar-username { display: none; }
         }
       `}</style>
     </div>

@@ -7,6 +7,12 @@ import {
 } from 'react-router-dom';
 import { AppShell } from './AppShell';
 import { LoadingState } from '../components/states/LoadingState';
+import { AuthProvider } from '../features/auth/AuthContext';
+import { ProtectedRoute } from '../features/auth/ProtectedRoute';
+
+const LoginPage = lazy(() => import('../features/auth/LoginPage'));
+const UnauthorizedPage = lazy(() => import('../features/auth/UnauthorizedPage'));
+const ForbiddenPage = lazy(() => import('../features/auth/ForbiddenPage'));
 
 const LearnerDashboard = lazy(() => import('../features/learner/LearnerDashboard'));
 const CoursesPage = lazy(() => import('../features/learner/CoursesPage'));
@@ -27,56 +33,169 @@ const DevPage = lazy(() => import('../features/dev/DevPage'));
 export function AppRouter() {
   return (
     <Router>
-      <AppShell>
-        <Suspense fallback={<LoadingState message="Loading page…" />}>
-          <Routes>
-            <Route path="/" element={<Navigate to="/app" replace />} />
+      <AuthProvider>
+        <AppShell>
+          <Suspense fallback={<LoadingState message="Loading page…" />}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/app" replace />} />
 
-            {/* Learner Workspace (UI-02) */}
-            <Route path="/app" element={<LearnerDashboard />} />
-            <Route path="/app/courses" element={<CoursesPage />} />
-            <Route path="/app/courses/:courseVersionId" element={<CourseDetailPage />} />
-            <Route path="/app/skills" element={<SkillsPage />} />
-            <Route path="/app/quests" element={<QuestsPage />} />
+              {/* Product Authentication & Authorization Views */}
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/401" element={<UnauthorizedPage />} />
+              <Route path="/403" element={<ForbiddenPage />} />
 
-            {/* Assessment Center (UI-03) */}
-            <Route path="/app/exams" element={<ExamsPage />} />
-            <Route path="/app/exams/attempts/:attemptId" element={<ExamTakingPage />} />
-            <Route path="/app/exams/attempts/:attemptId/result" element={<ExamResultPage />} />
+              {/* Learner Workspace (UI-02) - Protected */}
+              <Route
+                path="/app"
+                element={
+                  <ProtectedRoute>
+                    <LearnerDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/app/courses"
+                element={
+                  <ProtectedRoute>
+                    <CoursesPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/app/courses/:courseVersionId"
+                element={
+                  <ProtectedRoute>
+                    <CourseDetailPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/app/skills"
+                element={
+                  <ProtectedRoute>
+                    <SkillsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/app/quests"
+                element={
+                  <ProtectedRoute>
+                    <QuestsPage />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* Creator Studio (UI-05) */}
-            <Route path="/studio" element={<Navigate to="/studio/courses" replace />} />
-            <Route path="/studio/courses" element={<StudioPage />} />
-            <Route path="/studio/courses/:courseId/edit" element={<CourseDraftEditor />} />
-            <Route path="/studio/question-bank" element={<QuestionBankPage />} />
-            {/* Grading Workspace (UI-04) */}
-            <Route path="/studio/grading" element={<GradingQueuePage />} />
-            <Route path="/studio/grading/attempts/:attemptId" element={<RubricEvaluationPage />} />
-            <Route path="/studio/grading/appeals/:appealId" element={<AppealsReviewPage />} />
+              {/* Assessment Center (UI-03) - Protected */}
+              <Route
+                path="/app/exams"
+                element={
+                  <ProtectedRoute>
+                    <ExamsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/app/exams/attempts/:attemptId"
+                element={
+                  <ProtectedRoute>
+                    <ExamTakingPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/app/exams/attempts/:attemptId/result"
+                element={
+                  <ProtectedRoute>
+                    <ExamResultPage />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* Technical Verification (Preserved) */}
-            <Route path="/dev" element={<Navigate to="/dev/verification" replace />} />
-            <Route path="/dev/*" element={<DevPage />} />
+              {/* Creator Studio (UI-05) - Protected */}
+              <Route
+                path="/studio"
+                element={
+                  <ProtectedRoute>
+                    <Navigate to="/studio/courses" replace />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/studio/courses"
+                element={
+                  <ProtectedRoute>
+                    <StudioPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/studio/courses/:courseId/edit"
+                element={
+                  <ProtectedRoute>
+                    <CourseDraftEditor />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/studio/question-bank"
+                element={
+                  <ProtectedRoute>
+                    <QuestionBankPage />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* Fallback */}
-            <Route
-              path="*"
-              element={
-                <div style={{ padding: '2rem' }}>
-                  <h1 style={{ color: 'var(--ui-text)', marginBottom: '0.5rem' }}>
-                    Page not found
-                  </h1>
-                  <p style={{ color: 'var(--ui-text-muted)' }}>
-                    <a href="/app" style={{ color: 'var(--ui-primary)' }}>
-                      Return to Dashboard
-                    </a>
-                  </p>
-                </div>
-              }
-            />
-          </Routes>
-        </Suspense>
-      </AppShell>
+              {/* Grading Workspace (UI-04) - Protected */}
+              <Route
+                path="/studio/grading"
+                element={
+                  <ProtectedRoute>
+                    <GradingQueuePage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/studio/grading/attempts/:attemptId"
+                element={
+                  <ProtectedRoute>
+                    <RubricEvaluationPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/studio/grading/appeals/:appealId"
+                element={
+                  <ProtectedRoute>
+                    <AppealsReviewPage />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Technical Verification (Preserved & Unblocked) */}
+              <Route path="/dev" element={<Navigate to="/dev/verification" replace />} />
+              <Route path="/dev/*" element={<DevPage />} />
+
+              {/* Fallback */}
+              <Route
+                path="*"
+                element={
+                  <div style={{ padding: '2rem' }}>
+                    <h1 style={{ color: 'var(--ui-text)', marginBottom: '0.5rem' }}>
+                      Page not found
+                    </h1>
+                    <p style={{ color: 'var(--ui-text-muted)' }}>
+                      <a href="/app" style={{ color: 'var(--ui-primary)' }}>
+                        Return to Dashboard
+                      </a>
+                    </p>
+                  </div>
+                }
+              />
+            </Routes>
+          </Suspense>
+        </AppShell>
+      </AuthProvider>
     </Router>
   );
 }

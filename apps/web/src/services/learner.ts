@@ -7,6 +7,7 @@ import {
   LearningEvidenceDto,
 } from '@ule/contracts';
 import { getApiBaseUrl } from './api';
+import { checkAuthStatus } from './auth';
 
 export async function fetchGrantedCourses(): Promise<LearnerCourseVersionDto[]> {
   const baseUrl = getApiBaseUrl();
@@ -16,6 +17,7 @@ export async function fetchGrantedCourses(): Promise<LearnerCourseVersionDto[]> 
   });
 
   if (!res.ok) {
+    checkAuthStatus(res);
     throw new Error(`Failed to fetch granted courses: ${res.statusText}`);
   }
 
@@ -32,6 +34,7 @@ export async function fetchCourseProgress(
   });
 
   if (!res.ok) {
+    checkAuthStatus(res);
     throw new Error(`Failed to fetch course progress: ${res.statusText}`);
   }
 
@@ -48,6 +51,7 @@ export async function fetchEvidenceSummary(
   });
 
   if (!res.ok) {
+    checkAuthStatus(res);
     throw new Error(`Failed to fetch evidence summary: ${res.statusText}`);
   }
 
@@ -64,6 +68,7 @@ export async function fetchSkillProjections(
   });
 
   if (!res.ok) {
+    checkAuthStatus(res);
     throw new Error(`Failed to fetch skill projections: ${res.statusText}`);
   }
 
@@ -80,6 +85,7 @@ export async function fetchCourseQuests(
   });
 
   if (!res.ok) {
+    checkAuthStatus(res);
     throw new Error(`Failed to fetch course quests: ${res.statusText}`);
   }
 
@@ -100,6 +106,7 @@ export async function fetchCourseEnrollment(
   }
 
   if (!res.ok) {
+    checkAuthStatus(res);
     throw new Error(`Failed to fetch course enrollment: ${res.statusText}`);
   }
 
@@ -117,6 +124,7 @@ export async function enrollInCourse(
   });
 
   if (!res.ok) {
+    checkAuthStatus(res);
     throw new Error(`Failed to enroll in course: ${res.statusText}`);
   }
 

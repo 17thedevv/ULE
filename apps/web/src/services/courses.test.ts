@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as courseService from './courses';
+import { subscribeSessionExpired } from './auth';
 
 describe('Course Service HTTP Client', () => {
   beforeEach(() => {
@@ -79,5 +80,39 @@ describe('Course Service HTTP Client', () => {
         credentials: 'include',
       }),
     );
+  });
+
+  it('dispatches session expired event when API responds with 401', async () => {
+    const sessionExpiredCallback = vi.fn();
+    const unsubscribe = subscribeSessionExpired(sessionExpiredCallback);
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: async () => ({ message: 'Session expired' }),
+    } as Response);
+
+    await expect(courseService.listCourses()).rejects.toThrow('Session expired');
+    expect(sessionExpiredCallback).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+  });
+
+  it('does NOT dispatch session expired event when API responds with 403 Forbidden', async () => {
+    const sessionExpiredCallback = vi.fn();
+    const unsubscribe = subscribeSessionExpired(sessionExpiredCallback);
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: 'Forbidden',
+      json: async () => ({ message: 'Forbidden access' }),
+    } as Response);
+
+    await expect(courseService.listCourses()).rejects.toThrow('Forbidden access');
+    expect(sessionExpiredCallback).not.toHaveBeenCalled();
+
+    unsubscribe();
   });
 });

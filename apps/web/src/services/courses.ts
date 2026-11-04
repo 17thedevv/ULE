@@ -7,6 +7,7 @@ import {
   UpdateCourseDraftRequest,
 } from '@ule/contracts';
 import { getApiBaseUrl } from './api';
+import { checkAuthStatus } from './auth';
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const baseUrl = getApiBaseUrl();
@@ -23,6 +24,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
 
   if (!response.ok) {
+    checkAuthStatus(response);
     const errorBody = await response.json().catch(() => ({}));
     const message =
       errorBody.error?.message ||
