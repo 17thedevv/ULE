@@ -187,11 +187,25 @@ pnpm test:web
 
 ---
 
-## 7. Authentication & MCP Feasibility Spike
+## 7. Connect an AI client to ULE MCP
 
-Better Auth was investigated as the primary authentication candidate for NestJS and MCP tool integration. Detailed findings, CORS considerations, session/Bearer token strategies, and authorization boundaries for private courses are documented in:
+Start PostgreSQL, apply migrations with `pnpm prisma:deploy`, and run `pnpm dev` as described above. Cursor Desktop is the primary product verification client. Add this server to `.cursor/mcp.json` or your global `~/.cursor/mcp.json`, then connect through Cursor's OAuth action using your ULE email/password account:
 
-👉 [`docs/technical-spikes/better-auth-nestjs-mcp.md`](docs/technical-spikes/better-auth-nestjs-mcp.md)
+```json
+{
+  "mcpServers": {
+    "ule-authoring": {
+      "url": "http://localhost:3000/api/v1/mcp"
+    }
+  }
+}
+```
+
+Grant `course:read` for inspection and `course:write` for authoring. The expected catalog contains 17 tools. MCP OAuth is independent of Google Login; no Google credentials or manually pasted bearer token are needed.
+
+Run `pnpm test:mcp:smoke` against a disposable PostgreSQL database for the official SDK OAuth/transport, MCP-to-Web REST authoring, and token revocation checks. See the [MCP connection guide](docs/architecture/mcp-setup.md) for Inspector diagnostics, the sample authoring prompt, conflict/retry behavior, and troubleshooting. The [P7-05 verification record](docs/plans/phase-7-mcp-client-usability.md) separates Engineering Ready from **Product Verified: Pending**; automated tests do not claim a successful Cursor conversation.
+
+The earlier [Better Auth technical spike](docs/technical-spikes/better-auth-nestjs-mcp.md) records Phase 1A investigation history; the MCP connection guide and ADR-010 describe current MCP behavior.
 
 ---
 

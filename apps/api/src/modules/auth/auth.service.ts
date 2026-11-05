@@ -19,6 +19,7 @@ import type { Request, Response } from 'express';
 import type { McpProtectedResourceMetadataDto } from '@ule/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthSessionContext } from './auth.types';
+import { mcpTokenRevocation } from './mcp-token-revocation.plugin';
 
 function createAuthOptions(
   prisma: PrismaService,
@@ -47,6 +48,22 @@ function createAuthOptions(
   const mcpResource =
     configService.get<string>('MCP_RESOURCE_URI') ||
     `${baseURL}/${apiPrefix}/mcp`;
+  const mcpProvider = mcp({
+    loginPage: '/auth/login',
+    consentPage: '/auth/consent',
+    allowDynamicClientRegistration: true,
+    // Desktop MCP clients register before a ULE browser session exists.
+    // Registration grants no course access: login, consent and PKCE still
+    // gate resource-bound tokens and every tool enforces its scope/owner.
+    allowUnauthenticatedClientRegistration: true,
+    resource: mcpResource,
+    resources: [{
+      identifier: mcpResource,
+      name: 'ULE MCP Authoring',
+      allowedScopes: ['course:read', 'course:write'],
+    }],
+    scopes: ['course:read', 'course:write'],
+  });
 
   return {
     database: prismaAdapter(prisma, {
@@ -63,20 +80,8 @@ function createAuthOptions(
     plugins: [
       bearer(),
       jwt(),
-      mcp({
-        loginPage: '/auth/login',
-        consentPage: '/auth/consent',
-        allowDynamicClientRegistration: true,
-        resource: mcpResource,
-        resources: [
-          {
-            identifier: mcpResource,
-            name: 'ULE MCP Authoring',
-            allowedScopes: ['course:read', 'course:write'],
-          },
-        ],
-        scopes: ['course:read', 'course:write'],
-      }),
+      mcpProvider,
+      mcpTokenRevocation(prisma, mcpResource, mcpProvider.options),
       cimd({
         fetchClientMetadataResource,
         metadataProfile: 'mcp-2026-07-28',

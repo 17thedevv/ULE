@@ -244,6 +244,7 @@ describe('Phase 2: MCP Transport, Real OAuth 2.1 & Security Gates (Real PostgreS
 
   describe('2. MCP Streamable HTTP Initialization & Capability Discovery', () => {
     it('POST /api/v1/mcp processes JSON-RPC initialize and returns server capabilities', async () => {
+      const token = await createDatabaseBackedToken({ scopes: ['course:read'] });
       const initPayload = {
         jsonrpc: '2.0',
         id: 1,
@@ -260,6 +261,7 @@ describe('Phase 2: MCP Transport, Real OAuth 2.1 & Security Gates (Real PostgreS
 
       const res = await request(app.getHttpServer())
         .post('/api/v1/mcp')
+        .set('Authorization', `Bearer ${token}`)
         .set('Accept', 'application/json, text/event-stream')
         .send(initPayload)
         .expect(HttpStatus.OK);
