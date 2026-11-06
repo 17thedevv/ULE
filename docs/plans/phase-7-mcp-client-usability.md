@@ -1,6 +1,6 @@
 # P7-05 — MCP Client Usability
 
-Date: 2026-11-05. Scope: one private course authored over MCP, visible/editable in Creator Studio, then explicitly approved for a private immutable version and learner access.
+Started: 2026-11-05. Engineering evidence reviewed: 2026-11-06. Scope: one private course authored over MCP, visible/editable in Creator Studio, then explicitly approved for a private immutable version and learner access.
 
 ## Scope and release policy
 
@@ -27,7 +27,7 @@ The SDK fixture registers `application_type: "native"` for its HTTP loopback cal
 
 | Gate | Required evidence | Current status |
 | --- | --- | --- |
-| Engineering Ready | Lint, typecheck, build, Web/API unit tests, mocked API e2e, official MCP SDK protocol/OAuth smoke, full PostgreSQL integration, and CI pass | **Local checks complete — Pending CI** |
+| Engineering Ready | Lint, typecheck, build, Web/API unit tests, mocked API e2e, official MCP SDK protocol/OAuth smoke, full PostgreSQL integration, and CI pass | **Passed — local checks and CI** |
 | Product Verified | Real Cursor OAuth + tool discovery + AI authoring, visible Web edits in both directions, approved publish, learner grant/activity/progress journey | **Pending — no real Cursor/AI product run recorded** |
 
 Do not promote an automated fixture run to Product Verified. Private version creation in tests is an explicitly scripted fixture action; a real AI conversation must stop for the user's approval before publishing.
@@ -73,11 +73,11 @@ Existing MCP suites retain the wider ownership, audience/issuer/expiry, protecte
 | Full PostgreSQL integration | `pnpm test:integration`: 16 suites / 369 tests passed |
 | Final quality/build checks | `pnpm lint`, `pnpm typecheck`, and `pnpm build` passed |
 | Final unit/e2e checks | `pnpm test:web`: 189 passed; `pnpm test:api`: 14 suites / 144 passed; `pnpm test:e2e`: 2 suites / 25 passed |
-| CI | Pending Draft PR run |
+| CI | [Run #55 passed](https://github.com/17thedevv/ULE/actions/runs/41986285832) for implementation commit `5528ed2`: both jobs completed successfully on Node 22; PostgreSQL 16 applied all 15 migrations and passed 16 suites / 369 tests. Web 189, API unit 144, and mocked e2e 25 tests also passed. Current follow-up checks are linked from [Draft PR #17](https://github.com/17thedevv/ULE/pull/17). |
 | Cursor version / negotiated protocol / callback | Not recorded; real client run Pending |
 | Inspector version / negotiated protocol | Not recorded; diagnostic run Pending |
 
-Add the commit/CI link after the Draft PR run and actual client details after manual execution. Do not copy tokens, authorization codes, cookies, PKCE verifier, passwords, or secrets into evidence.
+Engineering Ready is complete; P7-06 can proceed independently of the pending real-client product gate. PR #17 remains Draft and unmerged. Add actual client details after manual execution. Do not copy tokens, authorization codes, cookies, PKCE verifier, passwords, or secrets into evidence.
 
 Observed runner limitation: the passing API unit run exited with code 0 but Jest printed a worker shutdown warning (`A worker process has failed to exit gracefully` and force-exited it). This is recorded separately from assertion results; no cause has been established.
 
