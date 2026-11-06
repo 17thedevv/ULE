@@ -14,6 +14,7 @@
     "lint": "eslint src test",
     "test": "jest --config jest.config.ts --passWithNoTests",
     "test:integration": "jest --config test/jest-integration.json --runInBand --passWithNoTests",
+    "test:mcp:smoke": "jest --config test/jest-integration.json --runInBand --runTestsByPath test/mcp-client.integration.spec.ts test/mcp-web-authoring.integration.spec.ts test/mcp-token-revocation.integration.spec.ts",
     "test:e2e": "jest --config test/jest-e2e.json --passWithNoTests"
   },
   "dependencies": {

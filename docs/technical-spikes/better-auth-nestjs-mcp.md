@@ -4,6 +4,8 @@
 **Date:** October 2026  
 **Status:** Runtime Integration & Session Lifecycle Verified in NestJS/Prisma & Real HTTP E2E (Phase 1A); MCP OAuth Client Flows Explicitly Unverified & Separate
 
+> Historical Phase 1A investigation. Statements below about unverified MCP describe that phase, not the current implementation. See [ADR-010](../architecture/decisions.md#adr-010-model-context-protocol-mcp-authoring-mvp-oauth-21--secure-abp-runtime-integration), the [current MCP setup guide](../architecture/mcp-setup.md), and the [P7-05 verification record](../plans/phase-7-mcp-client-usability.md) for automated OAuth/SDK evidence and the separate pending Cursor product gate.
+
 ---
 
 ## 1. Executive Summary

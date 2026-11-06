@@ -20,6 +20,7 @@
     "test:web": "pnpm --filter @ule/web test",
     "test:e2e": "pnpm --filter @ule/api test:e2e",
     "test:integration": "pnpm --filter @ule/api test:integration",
+    "test:mcp:smoke": "pnpm --filter @ule/api test:mcp:smoke",
     "prisma:generate": "pnpm --filter @ule/api prisma:generate",
     "prisma:migrate": "pnpm --filter @ule/api prisma:migrate",
     "prisma:deploy": "pnpm --filter @ule/api prisma:deploy",

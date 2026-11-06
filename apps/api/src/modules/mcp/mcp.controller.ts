@@ -160,27 +160,21 @@ export class McpController {
         return;
       }
     } else {
-      // Unauthenticated caller
-      const method = req.body?.method;
-      const isInitOrNotification =
-        method === 'initialize' || method === 'notifications/initialized';
-
-      if (!isInitOrNotification) {
-        // Protected tools fail closed
-        const message =
-          'Authentication required. Please provide a valid OAuth Bearer access token.';
-        const challenge = `Bearer error="invalid_token", error_description="${message}", resource_metadata="${this.authService.getMcpResourceMetadataUrl()}"`;
-        res.setHeader('WWW-Authenticate', challenge);
-        res.status(HttpStatus.UNAUTHORIZED).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message,
-          },
-          id: req.body?.id ?? null,
-        });
-        return;
-      }
+      // Challenge before initialize so clients authorize before opening SSE or
+      // listing tools, rather than starting concurrent OAuth flows on each.
+      const message =
+        'Authentication required. Please provide a valid OAuth Bearer access token.';
+      const challenge = `Bearer error="invalid_token", error_description="${message}", resource_metadata="${this.authService.getMcpResourceMetadataUrl()}"`;
+      res.setHeader('WWW-Authenticate', challenge);
+      res.status(HttpStatus.UNAUTHORIZED).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32001,
+          message,
+        },
+        id: req.body?.id ?? null,
+      });
+      return;
     }
 
     // 2. Ensure accept header compatibility for Streamable HTTP transport
